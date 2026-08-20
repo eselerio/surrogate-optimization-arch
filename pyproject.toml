@@ -1,5 +1,7 @@
 [project]
-name = "icsor-model"
+name = "surrogate-optimization-arch"
 version = "0.1.0"
-description = "Single-notebook reproducible benchmark for the ASM2d-TSN surrogate study."
-requires-python = ">=3.12,<3.13"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
