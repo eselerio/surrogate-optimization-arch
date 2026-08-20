@@ -1,0 +1,4 @@
+interface:
+  display_name: "Revise Manuscript Summary Sections"
+  short_description: "Rewrite highlights, abstract, and conclusion"
+  default_prompt: "Use $revise-manuscript-summary-sections to identify the manuscript's main results and revise the Highlights, Abstract, and Conclusion for a clear general-public narrative."

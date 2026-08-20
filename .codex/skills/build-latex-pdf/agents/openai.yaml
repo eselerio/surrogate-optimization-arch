@@ -1,0 +1,4 @@
+interface:
+  display_name: "LaTeX PDF Builder"
+  short_description: "CLI PDF builds with timestamped archives"
+  default_prompt: "Use $build-latex-pdf to compile one or more LaTeX files into PDFs in a timestamped docs/latex_pdfs folder."

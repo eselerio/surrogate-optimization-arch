@@ -1,0 +1,4 @@
+interface:
+  display_name: "LaTeX Reference Auditor"
+  short_description: "Audit LaTeX references with Crossref"
+  default_prompt: "Use $audit-latex-references to audit a LaTeX manuscript's citations, verify references in Crossref, add DOIs, revise the file, and rebuild the PDF."

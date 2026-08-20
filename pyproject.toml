@@ -1,0 +1,5 @@
+[project]
+name = "icsor-model"
+version = "0.1.0"
+description = "Single-notebook reproducible benchmark for the ASM2d-TSN surrogate study."
+requires-python = ">=3.12,<3.13"

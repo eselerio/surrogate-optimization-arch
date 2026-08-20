@@ -1,0 +1,4 @@
+interface:
+  display_name: "Mark Results Citation Needs"
+  short_description: "Tag uncited Results and Discussion claims"
+  default_prompt: "Use $mark-results-citation-needs to identify citation-needing Results and Discussion claims in this LaTeX manuscript, mark them in blue, and create the matching markdown index."
