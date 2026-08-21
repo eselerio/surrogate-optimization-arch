@@ -1,0 +1,42 @@
+\documentclass[11pt]{letter}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[margin=1in]{geometry}
+\usepackage{microtype}
+\usepackage{parskip}
+\setlength{\emergencystretch}{2em}
+
+\signature{Egberto F. Selerio Jr.\\
+Engineering Research and Development for Technology\\
+University of San Carlos, Philippines\\
+\texttt{egbertoselerio@gmail.com}}
+
+\date{\today}
+
+\begin{document}
+
+\begin{letter}{Prof. Jin Xuan and Prof. Jinfeng Liu\\
+Editors-in-Chief\\
+\textit{Digital Chemical Engineering}\\
+Elsevier}
+
+\opening{Dear Professors Xuan and Liu,}
+
+Please consider my original research article, ``Optimization of a Recycling N-Stage Activated Sludge System with a Clarifier using A Physically Constrained Surrogate,'' for publication in \textit{Digital Chemical Engineering}.
+
+The manuscript develops a closed-loop design-and-operation framework for a prescribed $N$-stage train of continuous stirred-tank reactors connected to a secondary Clarifier. The decisions include nominal hydraulic retention time, zonal aeration, mixed-liquor recycle, return activated sludge, and waste activated sludge. One system-level second-order surrogate jointly predicts the mixer, every reactor, Clarifier outlet component mass flows, and the ten-layer Clarifier solids profile.
+
+The principal methodological contribution is a unique scaled-$L_2$ lower-level quadratic program for the interconnected bioreactor--Clarifier network. It enforces exact recycle mixing, interstage stoichiometric invariants, componentwise Clarifier mass balance, soluble pass-through, particulate clarification and densification directions, layer-inventory consistency, and non-negativity. RAS densification is represented as particulate recovery into a smaller underflow rather than artificial solids generation. The upper level evaluates clarified effluent quality together with volume, aeration, recycle-pumping, and wasted-solids terms and checks SRT and Clarifier-capacity constraints without altering the surrogate response to manufacture compliance.
+
+The study builds on the component-space and invariant ideas in the published work of Selerio Jr. (2026), \emph{An interpretable statistical surrogate of activated sludge systems that preserves mass conservation and component non-negativity}, \textit{Digital Chemical Engineering}, \textit{20}, 100329. The present model uses dimensionless unique quadratic monomials and one identifiable convex, physics-penalized regression, followed by a candidate-dependent network projection. The original single-reactor coefficients and dataset are not reused.
+
+Training and validation use a coupled ASM2d-TSN--multilayer-Clarifier model. Predictive fidelity is evaluated on held-out states and at surrogate-selected decisions. Decision quality is assessed separately through an independent mechanistic search and reported as a gap to the best finite-budget incumbent found under the same bounds. The formulation and computational record distinguish a fast physically admissible prediction from evidence about the associated engineering decision.
+
+The work is aligned with the journal's scope in digital process engineering, mathematical programming, physically constrained machine learning, and computational wastewater-process operation. The manuscript is original, has not been published previously, and is not under consideration elsewhere. I have approved its submission and declare no competing interests. Thank you for your consideration.
+
+\closing{Sincerely,}
+
+\end{letter}
+\end{document}
