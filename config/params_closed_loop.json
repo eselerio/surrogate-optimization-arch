@@ -1,0 +1,245 @@
+{
+  "schema_version": 2,
+  "article": {
+    "title": "Optimization of a Recycling Mixer-Reactor-Clarifier Activated Sludge System Using a Physically-Constrained Statistical Surrogate",
+    "manuscript": "article/wip_v2/manuscript.tex"
+  },
+  "execution": {
+    "default_profile": "test_2000",
+    "profile_environment_variable": "CLOSED_LOOP_PROFILE",
+    "run_id_environment_variable": "CLOSED_LOOP_RUN_ID",
+    "results_root": "results/closed_loop",
+    "computational_feasibility": {
+      "mechanistic_preflight_rows": 256,
+      "qp_preflight_rows": 1000,
+      "production_fit_projection_factor": 2.25,
+      "maximum_projected_core_days": 30.0,
+      "memory_allocation_gib": 64.0,
+      "maximum_projected_resident_memory_gib": 51.2
+    },
+    "profiles": {
+      "unit": {
+        "article_eligible": false,
+        "sample_count": 480,
+        "development_count": 400,
+        "assessment_count": 80,
+        "parallel_workers": 2,
+        "generation_checkpoints": [4, 16, 64, 256, 480],
+        "robustness_cases": 1,
+        "surrogate_search_budget": 100,
+        "nominal_mechanistic_search_budget": 20,
+        "robustness_mechanistic_search_budget": 10
+      },
+      "test_2000": {
+        "article_eligible": false,
+        "sample_count": 2000,
+        "development_count": 1600,
+        "assessment_count": 400,
+        "parallel_workers": 12,
+        "generation_checkpoints": [4, 16, 64, 256, 1000, 2000],
+        "robustness_cases": 5,
+        "surrogate_search_budget": 800,
+        "nominal_mechanistic_search_budget": 100,
+        "robustness_mechanistic_search_budget": 50
+      },
+      "full": {
+        "article_eligible": true,
+        "sample_count": 20000,
+        "development_count": 16000,
+        "assessment_count": 4000,
+        "parallel_workers": 12,
+        "generation_checkpoints": [4, 16, 64, 256, 2000, 20000],
+        "robustness_cases": 100,
+        "surrogate_search_budget": 25000,
+        "nominal_mechanistic_search_budget": 10000,
+        "robustness_mechanistic_search_budget": 2500
+      }
+    }
+  },
+  "random_design": {
+    "method": "strength-1 Latin hypercube",
+    "generator": "SplitMix64 with unbiased Fisher-Yates permutations",
+    "design_seed": 42,
+    "robustness_seed": 314159,
+    "dimension_order": [
+      "H", "a", "r_I", "r_R", "w",
+      "S_O", "S_F", "S_A", "S_NH4", "S_NO2", "S_NO3", "S_N2", "S_PO4", "S_I", "S_ALK",
+      "X_I", "X_S", "X_H", "X_PAO", "X_PP", "X_PHA", "X_AOB", "X_NOB", "X_MeP", "X_MeOH"
+    ],
+    "require_every_row_accepted": true
+  },
+  "process": {
+    "fresh_flow_m3_per_d": 10000.0,
+    "component_order": [
+      "S_O", "S_F", "S_A", "S_NH4", "S_NO2", "S_NO3", "S_N2", "S_PO4", "S_I", "S_ALK",
+      "X_I", "X_S", "X_H", "X_PAO", "X_PP", "X_PHA", "X_AOB", "X_NOB", "X_MeP", "X_MeOH"
+    ],
+    "soluble_count": 10,
+    "reactor_count": 5,
+    "unaerated_reactors": [1, 2],
+    "aerated_reactors": [3, 4, 5],
+    "oxygen_saturation_g_m3": 8.5,
+    "kla_per_aeration_d_inv": 47.0,
+    "decision_bounds": {
+      "H": [6.0, 36.0],
+      "a": [0.0, 1.0],
+      "r_I": [0.0, 4.0],
+      "r_R": [0.25, 1.25],
+      "w": [0.001, 0.05]
+    },
+    "influent_bounds": {
+      "S_O": [0.0, 0.5],
+      "S_F": [20.0, 180.0],
+      "S_A": [5.0, 80.0],
+      "S_NH4": [12.0, 55.0],
+      "S_NO2": [0.0, 3.0],
+      "S_NO3": [0.0, 8.0],
+      "S_N2": [0.0, 2.0],
+      "S_PO4": [2.0, 18.0],
+      "S_I": [10.0, 90.0],
+      "S_ALK": [1.6, 5.2],
+      "X_I": [20.0, 120.0],
+      "X_S": [60.0, 280.0],
+      "X_H": [15.0, 100.0],
+      "X_PAO": [5.0, 60.0],
+      "X_PP": [2.0, 20.0],
+      "X_PHA": [1.0, 30.0],
+      "X_AOB": [0.5, 8.0],
+      "X_NOB": [0.5, 8.0],
+      "X_MeP": [0.0, 12.0],
+      "X_MeOH": [0.0, 12.0]
+    },
+    "nominal_influent": [
+      0.25, 100.0, 42.5, 33.5, 1.5, 4.0, 1.0, 10.0, 50.0, 3.4,
+      70.0, 170.0, 57.5, 32.5, 11.0, 15.5, 4.25, 4.25, 6.0, 6.0
+    ]
+  },
+  "clarifier": {
+    "layer_count": 10,
+    "feed_layer_one_based": 5,
+    "surface_area_m2": 1500.0,
+    "total_depth_m": 4.0,
+    "layer_volume_m3": 600.0,
+    "maximum_settling_speed_m_d": 250.0,
+    "settling_velocity_coefficient_m_d": 474.0,
+    "hindered_coefficient_m3_g": 0.000576,
+    "low_concentration_coefficient_m3_g": 0.00286,
+    "non_settleable_fraction": 0.00228,
+    "flux_limiting_threshold_g_m3": 3000.0
+  },
+  "mechanistic_solver": {
+    "primary_method": "scaled-state BDF dynamic relaxation",
+    "positivity_fallback": "log-state BDF dynamic relaxation",
+    "polish_method": "bounded trust-region reflective least squares when the relaxed endpoint does not pass acceptance",
+    "steady_xtol": 1e-9,
+    "steady_ftol": 1e-9,
+    "steady_gtol": 1e-9,
+    "steady_max_residual_evaluations": 5000,
+    "scaled_derivative_acceptance_d_inv": 1e-8,
+    "minimum_state_acceptance": -1e-10,
+    "external_balance_acceptance": 1e-8,
+    "stability_eigenvalue_max_d_inv": 1e-8,
+    "dynamic_relaxation": {
+      "method": "BDF",
+      "minimum_horizon_d": 400.0,
+      "waste_sludge_turnovers": 40.0,
+      "horizon_formula": "max(minimum_horizon_d, waste_sludge_turnovers / w)",
+      "relative_tolerance": 1e-7,
+      "scaled_absolute_tolerance": 1e-9,
+      "maximum_step_fraction_of_horizon": 0.01
+    },
+    "initialization": {
+      "start_1_reactor_particulate_factors": [1.0, 1.0, 1.0, 1.0, 1.0],
+      "start_2_reactor_particulate_factors": [1.5, 2.0, 2.5, 3.0, 3.5],
+      "start_2_layer_factors": [0.002, 0.005, 0.01, 0.03, 0.10, 0.50, 1.25, 2.25, 3.25, 4.00]
+    }
+  },
+  "surrogate": {
+    "input_dimension": 25,
+    "feature_dimension": 351,
+    "target_dimension": 170,
+    "feature_order": ["intercept", "decisions", "influent", "decision_quadratics", "influent_quadratics", "decision_influent_interactions"],
+    "population_standard_deviation_ddof": 0,
+    "variance_relative_floor": 1e-12,
+    "maximum_design_condition_number": 1e8,
+    "fit_method": "column-pivoted Householder QR",
+    "independent_fit_check": "thin SVD",
+    "assessment": {
+      "deployed_state_standardized_rmse_max": 1.0,
+      "correction_to_raw_error_ratio_max": 0.5,
+      "correction_rms_p95_max": 0.5,
+      "nonexpansive_relative_slack": 1e-6
+    },
+    "deployment_qp": {
+      "equality_rows": 77,
+      "inequality_rows_excluding_nonnegativity": 26,
+      "absolute_tolerance": 1e-8,
+      "relative_tolerance": 1e-8,
+      "nonnegativity_tolerance": 1e-10,
+      "maximum_iterations": 100000,
+      "polish": true,
+      "cold_retry": true
+    }
+  },
+  "objective": {
+    "quality_weight": 0.50,
+    "quality_composite_weights": [0.25, 0.25, 0.25, 0.25],
+    "H_weight": 0.15,
+    "a_weight": 0.20,
+    "r_I_weight": 0.05,
+    "r_R_weight": 0.05,
+    "wasted_solids_weight": 0.05,
+    "underflow_tss_reference_g_m3": 15000.0
+  },
+  "upper_constraints": {
+    "srt_d": [8.0, 30.0],
+    "surface_overflow_rate_max_m_d": 20.0,
+    "solids_loading_rate_max_kg_m2_d": 100.0,
+    "underflow_tss_max_g_m3": 15000.0,
+    "correction_rms_max": 0.5,
+    "particulate_recovery_spread_max": 0.05,
+    "clarifier_flux_residual_max": 0.05,
+    "normalized_feasibility_tolerance": 1e-8
+  },
+  "optimization": {
+    "method": "boundary-augmented DIRECT followed by deterministic multi-basin complete-pattern refinement",
+    "direct_epsilon": 1e-4,
+    "direct_maximum_side": 0.0009765625,
+    "pattern_initial_mesh": 0.0625,
+    "pattern_terminal_mesh": 0.001953125,
+    "basin_separation_linf": 0.125,
+    "surrogate_full": {
+      "total_budget": 25000,
+      "full_box_direct_cap": 18000,
+      "corner_count": 32,
+      "face_count": 10,
+      "new_points_per_face": 300,
+      "minimum_local_budget": 3968,
+      "maximum_local_seeds": 4
+    },
+    "mechanistic_nominal_full": {
+      "total_budget": 10000,
+      "selected_point_stencil_max": 51,
+      "full_box_direct_cap": 7000,
+      "new_points_per_face": 100,
+      "minimum_local_budget": 1917,
+      "maximum_local_seeds": 4
+    },
+    "mechanistic_robustness_full": {
+      "total_budget": 2500,
+      "selected_point_stencil_max": 51,
+      "full_box_direct_cap": 1700,
+      "new_points_per_face": 25,
+      "minimum_local_budget": 467,
+      "maximum_local_seeds": 1
+    }
+  },
+  "reporting": {
+    "write_parquet": true,
+    "write_csv_summaries": true,
+    "write_json_stage_checks": true,
+    "write_model_npz": true,
+    "write_figures": true,
+    "seal_completed_run": true
+  }
+}

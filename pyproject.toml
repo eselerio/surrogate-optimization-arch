@@ -1,7 +1,7 @@
 [project]
 name = "surrogate-optimization-arch"
 version = "0.1.0"
-description = "Reproducible ASM2d-TSN, ICSOR, and bilevel activated-sludge optimization study."
+description = "Reproducible mixer-reactor-clarifier activated-sludge optimization with a physically constrained statistical surrogate."
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [

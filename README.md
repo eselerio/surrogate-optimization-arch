@@ -1,122 +1,90 @@
-# Bilevel optimization of activated sludge operation
+# Recycling mixer–reactor–clarifier activated sludge optimization
 
-This repository contains the reproducible computation for the article **"Bilevel Optimization of Activated Sludge Operation Using a Physically Constrained Machine Learning Surrogate."** The analysis is implemented in [main.ipynb](main.ipynb): it runs ASM2d-TSN, generates the mechanistic data, trains and freezes ICSOR, solves the nominal and robustness optimization cases, validates the selected operations against ASM2d-TSN, and writes the article tables, figures, diagnostics, timings, and row-level data.
+This repository contains the executable study for **“Optimization of a Recycling Mixer-Reactor-Clarifier Activated Sludge System Using a Physically-Constrained Statistical Surrogate.”** The canonical entry points are [main_closed_loop.ipynb](main_closed_loop.ipynb) and [scripts/run_closed_loop.py](scripts/run_closed_loop.py). Both use [config/params_closed_loop.json](config/params_closed_loop.json) and the same staged workflow.
 
-The notebook is self-contained with respect to study code; it does not import repository-specific Python helper modules. It does require the versioned configuration, workbook, and dependency lock in this repository.
+The calculation couples five ASM2d-TSN CSTRs, mixed-liquor and return-sludge recycles, sludge wasting, and a ten-layer secondary Clarifier. It generates 170-coordinate mechanistic targets, fits a fixed 351-feature standardized quadratic response, deploys each prediction through a 77-equality/26-inequality physical QP, and performs nominal and influent-robustness optimization with independent mechanistic reference searches.
 
-## Prerequisites
+## Environment
 
-- Windows PowerShell, with the repository root as the working directory.
-- [`uv`](https://docs.astral.sh/uv/) available on `PATH`.
-- Python 3.12. The notebook deliberately rejects other Python minor versions.
-- The tracked ASM2d-TSN workbook at `data/asm2d-tsn/asm2d_tsn_workbook.xlsx`.
-- Sufficient local CPU, memory, and disk space. The full study is substantially heavier than the smoke profile.
-
-Create the locked environment once:
+From the repository root, create the locked Python 3.12 environment:
 
 ```powershell
-Set-Location C:\path\to\surrogate-optimization-arch
 uv sync --frozen
-New-Item -ItemType Directory -Force -Path results\executed_notebooks | Out-Null
 ```
 
-All commands below must be launched from the repository root because the notebook resolves its inputs relative to that directory.
+The workflow writes only beneath `results/closed_loop/<run-id>`. A run ID binds the configuration and scientific module hashes. Completed runs are immutable.
 
-## Smoke test
+## Staged 2,000-point verification
 
-The smoke profile executes every stage with reduced sample counts and search budgets. Choose a new run ID each time:
+The `test_2000` profile exercises every scientific stage with exactly 2,000 mechanistic design points, an ordered 1,600/400 development-assessment split, five robustness cases, and reduced search budgets. It is intentionally marked article-ineligible: a 2,000-point Latin hypercube is not a prefix of the independent 20,000-point article design.
+
+Choose a new run ID, then execute the notebook:
 
 ```powershell
-$env:SURROGATE_OPT_PROFILE = "smoke"
-$env:SURROGATE_OPT_RUN_ID = "smoke_local_001"
+$env:CLOSED_LOOP_PROFILE = "test_2000"
+$env:CLOSED_LOOP_RUN_ID = "verify_2000_001"
 
 uv run --frozen jupyter nbconvert `
   --to notebook `
-  --execute main.ipynb `
-  --output "main.$($env:SURROGATE_OPT_RUN_ID).executed.ipynb" `
+  --execute main_closed_loop.ipynb `
+  --output "main_closed_loop.$($env:CLOSED_LOOP_RUN_ID).executed.ipynb" `
   --output-dir results\executed_notebooks `
   --ExecutePreprocessor.kernel_name=python3 `
   --ExecutePreprocessor.timeout=-1
 ```
 
-A successful run ends with `status: complete` in `results/<run-id>/manifest.json` and creates `results/<run-id>/COMPLETED.json`. Smoke outputs are always marked `article_eligible: false` and must not be used as article results.
-
-The current notebook and locked environment passed an end-to-end smoke test on 21 August 2026 as `dev_smoke_005`: 160 of 160 mechanistic candidates were accepted, the nominal case and three robustness cases completed, and 109 artifacts were sealed in the inventory. The run took approximately 1 minute 45 seconds on the development workstation; this is a functional check, not a full-profile runtime estimate.
-
-## Full article run
-
-Use a fresh run ID and select the full profile:
+The equivalent command-line execution is:
 
 ```powershell
-$env:SURROGATE_OPT_PROFILE = "full"
-$env:SURROGATE_OPT_RUN_ID = "article_full_001"
-
-uv run --frozen jupyter nbconvert `
-  --to notebook `
-  --execute main.ipynb `
-  --output "main.$($env:SURROGATE_OPT_RUN_ID).executed.ipynb" `
-  --output-dir results\executed_notebooks `
-  --ExecutePreprocessor.kernel_name=python3 `
-  --ExecutePreprocessor.timeout=-1
+uv run --frozen python scripts\run_closed_loop.py `
+  --profile test_2000 `
+  --run-id verify_2000_001 `
+  --through complete
 ```
 
-The full contract includes 10,000 accepted ASM2d-TSN training states, an 8,000/2,000 assessment split, a production refit, one nominal case, and 100 independently generated robustness influents. For every nominal or robustness case, it performs both the surrogate search and an independent mechanistic reference search. The configured ceilings are 60 ICSOR outer sweeps per fit, 10,000 verified surrogate candidates per case, and 2,000 verified mechanistic candidates per case. Dataset generation permits up to 25 attempted candidates per required accepted state. The default full profile uses 12 solver chains/workers.
+For explicit checks between long stages, advance the same unsealed run in order:
 
-This workload is intentionally CPU-intensive and may require many hours or longer depending on the workstation and solver behavior. No full-profile runtime should be inferred from the smoke test. Only a successfully sealed `full` run is marked `article_eligible: true`.
-
-## Run IDs, resume, and immutability
-
-Each run writes to `results/<run-id>`. The run contract binds the resolved configuration, workbook, notebook, dependency lock, path configuration, and numerical environment.
-
-- An interrupted run can be resumed by rerunning the same profile and run ID under the identical contract.
-- A changed notebook, input, dependency lock, profile, or numerical environment requires a new run ID.
-- A completed run is immutable. Reusing its run ID fails deliberately, even if all files are intact.
-- Never delete only a marker or individual artifact to force a rerun. Preserve the sealed run and choose a new ID.
-
-Run IDs may contain letters, numbers, dots, underscores, and hyphens, and must begin with a letter or number.
-
-If a run fails after sealing its mechanistic dataset but its notebook or configuration must be corrected,
-a new run can import that dataset without repeating simulation. Set
-`SURROGATE_OPT_DATASET_SOURCE_RUN_ID` to the failed source run and choose a different active run ID.
-The import proceeds only after the dataset and attempt-ledger hashes, sample linkage, workbook hash,
-target count, and complete simulation configuration pass validation.
-
-ICSOR coefficient estimation is a self-contained port of the tested recursive-QP implementation in
-`icsor-model/src/models/ml/icsor_coupled_qp.py`; its source commit and SHA-256 are frozen in
-`config/params.json` and written to the model metadata. The sole intentional algorithmic replacement is
-the strictly convex scaled-L2 deployment projection used to obtain a unique constrained response.
-
-## Outputs
-
-The executed notebook copy is written to `results/executed_notebooks/`. The scientific record is the sealed run directory:
-
-```text
-results/<run-id>/
-|-- COMPLETED.json
-|-- manifest.json
-|-- manifest.sha256
-|-- artifact_inventory.csv
-|-- inputs/          # resolved configuration and immutable input snapshots
-|-- datasets/        # accepted states, all attempts, completion and validation records
-|-- matrices/        # physical operators and matrix validation
-|-- splits/          # frozen assessment partition
-|-- models/          # B, Gamma, arrays, scales, histories, and QP diagnostics
-|-- predictions/     # row-level held-out predictions
-|-- metrics/         # accuracy and physical-feasibility diagnostics
-|-- timing/          # raw timing repetitions
-|-- optimization/    # nominal and per-robustness search archives and solver summaries
-|-- validation/      # nominal summary and detailed robustness inputs/results
-|-- tables/          # CSV and LaTeX article tables
-`-- figures/         # PNG/PDF figures and plotted source data
+```powershell
+uv run --frozen python scripts\run_closed_loop.py --profile test_2000 --run-id verify_2000_001 --through static
+uv run --frozen python scripts\run_closed_loop.py --profile test_2000 --run-id verify_2000_001 --through pilot
+uv run --frozen python scripts\run_closed_loop.py --profile test_2000 --run-id verify_2000_001 --through dataset
+uv run --frozen python scripts\run_closed_loop.py --profile test_2000 --run-id verify_2000_001 --through assessment
+uv run --frozen python scripts\run_closed_loop.py --profile test_2000 --run-id verify_2000_001 --through complete
 ```
 
-Key files include:
+The pilot stage seals checkpoints at 4, 16, 64, and 256 rows. Dataset generation then resumes without recomputing accepted chunks. Any rejected row stops the workflow and is not resampled.
 
-- `models/production_icsor_arrays.npz`, `production_B_long.csv`, and `production_Gamma_long.csv` for the frozen production surrogate;
-- `metrics/assessment_accuracy.csv` and `assessment_physical_diagnostics.csv` for predictive and physical assessment;
-- `optimization/<case-id>/surrogate_search.parquet` and `mechanistic_search.parquet` for every evaluated candidate;
-- `validation/nominal_summary.json` and `robustness_results.parquet` for prediction and decision validation;
-- `timing/all_timing_repetitions.csv` and `tables/timing_summary.csv` for training, inference, and reporting timings;
-- `artifact_inventory.csv` for the byte size and SHA-256 digest of every sealed scientific artifact.
+## Full article calculation
 
-Treat `COMPLETED.json`, `manifest.json`, `manifest.sha256`, and `artifact_inventory.csv` as a single completion seal. A directory without a valid completion seal is not a finished article run.
+The `full` profile uses the manuscript contract: 20,000 mechanistic design rows, an ordered 16,000/4,000 assessment, 100 independent robustness influents, 25,000 surrogate evaluations per case, a 10,000-evaluation nominal mechanistic reference, and 2,500 mechanistic evaluations per robustness case.
+
+```powershell
+$env:CLOSED_LOOP_PROFILE = "full"
+$env:CLOSED_LOOP_RUN_ID = "article_closed_loop_001"
+uv run --frozen python scripts\run_closed_loop.py --profile full --run-id article_closed_loop_001 --through complete
+```
+
+This is a large CPU workload. Run the `test_2000` profile successfully before committing resources to it.
+
+## Tests
+
+The tests are deliberately layered around the same boundaries as the workflow:
+
+```powershell
+uv run --frozen python -m unittest discover -s tests -v
+```
+
+They cover stoichiometric invariants and kinetics, Clarifier flux and mass closure, loaded and boundary steady states, the exact random design, feature uniqueness and OLS audits, QP/KKT acceptance, deterministic boundary search, artifact round trips, checkpoints, and resume behavior.
+
+## Scientific record
+
+A completed run includes:
+
+- immutable input and generator records;
+- checkpointed mechanistic chunks, row diagnostics, and the consolidated dataset;
+- ordered split metadata, development and production surrogate bundles;
+- raw, affine, and deployed assessment predictions and QP diagnostics;
+- nominal and robustness search archives and mechanistic incumbent comparisons;
+- generated tables, figures, timing summaries, hashes, and `COMPLETED.json`.
+
+A directory without a valid completion seal is an interrupted or failed run, not a finished result set.

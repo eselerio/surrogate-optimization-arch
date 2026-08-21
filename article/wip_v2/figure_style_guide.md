@@ -1,8 +1,10 @@
-# Figure Style Guide for Closed-Loop Reactor--Settler Optimization
+# Figure Style Guide
 
-This internal guide governs every reader-facing diagram and numerical figure for the study of bilevel optimization of a five-CSTR activated-sludge train with mixed-liquor recycle (MLR), a ten-layer secondary settler, return activated sludge (RAS), waste activated sludge (WAS), and a system-level ICSOR surrogate.
+**Article title:** Optimization of a Recycling Mixer-Reactor-Clarifier Activated Sludge System Using a Physically-Constrained Statistical Surrogate
 
-Figures must explain the process topology, distinguish concentration from component mass flow, and show where the physical guarantees enter the calculation. Numerical figures may be populated only from one completed, article-eligible full-profile run whose terminal checks, inventory, and manifest hashes have passed. Smoke runs, partial robustness cohorts, provisional checkpoints, and values assembled across runs are prohibited.
+This internal guide governs every reader-facing diagram and numerical figure for the five-CSTR Mixer-Reactor-Clarifier activated-sludge study. Figures must explain the recycle topology, distinguish concentration from component mass flow, and show where the mechanistic model, statistical surrogate, physical projection, and bounded searches enter the calculation.
+
+Numerical figures may use only one complete scientific run that passes the article's numerical and physical acceptance checks. Do not combine values from different runs, omit failed cases, interpolate missing scenarios, or promote a preliminary calculation into a reported result.
 
 ## Fixed Scientific and Visual Contract
 
@@ -10,15 +12,15 @@ Every figure must be consistent with the following study definition:
 
 - five equal-volume CSTRs in series;
 - CSTRs 1--2 unaerated and CSTRs 3--5 operated at one shared aerobic setting;
-- MLR withdrawn from CSTR 5 before clarification and returned to the inlet mixer;
-- a non-reactive, ten-layer flux-limited secondary settler;
-- separator underflow divided hydraulically into RAS and WAS, which share one composition;
+- mixed-liquor recycle (MLR) withdrawn from CSTR 5 before clarification and returned to the inlet mixer;
+- a non-reactive, ten-layer flux-limited secondary Clarifier;
+- Clarifier underflow divided hydraulically into return activated sludge (RAS) and waste activated sludge (WAS), which share one composition;
 - five optimized controls, \((H,a,r_I,r_R,w)\);
 - 20 ASM2d-TSN components and the four derived reporting quantities COD, TN, TP, and TSS;
-- a 161-coordinate system target \((m,c_1,\ldots,c_5,g_E,g_U,\overline M_{\mathrm{cl}})\);
-- a 551-column second-order system-level ICSOR feature map;
-- a candidate-dependent affine equality projection followed by one unique scaled-\(L_2\) physical-correction QP; and
-- validation against the complete coupled ASM2d-TSN--settler network, with prediction fidelity kept separate from decision regret.
+- a 170-coordinate system target \(\chi=(m,c_1,\ldots,c_5,g_E,g_U,s_1,\ldots,s_{10})\);
+- one fixed 351-column unique quadratic feature map fitted by standardized multiresponse ordinary least squares (OLS);
+- a candidate-dependent equality diagnostic and one unique scaled-\(L_2\) physical-correction quadratic program (QP); and
+- validation against the complete coupled ASM2d-TSN--Clarifier model, with prediction fidelity kept separate from decision regret.
 
 Use the normalized flow identities consistently:
 
@@ -29,17 +31,17 @@ q_U=r_R+w,\qquad
 q_E=1-w.
 \]
 
-The separator coordinates are component mass flows normalized by fresh flow,
+The Clarifier outlet coordinates represented by the surrogate are component mass flows normalized by fresh flow,
 
 \[
 g_E=q_Ec_E,\qquad g_U=q_Uc_U,
 \]
 
-not unconstrained outlet concentrations. If both forms appear, the distinction must be explicit in the axis, legend, or annotation.
+not unconstrained outlet concentrations. If both forms appear, identify them explicitly in the axis, legend, or annotation. The ten layer-TSS coordinates \(s_1,\ldots,s_{10}\) are also direct targets; Clarifier solids inventory is derived from them and is not a separate regression target.
 
 ## Visual Language
 
-Use a restrained, journal-scale style with white backgrounds, vector line art, direct units, and no decorative gradients or three-dimensional effects. Use faint grids only for quantitative comparison. Avoid dense legends over data.
+Use a restrained journal-scale style with white backgrounds, vector line art, direct units, and no decorative gradients or three-dimensional effects. Use faint grids only for quantitative comparison and avoid dense legends over data.
 
 Recommended plotting defaults are:
 
@@ -66,63 +68,83 @@ Use consistent colors by stream or state:
 | RAS | muted plum | `#76527A` | dash-dot arrow |
 | WAS | slate gray | `#6C757D` | dotted arrow |
 | Treated effluent | mineral teal | `#2A9D8F` | solid arrow |
-| Anoxic CSTR | pale blue-gray | `#A8C1D1` | `ANX` label |
-| Aerobic CSTR | warm sand | `#E9C46A` | `AER` label |
+| Unaerated CSTR | pale blue-gray | `#A8C1D1` | `UNAERATED` label |
+| Aerobic CSTR | warm sand | `#E9C46A` | `AEROBIC` label |
 | Raw surrogate | coral rust | `#E76F51` | open marker |
-| Affine state | muted amber | `#D99033` | half-filled marker |
+| Affine diagnostic | muted amber | `#D99033` | half-filled marker |
 | Deployed state | mineral teal | `#2A9D8F` | filled marker |
 | Mechanistic response | deep teal | `#264653` | black-edged marker |
 | Mechanistic reference | near black | `#222222` | star or cross |
 
-Color must never be the only identity channel. Preserve the stated line styles, marker fills, labels, or hatching so the figure remains interpretable in grayscale and for common forms of color-vision deficiency.
+Color must never be the only identity channel. Preserve the stated line styles, marker fills, labels, or hatching so each figure remains interpretable in grayscale and for common forms of color-vision deficiency.
 
 ## Required Process-Topology Figure
 
-The principal process schematic must be readable from left to right and must show:
+The principal Mixer-Reactor-Clarifier schematic must be readable from left to right and show:
 
 1. fresh influent \(Q_0,x\) entering a three-stream mixer;
 2. MLR \(r_IQ_0,c_5\) and RAS \(r_RQ_0,c_U\) returning to that mixer;
 3. mixed flow \(q_PQ_0,m\) entering CSTR 1;
-4. CSTRs 1--2 labeled unaerated/anoxic and CSTRs 3--5 labeled aerobic;
-5. an MLR takeoff from CSTR 5 before the settler;
-6. clarifier feed \(q_CQ_0,c_5\);
-7. a ten-layer settler drawn with ten visible horizontal bands and the feed layer identified;
+4. CSTRs 1--2 labeled unaerated and CSTRs 3--5 labeled aerobic;
+5. the MLR takeoff from CSTR 5 before the Clarifier;
+6. Clarifier feed \(q_CQ_0,c_5\);
+7. ten visible Clarifier layers, ordered from the top water surface to the bottom hopper, with the feed entering layer 5 from the top;
 8. overflow \(q_EQ_0,c_E\) leaving as treated effluent;
 9. underflow \(q_UQ_0,c_U\) splitting into RAS and WAS; and
-10. no direct connection suggesting that MLR passes through the separator.
+10. no connection suggesting that MLR passes through the Clarifier.
 
-Place the four flow identities beneath or beside the schematic. Use a small separator annotation to state
+Place the four flow identities beneath or beside the schematic. Use a small Clarifier annotation to state
 
 \[
 g_E+g_U=q_Cc_5.
 \]
 
-Do not depict the separator as a reacting vessel or imply that densification creates particulate mass.
+Do not depict the Clarifier as a reacting vessel or imply that densification creates particulate mass.
 
 ## Required Modeling-Workflow Figure
 
 The modeling workflow should separate four information stages:
 
-1. **Mechanistic generation:** the closed-loop model produces accepted 161-coordinate states, including normalized clarifier solids inventory.
-2. **Training and freezing:** 16,000 estimation rows select and fit the network ICSOR; 4,000 untouched rows assess it; a production model is then refit on all 20,000 rows and frozen.
-3. **Bilevel evaluation:** \((\vartheta,x)\) produces \(\chi_{\mathrm{raw}}\), then \(\chi_{\mathrm{aff}}\), then the unique deployed state \(\widehat\chi\), and finally the overflow objective and upper constraints.
-4. **Independent validation:** the coupled mechanistic network is evaluated at the selected controls and separately searched to obtain a resolution-qualified reference and regret.
+1. **Mechanistic generation:** a coupled Mixer-Reactor-Clarifier calculation produces 20,000 accepted 170-coordinate states.
+2. **Fixed fitting and assessment:** rows 1--16,000 fit one standardized 351-feature, 170-response OLS model by column-pivoted QR; an independent SVD checks rank, condition number, and coefficient agreement; rows 16,001--20,000 provide the untouched pass--fail assessment. After that assessment is sealed, the same estimator is refitted on all 20,000 rows.
+3. **Physical deployment and optimization:** \((\vartheta,x)\) produces \(\chi_{\mathrm{raw}}\); one scaled strictly convex QP returns the unique deployed state \(\widehat\chi\); the five-control upper problem then evaluates the effluent objective, engineering constraints, and surrogate-trust screens.
+4. **Independent validation:** the coupled mechanistic model is evaluated at the selected controls and searched independently to obtain a resolution-qualified reference incumbent and regret.
 
-The lower-level portion must show the responsibilities of its two transformations:
+The surrogate and deployment portion should read:
 
 ```text
-(theta, x)
-   -> system-level ICSOR raw state
-   -> candidate-specific equality projection
-   -> scaled-L2 QP with non-negativity and TSS densification
-   -> verified deployed network state
+(five controls, 20-component influent)
+   -> standardized 351-feature unique quadratic map
+   -> fixed 170-response OLS coefficient matrix
+   -> raw Mixer-Reactor-Clarifier state
+   -> scaled-L2 physical-correction QP
+   -> verified deployed state and upper-level evaluation
 ```
 
-Annotate the equality block with mixer closure, five reactor invariant blocks, separator component balance, and soluble pass-through. Annotate the QP block with non-negativity, the underflow-TSS inequality, and independent KKT checks. Do not suggest that upper discharge, SRT, hydraulic-loading, or pump-capacity limits are absorbed into the lower correction; they are upper-level acceptance constraints.
+Show the equality-only affine projection as a side branch used to diagnose closure error during assessment. It is not a required precursor to every deployment QP. Annotate the QP with 77 equalities (mixer closure, five reactor-invariant blocks, Clarifier component balance, soluble pass-through, and two endpoint-TSS balances), 170 non-negativity bounds, and 26 Clarifier direction/layer-envelope inequalities. Upper SRT, hydraulic-loading, solids-loading, pumpability, leverage, correction, recovery-spread, and nonlinear-flux screens remain outside the lower QP.
 
-## Separator-Densification Inset
+The estimator is one fixed standardized OLS calculation. Show only its feature construction, QR solution, independent SVD audit, assessment gate, and unchanged production refit.
 
-A compact clarifier inset should make RAS densification intuitive. Show a particulate feed mass divided between overflow and underflow, with the underflow occupying the smaller liquid flow. State
+## Mechanistic Solver-Route Figure
+
+If the numerical solution route is visualized, show its prescribed BDF-first order:
+
+```text
+prescribed Start 1
+   -> scaled-coordinate BDF relaxation
+      horizon <= max(400, 40/w) d; maximum step = horizon/100
+      early stop at scaled derivative <= 1e-9 d^-1
+   -> positive log-coordinate BDF retry only if the direct route loses positivity
+   -> bounded least-squares polish only if the relaxed endpoint misses acceptance
+   -> full residual, positivity, stability, and physical replay
+   -> prescribed Start 2 only if the complete Start-1 route fails
+```
+
+The \(\max(400,40/w)\)-day value is an upper relaxation horizon, not a claim that every trajectory runs to that time. Do not draw least squares as the primary steady-state solver, imply cross-row warm starts, or depict clipping as a positivity treatment.
+
+## Clarifier-Densification Inset
+
+A compact Clarifier inset should make RAS densification intuitive. Show a particulate feed mass divided between overflow and underflow, with the underflow occupying the smaller liquid flow. State
 
 \[
 \eta_j=\frac{g_{U,j}}{q_Cc_{5,j}},\qquad
@@ -136,18 +158,18 @@ Use a separate soluble symbol or lane to show that solubles follow the water:
 E_Sg_U=q_UE_Sc_5.
 \]
 
-The inset must not imply that all particulate coordinates have a defined componentwise recovery when their feed denominator is effectively zero. Such coordinates are reported as not numerically identifiable under the declared denominator tolerance.
+Do not imply that every particulate coordinate has an identifiable componentwise recovery when its feed denominator is below the declared tolerance.
 
 ## Main-Text Numerical Figure Recipes
 
-### Nominal Axial and Separator Response
+### Nominal Axial and Clarifier Response
 
 Use aligned panels for the nominal selected operation:
 
 - axial profiles through \(m,c_1,\ldots,c_5\) for dissolved oxygen, nitrogen species, phosphorus species, and solids;
-- overflow and underflow COD, TN, TP, and TSS, with surrogate and mechanistic values paired;
-- a ten-layer solids profile through the settler; and
-- the selected \((H,a,r_I,r_R,w)\), clarifier solids inventory, whole-plant SRT, hydraulic loading, solids loading, total TSS recovery, and underflow densification in a compact linked table or callout.
+- overflow and underflow COD, TN, TP, and TSS, with deployed-surrogate and mechanistic values paired;
+- the ten-layer Clarifier TSS profile; and
+- selected \((H,a,r_I,r_R,w)\), derived Clarifier inventory, whole-plant SRT, hydraulic and solids loadings, total TSS recovery, and underflow densification in a compact linked table or callout.
 
 Do not connect unlike ASM components as though they were one continuous scalar. Axial lines may connect the same component across process locations. Include native units on every concentration axis.
 
@@ -156,23 +178,29 @@ Do not connect unlike ASM components as though they were one continuous scalar. 
 Prediction figures must distinguish process location and prediction state. Suitable displays are:
 
 - paired deployed-versus-mechanistic marks for overflow and underflow composites;
-- component-error heat maps with the eight 20-component blocks in the fixed order \(m,c_1,\ldots,c_5,g_E,g_U\); and
-- a paired normalized clarifier-inventory prediction panel; and
-- raw, affine, and deployed errors or correction displacements shown in aligned panels rather than pooled.
+- component-error heat maps with the eight 20-component blocks in the fixed order \(m,c_1,\ldots,c_5,g_E,g_U\);
+- a separate ten-coordinate panel for the Clarifier layer-TSS profile and its derived inventory; and
+- raw, affine-diagnostic, and deployed errors or correction displacements in aligned panels rather than pooled.
 
-Mass-flow blocks and concentration blocks must not share an unqualified physical-unit axis. Use component-standardized metrics for cross-block comparisons and native units only in block-specific panels.
+Mass-flow, concentration, and layer-TSS blocks must not share an unqualified physical-unit axis. Use target-standardized metrics for cross-block comparisons and native units only in block-specific panels.
 
-### Decision Quality and Robustness
+### Decision Quality, Search Coverage, and Robustness
 
 Keep prediction error and operational regret visually distinct. Recommended panels are:
 
 - normalized selected controls for all 100 robustness cases, with bounds at 0 and 1;
-- mechanistic objective at the surrogate decision paired with the independently searched mechanistic reference;
-- a regret distribution with zero shown as a reference, not as a truncation point;
-- normalized operating displacement; and
-- bound-activity frequencies for \(H,a,r_I,r_R,w\).
+- mechanistic objective at the surrogate-selected decision paired with the independently searched mechanistic reference;
+- regret with zero shown as a reference, never as a truncation rule;
+- normalized operating displacement and control-bound activity; and
+- search-attempt composition or final spatial resolution when it materially helps interpret the finite-budget incumbent.
 
-Robustness summaries are descriptive finite-sample summaries. Label medians, interquartile ranges, 95th percentiles, maxima, and failure counts explicitly. Do not label them as confidence intervals or statistical significance evidence.
+If search budgets are displayed, use the exact contracts:
+
+- surrogate search: 25,000 distinct attempts, with at most 18,000 full-box DIRECT keys, all 32 corners, at most 300 keys on each of ten coordinate faces, and at least 3,968 attempts plus unused DIRECT quota available for multi-basin pattern refinement;
+- nominal mechanistic reference: 10,000 attempts, including the selected point and 50-direction stencil, corners, at most 7,000 full-box DIRECT keys, at most 100 keys per face, and at least 1,917 attempts for local refinement; and
+- each robustness mechanistic reference: 2,500 attempts, including the selected point and stencil, corners, at most 1,700 full-box DIRECT keys, at most 25 keys per face, and at least 467 attempts for local refinement.
+
+Robustness summaries are descriptive finite-sample summaries. Label medians, interquartile ranges, 95th percentiles, maxima, and failure counts explicitly. Do not label them as confidence intervals or statistical-significance evidence.
 
 ### Physical-Feasibility Diagnostics
 
@@ -180,75 +208,72 @@ Use separate aligned panels for quantities with different dimensions or toleranc
 
 - mixer component-balance residual;
 - maximum reactor-invariant residual across the five tanks;
-- separator component mass-balance residual;
-- soluble-pass-through residual;
+- Clarifier component mass-balance and soluble-pass-through residuals;
+- Clarifier endpoint and layer-envelope residuals;
 - plant-boundary invariant residual;
 - minimum deployed coordinate;
-- underflow-TSS densification slack; and
-- stationarity, dual-feasibility, and complementarity residuals.
+- particulate densification-direction slack; and
+- QP equality, inequality, stationarity, dual-feasibility, and complementarity residuals.
 
 Logarithmic axes are appropriate for positive residual magnitudes, but zero values require an explicitly documented plotting floor. Draw the applicable acceptance tolerance as a labeled dashed line. Never replace a below-tolerance residual by zero in the source data.
 
-## Supplementary Figure Recipes
+## Detailed Diagnostic Figure Recipes
 
-The supplement should retain enough detail to diagnose both the mechanistic generator and the surrogate:
+When space and the article's reporting plan permit, useful diagnostic figures include:
 
-- attempted-versus-accepted mechanistic-state counts and residual distributions;
-- representative steady-solve and dynamic-relaxation diagnostics;
-- training and validation objective histories for the selected network ICSOR;
-- predictive errors for every one of the 161 output coordinates;
-- blockwise coupling summaries for the eight 20-by-20 diagonal blocks of \(\widehat\Gamma\);
-- raw-to-affine and affine-to-deployed correction distributions;
+- mechanistic acceptance counts and residual distributions;
+- representative BDF relaxation, positivity-retry, and optional-polish diagnostics;
+- singular-value spectra and condition numbers for the 16,000-by-351 and 20,000-by-351 designs;
+- QR optimality and QR--SVD coefficient-agreement checks;
+- predictive errors for all 170 targets;
+- raw-to-affine and raw-to-deployed correction distributions;
 - component, total-particulate, and TSS recovery and densification distributions;
-- ten-layer settler solids profiles at low, median, and high loading;
-- search-incumbent histories and evaluation counts;
-- nominal penalty-weight sensitivity results;
-- underflow-TSS-cap sensitivity at 12, 15, and 20 g L$^{-1}$; and
-- timing distributions for raw inference, equality-operator construction, affine projection, QP solution, end-to-end deployment, surrogate search, and mechanistic search.
+- low-, median-, and high-loading ten-layer Clarifier profiles;
+- search-incumbent histories, attempt allocation, and achieved resolution;
+- operating-weight and underflow-TSS-cap sensitivity results; and
+- timing distributions for raw inference, matrix construction, QP solution, end-to-end deployment, surrogate search, and mechanistic search.
 
-Do not render a dense 161-by-161 coupling matrix as the only coupling diagnostic. Respect the declared block-diagonal mask, label the eight process-location blocks, and show the uncoupled clarifier-inventory coordinate separately.
+These diagnostics must describe the fixed estimator and its numerical checks directly.
 
 ## Metric and Axis Labels
 
 Use the following terminology consistently:
 
-- `component nRMSE` and `component nMAE` for errors standardized by training-only coordinate scales;
-- `RMSE` or `MAE` only with a named component or composite and its physical unit;
-- `separator mass-balance residual` for \(\|g_E+g_U-q_Cc_5\|\);
+- `target nRMSE` and `target nMAE` for errors standardized by fitting-only target scales;
+- `RMSE` or `MAE` only with a named component, layer TSS, or composite and its physical unit;
+- `Clarifier mass-balance residual` for \(\|g_E+g_U-q_Cc_5\|\);
 - `plant-boundary invariant residual` for the external fresh-feed/effluent/WAS check;
 - `TSS recovery` for a mass-flow fraction and `underflow densification` for a concentration ratio;
-- `decision regret` for the mechanistic objective gap in the manuscript definition; and
+- `decision regret` for the matched mechanistic objective gap in the manuscript definition; and
 - `best verified incumbent` rather than `global optimum` unless a genuine certificate exists.
 
-COD, TN, TP, and TSS must always be computed after obtaining the relevant 20-component state. State whether the reported composite is for CSTR 5, overflow \(c_E\), or underflow \(c_U\).
+COD, TN, TP, and TSS must be computed after obtaining the relevant 20-component state. Identify whether each composite belongs to CSTR 5, Clarifier overflow \(c_E\), or Clarifier underflow \(c_U\).
 
 ## Source-Data and Population Rules
 
-Every final numerical figure must resolve to manifest-tracked rows from the same accepted full run. The rendering code must fail closed when an expected scenario, process block, component, control, prediction state, or mechanistic pair is absent.
+Every final numerical figure must resolve to complete, traceable rows from the same accepted scientific run. Required pairing rules are:
 
-Required pairing rules are:
-
-- raw, affine, and deployed states use the same sample identifier;
+- raw, affine-diagnostic, deployed, and mechanistic states use the same sample identifier where compared;
 - surrogate-selected and selected-point mechanistic states use the same influent and controls;
 - regret pairs use the same influent, objective, bounds, upper constraints, and mechanistic search contract;
-- separator recovery uses matched \(c_5,g_E,g_U\) and flow ratios; and
-- robustness plots contain all 100 accepted validation scenarios or are explicitly marked diagnostic and excluded from submission.
+- Clarifier recovery uses matched \(c_5,g_E,g_U\) and flow ratios; and
+- robustness plots contain all 100 prescribed scenarios or clearly account for every failure class.
 
-Never interpolate missing scenarios, silently discard failed cases, pool smoke and full runs, or infer a displayed value from a rounded manuscript number.
+Never interpolate missing scenarios, silently discard failed cases, combine preliminary and complete runs, or infer a displayed value from a rounded manuscript number.
 
 ## Captions
 
-Each caption must be self-contained and define:
+Each caption must define:
 
-- all abbreviations used in the figure;
-- the process location and whether coordinates are concentrations or normalized mass flows;
+- every abbreviation used in the figure;
+- the process location and whether coordinates are concentrations, normalized mass flows, or layer TSS;
 - the number and source of cases;
-- whether values are raw, affine, deployed, or mechanistic;
+- whether values are raw, affine-diagnostic, deployed, or mechanistic;
 - the summary statistic and dispersion measure;
 - the physical or numerical tolerance when shown; and
-- the finite-budget meaning of a mechanistic reference or search incumbent.
+- the finite-budget meaning of a reference or search incumbent.
 
-Captions should interpret the visual comparison without claiming plant validation. The study is validated against the coupled mechanistic model.
+Captions may interpret agreement with the coupled mechanistic model but must not claim validation against a full-scale plant.
 
 ## Accessibility and Export
 
@@ -258,22 +283,22 @@ Captions should interpret the visual comparison without claiming plant validatio
 - Avoid red/green as the only contrast.
 - Keep legends outside dense process schematics and data regions.
 - Use vector PDF for line art and plots; rasterize only genuinely raster content.
-- Embed fonts and inspect the final rendered size for clipped arrows, subscripts, and error bars.
-- Use stable, flat filenames and exclude local paths, run identifiers, cell numbers, and development annotations.
+- Embed fonts and inspect final-size output for clipped arrows, subscripts, and error bars.
+- Use stable, descriptive filenames and exclude local paths, run identifiers, cell numbers, and development annotations from reader-facing material.
 
 ## Final Figure Checklist
 
 Before a figure enters the submission package, verify that:
 
-1. it comes from the single sealed, article-eligible full run;
-2. the depicted topology has five CSTRs, the correct MLR takeoff, and the RAS/WAS split;
-3. all flow labels satisfy the declared identities;
-4. concentration and normalized mass-flow coordinates are not conflated;
-5. the separator is shown as non-reactive and mass conserving;
-6. raw, affine, deployed, and mechanistic states use fixed visual semantics;
-7. all expected scenarios, components, and process blocks are present;
-8. physical residuals are compared with their declared tolerances;
-9. decision regret is not confused with prediction error;
-10. finite-budget incumbents are not labeled globally optimal;
-11. all numerical source rows and hashes pass the article finalizer; and
-12. no provisional, smoke-profile, cross-run, or internal-path information remains.
+1. it comes from one complete accepted scientific run;
+2. the topology has five CSTRs, the correct MLR takeoff, and the RAS/WAS split;
+3. every flow label satisfies the declared identities;
+4. concentration, normalized mass-flow, and layer-TSS coordinates are not conflated;
+5. the Clarifier is non-reactive and mass conserving;
+6. the fixed 351-feature OLS and 170-target response are represented accurately;
+7. raw, affine-diagnostic, deployed, and mechanistic states use fixed visual semantics;
+8. all expected scenarios, components, process blocks, and failure classes are present;
+9. physical residuals are compared with their declared tolerances;
+10. decision regret is not confused with prediction error;
+11. finite-budget incumbents are not labeled globally optimal; and
+12. no preliminary, cross-run, internal-path, or external-methods assumption remains.

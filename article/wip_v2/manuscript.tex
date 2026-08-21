@@ -8,6 +8,7 @@
 \usepackage{booktabs}
 \usepackage{float}
 \usepackage{graphicx}
+\usepackage{longtable}
 \usepackage{microtype}
 \usepackage{placeins}
 \usepackage{tikz}
@@ -15,9 +16,9 @@
 \usetikzlibrary{arrows.meta,calc,positioning,shapes.geometric}
 
 \DeclareMathOperator*{\argminop}{arg\,min}
-\DeclareMathOperator{\vech}{vech}
 \newcommand{\R}{\mathbb{R}}
 \newcommand{\diag}{\operatorname{Diag}}
+\setcounter{MaxMatrixCols}{20}
 
 %%% Author macros required by cas-sc
 \def\tsc#1{\csdef{#1}{\textsc{\lowercase{#1}}\xspace}}
@@ -44,10 +45,10 @@
 \def\floatpagepagefraction{1}
 \def\textpagefraction{.001}
 
-\shorttitle{Optimization of a Recycling N-Stage Activated Sludge System}
+\shorttitle{Mixer--Reactor--Clarifier Activated Sludge Optimization}
 \shortauthors{Egberto F. Selerio Jr.}
 
-\title[mode=title,size=\Large]{Optimization of a Recycling N-Stage Activated Sludge System with a Clarifier using A Physically Constrained Surrogate}
+\title[mode=title,size=\Large]{Optimization of a Recycling Mixer-Reactor-Clarifier Activated Sludge System Using a Physically-Constrained Statistical Surrogate}
 
 \author[1]{Egberto F. Selerio Jr.}
 \cormark[1]
@@ -61,14 +62,14 @@
 \cortext[cor1]{Corresponding author}
 
 \begin{abstract}
-Activated sludge design and operation couple biological conversion, hydraulic staging, mixed-liquor recycle, return activated sludge, sludge wasting, and secondary clarification. Repeated solution of this closed recycle network is too costly for a large bounded search. This study develops a bilevel formulation for a prescribed $N$-stage activated sludge system with a Clarifier; $N$ is a topology parameter, and the case study fixes $N=5$. A dimensionless second-order surrogate predicts the inlet mixer, every reactor outlet, the Clarifier outlet component mass flows, and the ten-layer solids profile. A strictly convex lower-level quadratic program then returns one unique corrected network state satisfying recycle mixing, reactor stoichiometric invariants, Clarifier component balances, soluble pass-through, particulate clarification and densification directions, layer-inventory consistency, and non-negativity. The upper level jointly selects reactor volume through nominal hydraulic retention time and selects aeration, mixed-liquor recycle, return-sludge flow, and waste-sludge flow. Training uses unique quadratic monomials and one identifiable convex, physics-penalized regression rather than a rank-deficient feature expansion or a non-identifiable coefficient factorization. The complete training, deployment, numerical-acceptance, and validation procedures are stated in the main article. Mechanistic comparison uses a coupled ASM2d-TSN--multilayer-Clarifier model and distinguishes prediction fidelity from the finite-budget mechanistic incumbent gap. The result is a process-level surrogate whose stated physical guarantees and limitations can be traced stream by stream through the activated sludge system.
+Activated sludge design and operation couple an inlet mixer, staged biological conversion, mixed-liquor recycle, return activated sludge, sludge wasting, and secondary clarification. Repeated solution of this closed mixer--reactor--Clarifier network is too costly for a large bounded search. This study develops a bilevel formulation for a prescribed $N$-stage activated sludge system with a Clarifier; $N$ is a topology parameter, and the case study fixes $N=5$. A dimensionless second-order statistical surrogate predicts the inlet mixer, every reactor outlet, the Clarifier outlet component mass flows, and the ten-layer solids profile. A strictly convex lower-level quadratic program then returns one unique corrected network state satisfying recycle mixing, reactor stoichiometric invariants, Clarifier component balances, soluble pass-through, particulate clarification and densification directions, layer-inventory consistency, and non-negativity. The upper level jointly selects reactor volume through nominal hydraulic retention time and selects aeration, mixed-liquor recycle, return-sludge flow, and waste-sludge flow. Training uses a fixed, full-rank standardized multiresponse least-squares estimator on a unique quadratic basis. A 4,000-state set held out from the development fit must pass predictive, numerical, and correction-reliance criteria before the 20,000-state production refit is frozen. The complete mechanistic, training, deployment, numerical-acceptance, and validation definitions are contained in this article. Mechanistic comparison uses a coupled ASM2d-TSN--multilayer-Clarifier model and distinguishes prediction fidelity from the finite-budget mechanistic incumbent gap. The result is a process-level surrogate whose stated physical guarantees and limitations can be traced stream by stream through the activated sludge system.
 \end{abstract}
 
 \begin{highlights}
 \item One surrogate represents the complete recycling $N$-stage activated sludge system.
 \item A unique scaled-$L_2$ QP enforces mixer, reactor, and Clarifier physics.
 \item Ten Clarifier-layer solids states make the SRT inventory physically traceable.
-\item Unique scaled monomials give an identifiable convex training problem.
+\item A full-rank scaled quadratic basis gives one fixed multiresponse fit.
 \item Mechanistic simulations separate prediction fidelity from decision quality.
 \end{highlights}
 
@@ -80,6 +81,7 @@ activated sludge \sep process optimization \sep recycle \sep secondary Clarifier
 
 \section*{Nomenclature}
 \noindent Only nonstandard mathematical variables, sets, and operators are listed. Component names and process abbreviations are defined when introduced. All inequalities between vectors are componentwise.
+Whenever a numerical scaling expression compares a dimensional coordinate with a bare $1$, the coordinate is first expressed in its tabulated unit; the $1$ therefore means one of that stated unit. This convention creates dimensionless residuals without adding quantities of unlike dimensions.
 \begin{tabbing}
 \hspace{4.3cm} \= \kill
 $A\in\R^{K\times F}$ \> Full-row-rank stoichiometric-invariant operator \\
@@ -91,9 +93,10 @@ $c_E,c_U\in\R_+^F$ \> Clarifier overflow and underflow concentrations \\
 $D_b,D_\chi,D_g,D_T$ \> Positive scales for balances, states, inequalities, and targets \\
 $D_\vartheta$ \> Diagonal upper-level decision-range matrix \\
 $d_i$ \> Recycle-adjusted dilution rate in CSTR $i$, d$^{-1}$ \\
-$d_\phi,L,R$ \> Feature, state, and equality-row dimensions \\
+$d_\phi,L,R,R_g$ \> Feature, state, equality-row, and inequality-row dimensions \\
+$\varepsilon_{\mathrm{mach}}=2^{-52}$ \> IEEE 754 binary64 machine epsilon \\
 $E_S,E_X$ \> Selectors for soluble and particulate ASM components \\
-$F,K,M,N,P$ \> Numbers of components, invariants, decisions, CSTRs, and processes \\
+$F,K,n_\vartheta,N,P$ \> Numbers of components, invariants, decisions, CSTRs, and processes \\
 $g_E=q_Ec_E,\ g_U=q_Uc_U$ \> Fresh-flow-normalized Clarifier outlet component mass flows \\
 $H$ \> Total nominal hydraulic retention time based on fresh flow, h \\
 $\mathcal H(\vartheta),\mathcal G(\vartheta)$ \> Closed-loop equality and inequality operators \\
@@ -102,7 +105,7 @@ $J(\vartheta,\chi)$ \> Scalar upper-level engineering objective \\
 $m\in\R_+^F$ \> Mixed component state entering CSTR 1 \\
 $\overline M_{\mathrm{cl}}=M_{\mathrm{cl}}/Q_0$ \> Fresh-flow-normalized Clarifier solids inventory \\
 $N_\ell$ \> Number of Clarifier layers \\
-$p$ \> Non-negative normalized effluent-quality weights \\
+$\alpha_Q$ \> Non-negative normalized effluent-quality weights \\
 $q_P,q_C,q_E,q_U$ \> Flow ratios through the train, Clarifier, overflow, and underflow \\
 $Q_0$ \> Fresh influent volumetric flow \\
 $r_I,r_R,w$ \> MLR, RAS, and WAS flow ratios relative to $Q_0$ \\
@@ -120,7 +123,7 @@ $\nu\in\R^{P\times F}$ \> ASM2d-TSN stoichiometric matrix \\
 $\phi(\vartheta,x)$ \> Dimensionless unique-monomial feature vector \\
 $\varrho_i$ \> Mechanistic reaction-rate vector in CSTR $i$ \\
 $\omega_i$ \> Net oxygen-transfer rate in CSTR $i$ \\
-$\mu_\vartheta,\mu_x,\mu_\psi,\mu_\chi$ \> Training-only coordinate centers \\
+$\mu_\vartheta,\mu_x,\mu_\psi,\mu_\chi$ \> Coordinate centers calculated from the applicable fitting rows \\
 $\mathcal R_s$ \> Mechanistic decision regret in validation scenario $s$ \\
 $\otimes$ \> Kronecker product \\
 \end{tabbing}
@@ -128,13 +131,13 @@ $\otimes$ \> Kronecker product \\
 \section{Introduction}
 Activated sludge plants are recycling systems. Mixed liquor may be returned to an upstream anoxic zone to make oxidized nitrogen available for denitrification, while settled biomass is returned from the Clarifier to maintain the biological inventory. A waste stream controls solids age, and the Clarifier overflow is the treated discharge. These streams are familiar individually, but changing one changes the hydraulic residence time, solids loading, and composition seen elsewhere in the loop.
 
-Detailed activated sludge models represent these interactions through nonlinear reaction rates and clarification fluxes. They are indispensable for process analysis, yet repeated closed-loop steady-state solution can dominate the cost of optimization (de Araujo et al., 2013). Surrogate models can reduce that cost (Bhosekar and Ierapetritou, 2018), but an unconstrained surrogate presents a special risk in wastewater optimization: the optimizer can deliberately seek a small negative concentration, a broken recycle balance, or a favorable solids inventory that would never occur in the plant.
+Detailed activated sludge models represent these interactions through nonlinear reaction rates and clarification fluxes. They are indispensable for process analysis, yet repeated closed-loop steady-state solution can dominate the cost of optimization (de Araujo et al., 2013). Surrogate models can reduce that cost (Bhosekar and Ierapetritou, 2018), and component-space constraints can preserve mass conservation and non-negativity in activated-sludge regression (Selerio Jr., 2026). A complete recycling plant creates a broader risk: the optimizer can seek a small negative concentration, a broken recycle balance, or a favorable solids inventory that would never occur in the plant.
 
-The recycle topology adds a second difficulty. If separate surrogates are built for the reactors and Clarifier, their predictions must be iterated around the MLR and RAS loops. A unique answer from each unit model does not imply a unique closed-loop fixed point. The present work therefore predicts the complete plant state in one response and uses a second, explicitly physical calculation to reconcile all streams at once. The strategy follows the component-space and invariant ideas used in physically constrained activated sludge regression (Selerio Jr., 2026), but it removes two unnecessary sources of ambiguity: duplicated quadratic features and a factorization whose individual coupling and driver matrices are not identifiable from the response.
+The recycle topology adds a second difficulty. If the reactors and Clarifier are predicted independently, their responses must be iterated around the MLR and RAS loops. A unique answer from each unit does not imply a unique closed-loop fixed point. The complete plant state is therefore represented by one system-level response and reconciled by one explicitly physical calculation. The response uses a unique-monomial quadratic basis and a single coefficient matrix whose identifiability is checked directly from the standardized design.
 
-The resulting contribution is a process-level bilevel model (Colson et al., 2007). The lower level is a strictly convex projection that has one answer for every admissible flow vector. The upper level compares feasible design-and-operation candidates using clarified effluent quality, reactor volume, aeration, pumping, and wasted-solids terms. The Clarifier solids inventory is calculated from predicted layer concentrations rather than treated as a free scalar. The full training procedure is included here so that the route from mechanistic states to a frozen optimization artifact is visible without a separate methods document.
+The resulting contribution is a process-level bilevel model (Colson et al., 2007). The lower level is a strictly convex projection that has one answer for every admissible flow vector. The upper level compares feasible design-and-operation candidates using clarified effluent quality, reactor volume, aeration, pumping, and wasted-solids terms. The Clarifier solids inventory is calculated from predicted layer concentrations. The article defines the mechanistic generator, estimator, projection, trust screens, search, and validation route as one self-contained calculation.
 
-The symbol $N$ in the title denotes a prescribed number of biological stages; it is not an integer decision in the present optimization. The derivation applies to any fixed $N$, whereas the case study fixes five equal-volume CSTRs, two unaerated followed by three aerated. In the following sections, the equations are introduced in the order that an engineer can follow the water: fresh feed and recycles meet, mixed liquor passes through the reactors, solids and liquid divide in the Clarifier, and only then is the response scored.
+The mixer--reactor--Clarifier description covers a prescribed number $N$ of biological stages; $N$ is not an integer decision in the present optimization. The derivation applies to any fixed $N$, whereas the case study fixes five equal-volume CSTRs, two unaerated followed by three aerated. In the following sections, the equations are introduced in the order that an engineer can follow the water: fresh feed and recycles meet, mixed liquor passes through the reactors, solids and liquid divide in the Clarifier, and only then is the response scored.
 
 \section{Theory and Calculation}
 
@@ -233,12 +236,13 @@ d_i(c_i-c_{i-1})=\nu^\top\varrho_i+\omega_i e_{S_O},
 \end{equation}
 The $F$ entries of $c_i-c_{i-1}$ are component changes across the tank. The $P$ entries of $\varrho_i$ are the ASM2d-TSN process rates, and the columns of $\nu^\top$ translate those rates into component production or consumption. The last term adds oxygen through aeration; $e_{S_O}$ selects only the dissolved-oxygen coordinate.
 
-The rate vector is precisely the expensive, nonlinear object that should not be carried into every surrogate evaluation. What is needed instead is a set of combinations of components that no modeled reaction or oxygen transfer can change. An unrounded singular-value decomposition identifies those combinations. If $A\in\R^{K\times F}$ contains an orthonormal basis for the right null space of $\nu$, the required checks are
+The rate vector is precisely the expensive, nonlinear object that should not be carried into every surrogate evaluation. What is needed instead is a set of combinations of components that no modeled reaction or oxygen transfer can change. Appendix~\ref{app:stoichiometry} constructs five physical conservation rows in $B$ and normalizes each row separately to form $A\in\R^{K\times F}$. Separate normalization keeps the inert-soluble, nitrogen, phosphorus, alkalinity, and metal inventories as recognizable rails. Its required checks are
 \begin{equation}
 \label{eq:invariant_conditions}
-A\nu^\top=0,\qquad Ae_{S_O}=0,\qquad AA^\top=I_K.
+A\nu^\top=0,\qquad Ae_{S_O}=0,\qquad
+\operatorname{rank}(A)=K,\qquad \|A_{k,:}\|_2=1.
 \end{equation}
-The first equality says that each row of $A$ annihilates every reaction source; the second prevents external oxygen transfer from masquerading as a conserved inventory; the third removes arbitrary scaling and duplication among the rows.
+The first equality says that each row of $A$ annihilates every reaction source; the second prevents external oxygen transfer from masquerading as a conserved inventory; full row rank removes duplication, and the final relation fixes each rail's scale without mixing it with another inventory.
 
 Premultiplying Equation~\eqref{eq:stage_balance} by $A$ removes both source terms. Because $d_i>0$, the remaining statement is simply
 \begin{equation}
@@ -267,7 +271,7 @@ g_E+g_U=q_Cc_N.
 \end{equation}
 Once $q_E$ and $q_U$ are known, the outlet concentrations are recovered uniquely as $c_E=g_E/q_E$ and $c_U=g_U/q_U$. Thus, non-negative mass-flow coordinates also give non-negative outlet concentrations.
 
-Clarification must not be represented as solids generation. For a particulate component $j$ whose Clarifier-feed mass exceeds a declared denominator tolerance, define the underflow recovery and concentration ratio by
+Clarification must not be represented as solids generation. The TSS map satisfies $t_X\in\R_+^F$, $E_St_X=0$, and $\|t_X\|_1>0$. For a particulate component $j$ whose Clarifier-feed mass exceeds the denominator tolerance defined in the numerical contract, define the underflow recovery and concentration ratio by
 \begin{equation}
 \label{eq:component_recovery}
 \eta_j=\frac{g_{U,j}}{q_Cc_{N,j}},
@@ -275,7 +279,7 @@ Clarification must not be represented as solids generation. For a particulate co
 \delta_j=\frac{c_{U,j}}{c_{N,j}}
 =\eta_j\frac{q_C}{q_U}.
 \end{equation}
-The first factor, $\eta_j$, is the fraction of incoming particulate mass sent downward. The second factor, $q_C/q_U$, expresses how that recovered mass is concentrated into a smaller water stream. When the feed denominator is below tolerance, neither ratio is identifiable and it is reported as unavailable rather than assigned zero or one.
+The first factor, $\eta_j$, is the fraction of incoming particulate mass sent downward. Non-negativity and Clarifier balance give $0\leq\eta_j\leq1$; the deployed densification rule sharpens this to $q_U/q_C\leq\eta_j\leq1$ and therefore $1\leq\delta_j\leq q_C/q_U$. The factor $q_C/q_U$ expresses how recovered mass is concentrated into a smaller water stream. When the feed denominator is below tolerance, neither ratio is identifiable and it is reported as unavailable.
 
 The soluble and particulate coordinates require different physical rules. Let $E_S$ select the ten soluble components and $E_X$ the ten particulate components. Ideal soluble pass-through means that the underflow carries the same soluble concentration as the feed:
 \begin{equation}
@@ -365,39 +369,55 @@ Centering and scaling these nonconstant terms once more gives the serialized fea
 1\\S_\psi^{-1}[\psi(\vartheta,x)-\mu_\psi]
 \end{bmatrix},
 \qquad
-d_\phi=1+M+F+\frac{M(M+1)}2+\frac{F(F+1)}2+MF.
+d_\phi=1+n_\vartheta+F+\frac{n_\vartheta(n_\vartheta+1)}2+\frac{F(F+1)}2+n_\vartheta F.
 \end{equation}
-For $M=5$ and $F=20$, $d_\phi=351$. Using full Kronecker squares would create both $v_jv_k$ and $v_kv_j$, producing 200 duplicated columns and a rank-deficient design. Equation~\eqref{eq:system_feature_map} retains the same quadratic surface without that redundancy.
+For $n_\vartheta=5$ and $F=20$, the basis contains $d_\phi=351$ columns. It includes every linear term, square, within-vector cross-product, and design--influent interaction exactly once. Within $q(v)$ the pairs are serialized lexicographically as $(1,1),(1,2),\ldots,(1,d),(2,2),\ldots,(d,d)$; the Kronecker block is serialized with the influent index varying fastest.
 
-The frozen raw prediction is deliberately simple and identifiable:
+The frozen raw prediction is
 \begin{equation}
 \label{eq:raw_surrogate}
 \widetilde\chi_{\mathrm{raw}}=\widehat C\phi(\vartheta,x),
 \qquad
 \chi_{\mathrm{raw}}=\mu_\chi+D_\chi\widetilde\chi_{\mathrm{raw}}.
 \end{equation}
-A separate unrestricted factorization $(I-\Gamma)^{-1}B$ is not introduced. Only its product could be identified from input--response data, so fitting $B$ and $\Gamma$ separately would add coefficients and numerical conditioning choices without adding predictive expressiveness. The direct matrix $\widehat C\in\R^{L\times d_\phi}$ is the one object that the data identify. For a fixed influent, Equation~\eqref{eq:raw_surrogate} remains a vector-valued quadratic in the design and operating decisions.
+The matrix $\widehat C\in\R^{L\times d_\phi}$ is the complete input--response map. Its design matrix must pass the full-column-rank and condition-number tests stated in the training procedure. For a fixed influent, Equation~\eqref{eq:raw_surrogate} is a vector-valued quadratic in the design and operating decisions.
 
 \subsection{Assembling the Plant Rules into Matrices}
 
-The equations developed stream by stream can now be assembled without making them less physical. Put the mixer balance, $N$ reactor-invariant blocks, Clarifier component balance, soluble pass-through, and two layer-endpoint equations in the fixed row order
+The equations developed stream by stream can now be assembled without hiding their physical order. Define the equality residual by
 \begin{equation}
 \label{eq:network_equality_operator}
-\mathcal H(\vartheta)\chi=b(x).
+\mathcal H(\vartheta)\chi-b(x)=
+\begin{bmatrix}
+q_Pm-r_Ic_N-(r_R/q_U)g_U-x\\
+A(c_1-m)\\
+A(c_2-c_1)\\
+\vdots\\
+A(c_N-c_{N-1})\\
+g_E+g_U-q_Cc_N\\
+E_Sg_U-q_UE_Sc_N\\
+q_Es_1-t_X^\top g_E\\
+q_Us_{N_\ell}-t_X^\top g_U
+\end{bmatrix}.
 \end{equation}
-For example, after replacing $c_U$ by $g_U/q_U$, the mixer block places $q_PI_F$ on $m$, $-r_II_F$ on $c_N$, and $-(r_R/q_U)I_F$ on $g_U$, with $x$ on the right. The Clarifier block places $-q_CI_F$ on $c_N$ and $I_F$ on each outlet-flow block. The two final rows connect $s_1$ and $s_{N_\ell}$ to outlet TSS. Thus,
+The right-hand side is $b(x)=(x^\top,0_{R-F}^\top)^\top$. Within every component block the order is Equation~\eqref{eq:component_order}; within every invariant block the row order is the fixed row order of $A$. Thus,
 \begin{equation}
 \label{eq:equality_row_count}
 R=F+NK+F+F_S+2,
 \end{equation}
-where $F_S=10$ is the number of soluble coordinates; the case study has $R=77$. The row set is fixed, and a rank-revealing factorization verifies full row rank at every candidate rather than deleting a numerically inconvenient equation.
+where $F_S=10$ is the number of soluble coordinates. The case has $R=77$: rows 1--20 are mixer balances, 21--45 are the five stage-invariant blocks, 46--65 are Clarifier component balances, 66--75 are soluble-pass-through balances, and rows 76--77 are the two TSS endpoints.
 
-The particulate direction and layer-envelope relations are collected as
+The particulate and layer relations have the equally explicit order
 \begin{equation}
 \label{eq:network_inequality_operator}
-\mathcal G(\vartheta)\chi\leq0.
+\mathcal G(\vartheta)\chi=
+\begin{bmatrix}
+q_UE_Xc_N-E_Xg_U\\
+s_1\mathbf1_{N_\ell-2}-(s_2,\ldots,s_{N_\ell-1})^\top\\
+(s_2,\ldots,s_{N_\ell-1})^\top-s_{N_\ell}\mathbf1_{N_\ell-2}
+\end{bmatrix}\leq0.
 \end{equation}
-Each row is just one of Equation~\eqref{eq:particulate_densification} or Equation~\eqref{eq:clarifier_layer_envelope} written with all terms on the left. Positive diagonal matrices $D_b$ and $D_g$ scale equality and inequality rows for numerical work; scaling does not alter either feasible set.
+Here $R_g=F_X+2(N_\ell-2)=26$, with $F_X=10$. Rows 1--10 follow particulate-component order, rows 11--18 impose the top bounds for layers 2--9, and rows 19--26 impose the bottom bounds in the same layer order. Positive diagonal matrices $D_b$ and $D_g$, defined from named physical terms in the training section, scale these rows without changing either feasible set.
 
 An equality-only projection is useful when diagnosing how much of a raw error came from broken network closure. With $D_\chi=\diag(s_{\chi,1},\ldots,s_{\chi,L})$ and every $s_{\chi,j}>0$, define
 \begin{equation}
@@ -429,9 +449,12 @@ The raw response may break an equality, cross zero, or reverse the expected dire
 \text{subject to}\quad
 &D_b^{-1}\{\mathcal H(\vartheta)[\chi_{\mathrm{raw}}+D_\chi u]-b(x)\}=0,\\
 &\chi_{\mathrm{raw}}+D_\chi u\geq0,\\
-&D_g^{-1}\mathcal G(\vartheta)[\chi_{\mathrm{raw}}+D_\chi u]\leq0,\\[1mm]
-&\widehat\chi(\vartheta;x)=\chi_{\mathrm{raw}}+D_\chi\widehat u.
+&D_g^{-1}\mathcal G(\vartheta)[\chi_{\mathrm{raw}}+D_\chi u]\leq0.
 \end{aligned}
+\end{equation}
+After the QP is solved, the deployed state is defined by
+\begin{equation}
+\widehat\chi(\vartheta;x)=\chi_{\mathrm{raw}}+D_\chi\widehat u.
 \end{equation}
 The identity Hessian makes Equation~\eqref{eq:network_lower_qp} strictly convex. Its feasibility can be seen without relying on a numerical solver: choose $m=c_1=\cdots=c_N=x$, $g_E=q_Ex$, $g_U=q_Ux$, and $s_1=\cdots=s_{N_\ell}=t_X^\top x$. This no-conversion point satisfies every equality and inequality. The feasible set is therefore nonempty, and strict convexity gives one unique complete response.
 
@@ -463,11 +486,11 @@ These are network, inventory, and direction guarantees. They do not assert that 
 
 \subsection{From a Physical State to an Engineering Decision}
 
-The discharge is $c_E$, not the mixed liquor $c_N$. Let $T$ select the effluent components or composites to be scored, let $D_T$ contain fixed positive training scales, and let $p\geq0$ with $\mathbf1^\top p=1$. A dimensionless concentration-quality term is
+The discharge is $c_E$, not the mixed liquor $c_N$. Let $T$ select the effluent components or composites to be scored, let $D_T$ contain frozen positive production-response scales, and let $\alpha_Q\geq0$ with $\mathbf1^\top\alpha_Q=1$. A dimensionless concentration-quality term is
 \begin{equation}
 \label{eq:quality_objective}
-J_Q(\chi)=p^\top D_T^{-1}Tc_E
-=p^\top D_T^{-1}T\frac{g_E}{q_E}.
+J_Q(\chi)=\alpha_Q^\top D_T^{-1}Tc_E
+=\alpha_Q^\top D_T^{-1}T\frac{g_E}{q_E}.
 \end{equation}
 Concentration is used because the primary case represents discharge-quality limits; the corresponding loads $Q_0Tg_E$ are retained and reported separately. Let $J_{\mathrm{des/op}}$ contain the declared volume, aeration, pumping, and wasted-solids contributions. The complete engineering score is
 \begin{equation}
@@ -484,7 +507,12 @@ Equipment and permit limits answer whether a candidate may be operated; they sho
 \displaystyle\sum_{\ell=1}^{N_\ell}V_{\mathrm{cl},\ell}s_\ell}
 {Q_0\left(q_Et_X^\top c_E+wt_X^\top c_U\right)}.
 \end{equation}
-The numerator is all suspended solids held in the CSTRs and Clarifier. The denominator contains only solids that cross the plant boundary in effluent and WAS. MLR and RAS are absent because they circulate internally. A denominator below a declared positive tolerance rejects the candidate instead of creating an artificial infinite SRT.
+The numerator is all suspended solids held in the CSTRs and Clarifier. The denominator contains only solids that cross the plant boundary in effluent and WAS. MLR and RAS are absent because they circulate internally. The SRT is defined only when
+\begin{equation}
+q_Et_X^\top c_E+wt_X^\top c_U>
+10^{-10}\max(1,q_Ct_X^\top c_N);
+\end{equation}
+otherwise the candidate is rejected instead of being assigned an artificial infinite SRT.
 
 The nested optimization is
 \begin{equation}
@@ -502,24 +530,24 @@ The lower answer is unique for each proposed $\vartheta$. Across proposals, the 
 
 \subsection{Bounded Search and the Meaning of the Reported Answer}
 
-Let $M$ be the implemented decision dimension and $D_\vartheta=\diag(\vartheta^U-\vartheta^L)$. The outer algorithm works in the unit box through
+Let $n_\vartheta$ be the case-study decision dimension and $D_\vartheta=\diag(\vartheta^U-\vartheta^L)$. The outer algorithm works in the unit box through
 \begin{equation}
 \label{eq:network_normalization}
-z=D_\vartheta^{-1}(\vartheta-\vartheta^L)\in[0,1]^M.
+z=D_\vartheta^{-1}(\vartheta-\vartheta^L)\in[0,1]^{n_\vartheta}.
 \end{equation}
 For each $z$, the evaluator reconstructs physical decisions, forms the raw state, solves one QP, independently verifies Equation~\eqref{eq:network_guarantee}, checks capacity constraints, and only then assigns an objective. A failed or infeasible state is recorded and never replaced by the influent, a clipped prediction, or the preceding successful point.
 
-Deterministic DIRECT exploration (Jones et al., 1993) is supplemented by all corners, coordinate-face searches, and bounded local pattern refinement. This combination explores the full box and gives additional attention to boundaries, where volume, aeration, and recycle decisions often settle. A finite budget does not certify a global optimum; the reported answer is the best verified incumbent at the stated evaluation budget and spatial resolution. The mechanistic reference is described with the same caution.
+The unit-box center and corners, deterministic full-box and coordinate-face DIRECT exploration (Jones et al., 1993), and bounded multi-basin pattern refinement provide global coverage and explicit boundary checks. Failed and infeasible evaluations receive a finite feasibility-first search merit defined in the methodology. A finite budget does not certify a global optimum; the reported answer is the best verified incumbent at the stated evaluation budget and spatial resolution. The mechanistic reference is interpreted with the same limitation.
 
 \section{Methodology}
 
 \subsection{End-to-End Study Design}
 
-The computational study follows four information-separated phases. First, a coupled ASM2d-TSN--Clarifier model generates a fixed space-filling set of steady closed-loop states. Second, surrogate scales and regularization settings are selected using development rows only; one assessment artifact is evaluated once on held-out rows, and a predeclared production refit is then frozen. Third, the nominal influent and independently generated robustness influents are optimized with that frozen production artifact. Fourth, the complete mechanistic network is evaluated at each selected point and is also searched independently. No nominal or robustness response is allowed to alter the simulator domain, regression settings, objective weights, or solver tolerances.
+The computational study follows four information-separated phases. First, the coupled ASM2d-TSN--Clarifier model generates one fixed 20,000-state design. Second, the fixed estimator is fitted on 16,000 development rows and evaluated once against 4,000 rows held out from that fit using predeclared numerical, predictive, and correction-trust criteria. Third, after that assessment is sealed, the unchanged estimator is refitted on all 20,000 rows and frozen for nominal and robustness optimization. Fourth, the complete mechanistic network is evaluated at every selected point and searched independently. No assessment, nominal, or robustness response alters the mechanistic domain, estimator, features, objective weights, trust limits, or numerical thresholds.
 
 \subsection{Coupled Reactor--Clarifier Data Generator}
 
-The reaction model is ASM2d with two-step nitrification (ASM2d-TSN), comprising $P=28$ processes and $F=20$ components (Guerrero et al., 2011; Henze et al., 2006). Every matrix, table, prediction, and physical check uses the fixed order
+The reaction model is ASM2d with two-step nitrification (ASM2d-TSN), comprising $P=28$ processes and $F=20$ components (Guerrero et al., 2011; Henze et al., 2006). Appendix~\ref{app:mechanistic_definition} gives every rate, stoichiometric coefficient, composition coefficient, and parameter value used here. Every matrix, prediction, and physical check uses the fixed order
 \begin{equation}
 \label{eq:component_order}
 \begin{split}
@@ -527,9 +555,9 @@ The reaction model is ASM2d with two-step nitrification (ASM2d-TSN), comprising 
 &X_I,X_S,X_H,X_{PAO},X_{PP},X_{PHA},X_{AOB},X_{NOB},X_{MeP},X_{MeOH}).
 \end{split}
 \end{equation}
-The first ten entries are soluble and the last ten particulate. Component units remain those of the mechanistic model; COD, TN, TP, and TSS are calculated only after a complete component state is available through the versioned $I_{\mathrm{comp}}$ matrix.
+The first ten entries are soluble and the last ten particulate. Component units remain those of the mechanistic model; COD, TN, TP, and TSS are calculated only after a complete component state is available through the fixed $I_{\mathrm{comp}}$ matrix.
 
-The case study fixes $N=5$ equal-volume CSTRs. CSTRs 1--2 are unaerated denitrification stages, CSTRs 3--5 share one manipulated aerobic intensity, and MLR is taken from CSTR 5. The full-precision stoichiometric matrix is decomposed with the numerical-rank threshold $\max(P,F)\epsilon_{\mathrm{mach}}\|\nu\|_2$. Rank must equal 15, giving $K=5$; generation stops unless $\|A\nu^\top\|_\infty$, $\|Ae_{S_O}\|_\infty$, and $\|AA^\top-I_5\|_\infty$ are each no larger than $10^{-10}$.
+The case study fixes $N=5$ equal-volume CSTRs. CSTRs 1--2 are unaerated denitrification stages, CSTRs 3--5 share one manipulated aerobic intensity, and MLR is taken from CSTR 5. Appendix~\ref{app:stoichiometry} defines a deterministic five-row physical conservation matrix $B$ and its row-normalized form $A$. For a matrix $C\in\R^{m\times n}$ with singular values $\sigma_1\geq\sigma_2\geq\cdots$, define $\operatorname{rank}_\varepsilon(C)$ as the number satisfying $\sigma_k>\max(m,n)\varepsilon_{\mathrm{mach}}\sigma_1$. Generation stops unless $\operatorname{rank}_\varepsilon(\nu)=15$, $\operatorname{rank}_\varepsilon(B)=\operatorname{rank}_\varepsilon(A)=5$, and $\|A\nu^\top\|_\infty$, $\|Ae_{S_O}\|_\infty$, and $\max_k|\|A_{k,:}\|_2-1|$ are each no larger than $10^{-10}$.
 
 The last CSTR feeds a non-reactive, one-dimensional $N_\ell=10$ layer Clarifier based on the flux-limited clarification--thickening model of Tak\'acs et al. (1991) and the benchmark conventions of Alex et al. (2018) and Jeppsson et al. (2007). To make the numerical generator reproducible, let $s_\ell$ be layer TSS, $s_F=t_X^\top c_5$ the feed TSS, and
 \begin{equation}
@@ -567,7 +595,20 @@ V_{\mathrm{cl},\ell}\frac{ds_\ell}{dt}
 \end{equation}
 Summing Equation~\eqref{eq:clarifier_layer_balance} over all layers cancels internal fluxes and recovers $q_Cs_F=q_Es_1+q_Us_{N_\ell}$ at steady state. This is why the endpoint equations in the lower QP are not arbitrary additions.
 
-Soluble components follow the liquid phase unchanged. Particulate components share the TSS flux and retain the Clarifier-feed particulate proportions. For $s_F$ above its denominator tolerance, their outlet concentrations are $c_{E,j}=(c_{5,j}/s_F)s_1$ and $c_{U,j}=(c_{5,j}/s_F)s_{N_\ell}$; the limiting zero-solids case is handled without forming these ratios. Thus the mechanistic Clarifier redistributes, rather than creates, every particulate component.
+Soluble components follow the liquid phase unchanged. Particulate components share the TSS flux and retain the Clarifier-feed particulate proportions. The complete layer reconstruction is
+\begin{equation}
+\label{eq:clarifier_component_reconstruction}
+c_{\mathrm{cl},\ell,j}=
+\begin{cases}
+c_{5,j},&j\in\mathcal S,\\
+(c_{5,j}/s_F)s_\ell,&j\in\mathcal X,\ s_F>0,\\
+0,&j\in\mathcal X,\ s_F=0,
+\end{cases}
+\qquad
+J_{\ell+1/2,j}=(c_{5,j}/s_F)J_{\ell+1/2}
+\quad(j\in\mathcal X, s_F>0).
+\end{equation}
+Thus $c_{E,j}=(c_{5,j}/s_F)s_1$ and $c_{U,j}=(c_{5,j}/s_F)s_{N_\ell}$ for particulates. Because every particulate entry of $t_X$ is positive, $s_F=0$ in a non-negative state implies that all particulate feed coordinates are zero, so the limiting definition is mass consistent.
 
 \begin{table}[htbp]
 \centering
@@ -593,7 +634,45 @@ Blanket diagnostic threshold & 3000 & g TSS m$^{-3}$ \\
 \end{tabular}
 \end{table}
 
-Mixer, reactor, layer, recycle, and outlet equations are solved simultaneously, because solving units in sequence would conceal the closed-loop fixed point. Two deterministic initial states are tried in a fixed order: an influent-filled state and a benchmark solids profile scaled to candidate feed TSS. If both nonlinear solves fail, the lower-residual state undergoes at most 100 d of stiff backward-differentiation-formula relaxation and is then supplied once to a renewed steady solve. The deployment QP's uniqueness is not interpreted as uniqueness of this nonlinear steady state; the initialization route and reached branch are part of the stored result.
+The mechanistic dynamic state is $y=(c_1,\ldots,c_5,s_1,\ldots,s_{10})\in\R_+^{110}$. At every residual evaluation, Equation~\eqref{eq:clarifier_component_reconstruction} gives $c_E$ and $c_U$, and Equation~\eqref{eq:headworks_mixing} gives $m$. The transient reactor balance whose steady form is Equation~\eqref{eq:stage_balance} is
+\begin{equation}
+\label{eq:reactor_dynamic_balance}
+\frac{dc_i}{dt}=d_i(c_{i-1}-c_i)+\nu^\top\varrho(c_i)+\omega_i e_{S_O},
+\qquad c_0=m.
+\end{equation}
+The five vector derivatives in Equation~\eqref{eq:reactor_dynamic_balance} and the ten scalar layer derivatives in Equation~\eqref{eq:clarifier_layer_balance} therefore form one coupled function $\dot y=f(y;\vartheta,x)$. Eliminating the mixer and outlet algebraic variables in this way does not break the loop: a change in the bottom layer immediately changes RAS, the mixer, CSTR 1, and every downstream state in the same residual evaluation.
+
+The nonlinear residual is expressed in dimensionless-state rates. Reactor component $(i,j)$ is divided by $c_j^{\mathrm{ref}}=\max(1,x_j^U)$, where $x_j^U$ is the upper bound in Table~\ref{tab:influent_ranges}; every layer derivative uses one fixed start-specific reference $s_0^{\mathrm{ref}}=\max[1,t_X^\top c_5(y_0)]$. These values form the positive diagonal scale $S_y$. The scaled derivative replay used for steady-state acceptance evaluates the same component references and the current Clarifier-feed TSS reference. This scaling gives one tolerance the same engineering meaning for dissimilar quantities such as dissolved oxygen and sludge-blanket solids.
+
+Two initial states are prescribed. Start 1 uses $c_i=x$ for every stage and $s_\ell=t_X^\top x$ for every layer. Start 2 uses
+\begin{equation}
+c_i=E_S^\top E_Sx+\alpha_iE_X^\top E_Xx,
+\quad (\alpha_1,\ldots,\alpha_5)=(1.5,2.0,2.5,3.0,3.5),
+\end{equation}
+and, after forming $s_F=t_X^\top c_5$,
+\begin{equation}
+(s_1,\ldots,s_{10})=s_F(0.002,0.005,0.01,0.03,0.10,0.50,1.25,2.25,3.25,4.00).
+\end{equation}
+Each prescribed initial state $y_0$ is first relaxed in scaled coordinates by integrating
+\begin{equation}
+\frac{d\widetilde y}{dt}=S_y^{-1}f(S_y\widetilde y;\vartheta,x),
+\qquad \widetilde y(0)=S_y^{-1}y_0,
+\end{equation}
+with variable-order BDF. The relaxation horizon follows the slow solids-removal mode,
+\begin{equation}
+T_{\mathrm{rel}}=\max(400,40/w)\ \mathrm{d},
+\end{equation}
+and the adaptive maximum step is $T_{\mathrm{rel}}/100$. The factor $40/w$ provides a conservative horizon as wasting approaches its lower bound; it is an upper limit, not a forced simulation duration. Integration terminates early when the scaled derivative infinity norm reaches $10^{-9}$ d$^{-1}$. Relative and scaled-coordinate absolute tolerances are $10^{-7}$ and $10^{-9}$.
+
+A successful integrator status is not by itself a positivity certificate. Every stored physical state on the scaled-state trajectory is checked and must be strictly positive. If an internal evaluation fails or any stored state is non-positive, the same start is retried with
+\begin{equation}
+z=\log\widetilde y,
+\qquad
+\frac{dz}{dt}=\diag(e^z)^{-1}S_y^{-1}f(S_ye^z;\vartheta,x),
+\end{equation}
+which keeps every evaluated physical state on that route positive without clipping. The relaxed endpoint is replayed against the complete $10^{-8}$ acceptance contract below. Only an endpoint that misses that contract is supplied to a non-negative bounded trust-region-reflective least-squares calculation as a local polish, using \texttt{xtol}=\texttt{ftol}=\texttt{gtol}=$10^{-9}$ and at most 5000 residual evaluations. Start 1 fixes the branch when this complete route is accepted; Start 2 is used only after the complete Start-1 route fails. No preceding Latin-hypercube solution initializes another row.
+
+For the stability screen, the reduced Jacobian is $J_y=\partial f/\partial y$ after the algebraic quantities have been eliminated. Column $j$ is calculated by a centered finite difference with step $\sqrt{\varepsilon_{\mathrm{mach}}}\max(1,|y_j|)$, using a forward difference only when the centered step would cross zero. The deployment QP's uniqueness is not interpreted as uniqueness of this nonlinear steady state; the prescribed initialization route defines the branch represented in the data.
 
 \begin{table}[htbp]
 \centering
@@ -606,19 +685,19 @@ Check or setting & Limit & Purpose \\
 \midrule
 Nonlinear \texttt{xtol}, \texttt{ftol}, \texttt{gtol} & $10^{-9}$ & Steady nonlinear solve \\
 Maximum residual evaluations & 5000 per start & Bounded retry effort \\
-BDF relative; absolute tolerance & $10^{-8}$; $10^{-10}$ & Dynamic fallback \\
-BDF integration horizon & $\leq100$ d & Fixed relaxation limit \\
-Scaled CSTR/layer/mixer residual & $\leq10^{-8}$ & Local balance closure \\
-Scaled terminal derivative & $\leq10^{-8}$ & Steady-state confirmation \\
+BDF relative; scaled absolute tolerance & $10^{-7}$; $10^{-9}$ & Dynamic relaxation \\
+BDF horizon; maximum step & $T_{\mathrm{rel}}=\max(400,40/w)$ d; $T_{\mathrm{rel}}/100$ & WAS-scaled relaxation limit \\
+Scaled CSTR/layer derivative & $\leq10^{-8}$ d$^{-1}$ & Local balance closure \\
+Scaled early-stop derivative & $\leq10^{-9}$ d$^{-1}$ & Early terminal event before full replay \\
 Minimum state coordinate & $\geq-10^{-10}$ & No clipped negative state \\
 Largest real reduced-Jacobian eigenvalue & $\leq10^{-8}$ d$^{-1}$ & Local stability screen \\
 Component Clarifier and plant-boundary residual & $\leq10^{-8}$ scaled & External closure \\
 \bottomrule
 \end{tabular}
 \end{table}
-Every accepted state also passes hydraulic splits, RAS/WAS common-composition, soluble pass-through, particulate recovery, the layer envelope in Equation~\eqref{eq:clarifier_layer_envelope}, and finite-rate checks. A violation invalidates the structural contract rather than being repaired only for training. Small negative states, reaction rates, and settling fluxes are never silently clipped into acceptance.
+For every algebraic balance written as $\sum_k t_k=0$, its scaled replay residual is $|\sum_k t_k|/\max(1,\sum_k|t_k|)$. The $10^{-8}$ external-closure limit in Table~\ref{tab:mechanistic_acceptance} applies to this quantity. Every accepted state also passes hydraulic splits, RAS/WAS common composition, soluble pass-through, $q_U/q_C-10^{-10}\leq\eta_j\leq1+10^{-10}$ for every available particulate ratio, the layer envelope, and finite-rate checks. The lower recovery bound is the mechanistic counterpart of $c_{U,j}\geq c_{5,j}$ and makes an accepted target feasible for the deployment inequalities to the stated tolerance. Every $\rho_p$, oxygen-transfer term, settling velocity, and interface flux must be finite and no smaller than $-10^{-12}$ when its mathematical definition is non-negative. A violation invalidates the state; negative quantities are not clipped into acceptance.
 
-\subsection{Implemented Design, Operating, and Influent Domains}
+\subsection{Case-Study Design, Operating, and Influent Domains}
 
 The primary case reduces the general vector in Equation~\eqref{eq:general_operating_vector} to five decisions:
 \begin{equation}
@@ -661,7 +740,7 @@ The surface-overflow and solids-loading screens are
 \end{equation}
 The factor 1000 converts grams to kilograms in SLR. These are case-study engineering screens (Tchobanoglous et al., 2014), not fitted Tak\'acs parameters. At fixed $Q_0$ and area, SOR cannot become active over the declared WAS range but is retained as a hydraulic safety check. The underflow-TSS limit is repeated at 12,000 and 20,000 g TSS m$^{-3}$ without changing the frozen surrogate.
 
-Table~\ref{tab:influent_ranges} completes the 25-dimensional training domain. The alkalinity range is expressed in the ASM unit mol HCO$_3^-$ m$^{-3}$: 80--260 g CaCO$_3$ m$^{-3}$ corresponds to 1.6--5.2 mol of charge m$^{-3}$. Treating the numbers 80--260 as mol m$^{-3}$ would make alkalinity roughly fiftyfold too large and is therefore not used.
+Table~\ref{tab:influent_ranges} completes the 25-dimensional training domain. The alkalinity range is expressed in the ASM unit mol HCO$_3^-$ m$^{-3}$: 80--260 g CaCO$_3$ m$^{-3}$ converts to 1.6--5.2 mol of charge m$^{-3}$, which is the range used in the component vector.
 
 \begin{table}[htbp]
 \centering
@@ -696,11 +775,27 @@ x_{\mathrm{nom}}=(&0.25,100,42.5,33.5,1.5,4,1,10,50,3.4,\\
 &70,170,57.5,32.5,11,15.5,4.25,4.25,6,6)^\top.
 \end{split}
 \end{equation}
-It is a designed in-domain influent, not a measured plant sample. Both $H/5$ and the actual per-pass value $H/(5q_P)$ are checked against the declared hydraulic domain.
+It is a designed in-domain influent, not a measured plant sample. Over the declared box,
+\begin{equation}
+q_P\in[1.25,6.25],\qquad H/5\in[1.2,7.2]\ \mathrm{h},\qquad
+H/(5q_P)\in[0.192,5.76]\ \mathrm{h}.
+\end{equation}
+These are derived hydraulic supports of the joint design rather than additional acceptance constraints.
 
 \subsection{Mechanistic Design and Stored Targets}
 
-A single scrambled strength-1 Latin hypercube (McKay et al., 1979) with root seed 42 contains exactly 20,000 points in the 25-dimensional joint influent and decision box. Each point must produce an accepted state under Table~\ref{tab:mechanistic_acceptance}. A failed point is not replaced by an easier point, because accepted-only replacement would destroy the Latin-hypercube design and hide unsupported regions from the optimizer. If any point remains unresolved after the fixed retry route, the run is ineligible; the domain or solver contract must be revised before a new complete design is generated. All start attempts and diagnostics remain archived.
+A single strength-1 Latin hypercube (McKay et al., 1979) contains exactly $n_D=20{,}000$ points in the 25-dimensional box, ordered as $(H,a,r_I,r_R,w,x_1,\ldots,x_{20})$. Its random stream is defined here so that no software-specific seeding convention is required. All variables in the following generator are unsigned 64-bit integers; $\oplus$ is bitwise exclusive-or, $\gg$ is a logical right shift, and every addition and multiplication is reduced modulo $2^{64}$. Starting from $\mathsf q_0=42$, draw the 64-bit word $\mathcal U_t$ by
+\begin{align}
+\mathsf q_{t+1}&=\mathsf q_t+\mathtt{9E3779B97F4A7C15}_{16},\\
+\mathsf v_1&=[\mathsf q_{t+1}\oplus(\mathsf q_{t+1}\gg30)]\,\mathtt{BF58476D1CE4E5B9}_{16},\\
+\mathsf v_2&=[\mathsf v_1\oplus(\mathsf v_1\gg27)]\,\mathtt{94D049BB133111EB}_{16},\\
+\mathcal U_t&=\mathsf v_2\oplus(\mathsf v_2\gg31).
+\end{align}
+The draw counter $t$ advances once for every generated word, including a rejected word. For dimension $j$, initialize $\pi_j=(0,\ldots,n_D-1)$. For the separate shuffle index $k=n_D-1,\ldots,1$, let $b=k+1$ and $L_b=2^{64}-(2^{64}\bmod b)$; draw until the current $\mathcal U_t<L_b$ and swap entries $k$ and $\mathcal U_t\bmod b$. This rejection step gives an unbiased Fisher--Yates permutation. After that permutation is complete, draw once for each row in increasing order and set $\xi_{ij}=(\mathcal U_t\gg11)/2^{53}$. The unit-box coordinate is
+\begin{equation}
+\zeta_{ij}=\frac{\pi_j(i-1)+\xi_{ij}}{n_D},\qquad i=1,\ldots,n_D.
+\end{equation}
+Affine range maps send $\zeta_{ij}$ to the physical variables. Dimensions and rows are generated in the displayed order, which fixes random-number consumption. Each point must produce an accepted state under Table~\ref{tab:mechanistic_acceptance}. A failed point is not replaced. If any point remains unresolved after the fixed retry route, the study stops without a fitted response. All start attempts and diagnostics are retained. The robustness design restarts the same generator with the scalar state stated in its subsection.
 
 For each accepted row, the target vector is
 \begin{equation}
@@ -710,106 +805,187 @@ For each accepted row, the target vector is
 \end{equation}
 The full component state of every Clarifier layer, $c_E$, $c_U$, component and TSS recoveries, composites, loadings, SRT, reaction and oxygen-transfer rates, initialization route, stability result, residuals, and solve time are retained as diagnostics. Outlet mass flows are modeled because their scale remains well behaved when $q_U$ is small; the layer TSS values make $M_{\mathrm{cl}}$ a derived quantity through Equation~\eqref{eq:clarifier_inventory}.
 
-The rows are deterministically permuted and split into 16,000 development states and 4,000 predictive-assessment states. Hyperparameters, feature definitions, and all assessment scales use only development information. After the one-time assessment is closed, the predeclared production artifact is refitted on all 20,000 states. Thus the 4,000 rows are untouched for model selection and honest assessment, but are intentionally used later in the final production refit; they are not described as forever excluded from fitting.
+The 20,000 design rows retain their immutable Latin-hypercube generation order. Rows 1--16,000 form the development set $\mathcal D$, and rows 16,001--20,000 form the predictive-assessment set $\mathcal A$. This membership is fixed before any response is examined. The assessment set is held out from the development fit and is used once as a pass--fail evaluation; it does not alter the estimator, features, numerical thresholds, or trust criteria. It assesses the fixed procedure as applied to the development fit. Because these rows subsequently enter the production refit, its metrics are not described as holdout errors of the final 20,000-row coefficient array.
 
-\subsection{Complete Surrogate Training Procedure}
+\subsection{Fixed Standardized Multiresponse Least-Squares Estimator}
 
-Let $n$ rows be supplied to one fit. The feature matrix and mechanistic target matrix are
+For a fitting index set $\mathcal I$ containing $n$ rows, define the population mean, population standard deviation, and numerical reference magnitude of a scalar coordinate $v$ by
+\begin{equation}
+\label{eq:fit_coordinate_scale}
+\overline v_{\mathcal I}=\frac1n\sum_{i\in\mathcal I}v_i,
+\quad
+s_{\mathcal I}(v)=\left[\frac1n\sum_{i\in\mathcal I}(v_i-\overline v_{\mathcal I})^2\right]^{1/2},
+\quad
+a_{\mathcal I}(v)=\max\!\left(1,\max_{i\in\mathcal I}|v_i|\right).
+\end{equation}
+A coordinate is numerically variable only when
+\begin{equation}
+\label{eq:nonzero_variance_rule}
+s_{\mathcal I}(v)>10^{-12}a_{\mathcal I}(v).
+\end{equation}
+This rule is applied to every design coordinate, influent coordinate, nonconstant monomial, and target coordinate. All 350 nonconstant feature coordinates and all 170 target coordinates must pass; the leading constant feature is retained by definition. Otherwise the fit is invalid.
+
+Using only rows in $\mathcal I$, construct all centers and scales in Equations~\eqref{eq:standardized_inputs_states}--\eqref{eq:system_feature_map}. Let $Y_{\mathcal I}$ contain the mechanistic targets from Equation~\eqref{eq:mechanistic_target}, in the same row order as the features. The fitting matrices are
 \begin{equation}
 \label{eq:training_matrices}
-\Phi=
-\begin{bmatrix}\phi_1^\top\\\vdots\\\phi_n^\top\end{bmatrix}
-\in\R^{n\times351},
+\Phi_{\mathcal I}=\begin{bmatrix}\phi_1^\top\\\vdots\\\phi_n^\top\end{bmatrix}\in\R^{n\times d_\phi},
 \qquad
-Y=
-\begin{bmatrix}\chi_{\mathrm{ASM},1}^\top\\\vdots\\\chi_{\mathrm{ASM},n}^\top\end{bmatrix}
-\in\R^{n\times170}.
+\widetilde Y_{\mathcal I}=(Y_{\mathcal I}-\mathbf1_n\mu_\chi^\top)D_\chi^{-1}\in\R^{n\times L},
 \end{equation}
-All centers and population standard deviations in Equations~\eqref{eq:standardized_inputs_states}--\eqref{eq:system_feature_map} are computed from those $n$ rows only. A zero-variance feature is removed with its label recorded; a zero-variance target invalidates the fit unless its deterministic treatment was declared before selection. Define
-\begin{equation}
-\label{eq:standardized_target_matrix}
-\widetilde Y=(Y-\mathbf1_n\mu_\chi^\top)D_\chi^{-1}.
-\end{equation}
-
-The 77 physical rows have different units and typical magnitudes. Scaling them by residuals would be meaningless because accepted mechanistic residuals are nearly zero. Instead, write equality row $j$ as the signed sum of $n_j^{\mathrm{term}}$ uncancelled physical terms $t_{ijk}$ for sample $i$, and set
-\begin{equation}
-\label{eq:balance_scale}
-(D_b)_{jj}=max\!\left[
-\left(\frac{1}{n n_j^{\mathrm{term}}}
-\sum_{i=1}^{n}\sum_{k=1}^{n_j^{\mathrm{term}}}t_{ijk}^2\right)^{1/2},10^{-12}\right].
-\end{equation}
-The same characteristic-term rule defines $D_g$ for deployment inequalities. This makes a unit mixer imbalance and a unit invariant imbalance comparable without pretending that their numerical units are the same.
-
-For row $i$, the raw physical prediction implied by a candidate coefficient matrix $C$ is
-\begin{equation}
-\chi_{\mathrm{raw},i}(C)=\mu_\chi+D_\chi C\phi_i.
-\end{equation}
-The coefficient matrix is estimated by the single convex problem
+where $d_\phi=351$ and $L=170$. The fixed estimator is
 \begin{equation}
 \label{eq:training_objective}
-\begin{aligned}
-\widehat C=\argminop_C\ \mathcal L_{\mathrm{train}}(C)
-={}&\frac{1}{nL}\|\widetilde Y-\Phi C^\top\|_F^2\\
-&+\frac{\lambda_{\mathrm{phys}}}{nR}
-\sum_{i=1}^{n}\left\|D_b^{-1}
-\{\mathcal H_i\chi_{\mathrm{raw},i}(C)-b_i\}\right\|_2^2\\
-&+\frac{\lambda_C}{Ld_\phi}\|C\|_F^2,
-\qquad \lambda_C>0,
-\end{aligned}
+\widehat C_{\mathcal I}=\argminop_{C\in\R^{L\times d_\phi}}
+\frac{1}{nL}\left\|\widetilde Y_{\mathcal I}-\Phi_{\mathcal I}C^\top\right\|_F^2.
 \end{equation}
-where $\mathcal H_i=\mathcal H(\vartheta_i)$ and $b_i=b(x_i)$. The first term fits every standardized state coordinate. The second teaches the raw quadratic surface to approach closed-loop balances before projection. The third controls coefficient magnitude. Dividing each block by its sample and coordinate count keeps a selected $\lambda$ comparable across fold, assessment, and production fits. Because $\lambda_C>0$, Equation~\eqref{eq:training_objective} is strictly convex and has one coefficient solution.
+Every output is estimated from the single fixed standardized design in Equation~\eqref{eq:training_matrices}.
 
-The actual numerical solve is an augmented least-squares problem rather than millions of samplewise QPs. Let $c=\operatorname{vec}(C)$ and note that
+A thin singular-value decomposition
 \begin{equation}
-C\phi_i=(\phi_i^\top\otimes I_L)c.
+\label{eq:design_svd}
+\Phi_{\mathcal I}=U\Sigma V^\top,
+\qquad \sigma_1\geq\cdots\geq\sigma_{d_\phi}\geq0,
 \end{equation}
-The data block for sample $i$ is therefore $A_i^{(Y)}=\phi_i^\top\otimes I_L$ with right-hand side $\widetilde\chi_{\mathrm{ASM},i}$. The physical block and its right-hand side are
+defines
 \begin{equation}
-\label{eq:augmented_physics_block}
-A_i^{(H)}=D_b^{-1}\mathcal H_iD_\chi(\phi_i^\top\otimes I_L),
+\label{eq:design_rank_condition}
+\tau_{\mathrm{rank}}=\max(n,d_\phi)\varepsilon_{\mathrm{mach}}\sigma_1,
 \qquad
-d_i^{(H)}=D_b^{-1}[b_i-\mathcal H_i\mu_\chi].
+\kappa_2(\Phi_{\mathcal I})=\frac{\sigma_1}{\sigma_{d_\phi}}.
 \end{equation}
-After applying the square-root weights in Equation~\eqref{eq:training_objective}, all $A_i^{(Y)}$, $A_i^{(H)}$, and a ridge identity block are exposed through a matrix-free linear operator. LSQR (Paige and Saunders, 1982) solves the augmented system without forming normal equations or an explicit Kronecker matrix. The returned solution is accepted only if its relative primal least-squares residual, normal-equation residual, coefficient finiteness, and direct recomputation of all three loss terms pass the stored tolerances. One cold restart is allowed; a second failure invalidates that hyperparameter candidate. No mechanistic target row is silently substituted for a failed optimization variable.
-
-Five fixed, seeded folds of the 16,000 development rows select the two regularization weights. The modest deterministic grid in Table~\ref{tab:training_settings} replaces a much more expensive recursive search whose conditional state updates would require tens of millions of QPs. For each fold, all scales are recomputed from the fold-fitting rows. Validation predictions are passed through the deployed QP, because deployed rather than raw accuracy is operationally relevant.
-
-\begin{table}[htbp]
-\centering
-\caption{Training-only model-selection grid and fixed numerical settings.}
-\label{tab:training_settings}
-\scriptsize
-\begin{tabular}{lll}
-\toprule
-Quantity & Domain or value & Role \\
-\midrule
-$\lambda_{\mathrm{phys}}$ & $\{10^{-3},10^{-2},10^{-1},1,10\}$ & Balance proximity \\
-$\lambda_C$ & $\{10^{-8},10^{-6},10^{-4},10^{-2},1\}$ & Ridge strength \\
-Inner validation folds & 5 fixed folds & Development-only selection \\
-LSQR relative tolerances & $10^{-8}$ & Primal and normal residuals \\
-LSQR maximum iterations & 20,000 & Fixed solve ceiling \\
-Scale floor & $10^{-12}$ & Positive numerical scale \\
-Root seed & 42 & Split and fold reproducibility \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-Let $E_{\mathrm{blk}}$ be mean nRMSE across the eight 20-coordinate blocks $(m,c_1,\ldots,c_5,g_E,g_U)$, $E_{\mathrm{lay}}$ mean nRMSE across the ten layer-TSS coordinates, and $E_E$ mean nRMSE of overflow COD, TN, TP, and TSS. The selection score is
+The design is admissible only when
 \begin{equation}
-\label{eq:training_selection_score}
-S_{\mathrm{CV}}=0.70E_{\mathrm{blk}}+0.10E_{\mathrm{lay}}+0.20E_E.
+\label{eq:design_acceptance}
+\sigma_{d_\phi}>\tau_{\mathrm{rank}},
+\qquad
+\kappa_2(\Phi_{\mathcal I})\leq10^8.
 \end{equation}
-A grid point is rejected, rather than assigned a favorable score, if any validation deployment fails its scaled primal or KKT checks. Ties are broken first by smaller mean physical-correction displacement and then by larger $\lambda_C$. After selection, an assessment artifact is fit to all 16,000 development rows and evaluated once on the 4,000 held-out rows. Only after those metrics and plots are sealed is the production artifact refit on all 20,000 rows and frozen before nominal or robustness responses are generated.
+Under these conditions Equation~\eqref{eq:training_objective} has one unique least-squares minimizer supported by the observed design.
 
-Predictive assessment retains raw, affine, and deployed states separately. It reports standardized and native-unit errors for every block, layer-profile and derived-inventory errors, COD/TN/TP/TSS errors for $c_E$ and $c_U$, component and TSS recovery errors, correction displacement, and every residual in Equation~\eqref{eq:network_guarantee}. This separation shows whether accuracy comes from the regression surface or from a large physical repair.
+The coefficients are calculated by column-pivoted Householder QR,
+\begin{equation}
+\Phi_{\mathcal I}\Pi=QR_\Phi,
+\qquad
+\widehat C_{\mathcal I}^{\top}=W_{\mathrm{QR}}
+=\Pi R_\Phi^{-1}Q^\top\widetilde Y_{\mathcal I}.
+\end{equation}
+The triangular solution is followed by one iterative-refinement replay in the same factorization. With $R_Y^{(0)}=\Phi_{\mathcal I}W_{\mathrm{QR}}-\widetilde Y_{\mathcal I}$, solve
+\begin{equation}
+\Delta W=\Pi R_\Phi^{-1}Q^\top(-R_Y^{(0)}),
+\qquad W_{\mathrm{QR}}\leftarrow W_{\mathrm{QR}}+\Delta W.
+\end{equation}
+This correction does not change the least-squares estimator; it suppresses triangular-solve roundoff before the normal-equation audit, which is especially important when a response is reproduced nearly exactly.
+The independent SVD calculation is
+\begin{equation}
+W_{\mathrm{SVD}}=V\Sigma^{-1}U^\top\widetilde Y_{\mathcal I}.
+\end{equation}
+With $R_Y=\Phi_{\mathcal I}W_{\mathrm{QR}}-\widetilde Y_{\mathcal I}$, define
+\begin{equation}
+\label{eq:coefficient_acceptance}
+\eta_{\mathrm{opt}}=
+\frac{\|\Phi_{\mathcal I}^\top R_Y\|_F}
+{\max\{1,\|\Phi_{\mathcal I}\|_2\|R_Y\|_F\}},
+\quad
+\eta_{\mathrm{agree}}=
+\frac{\|W_{\mathrm{QR}}-W_{\mathrm{SVD}}\|_F}
+{\max(1,\|W_{\mathrm{SVD}}\|_F)},
+\quad
+\max(\eta_{\mathrm{opt}},\eta_{\mathrm{agree}})
+\leq100\kappa_2(\Phi_{\mathcal I})\varepsilon_{\mathrm{mach}}.
+\end{equation}
+All coefficients must also be finite. Failure of Equations~\eqref{eq:nonzero_variance_rule}, \eqref{eq:design_acceptance}, or \eqref{eq:coefficient_acceptance} invalidates the response; no alternate estimator is substituted.
+
+The equality and inequality scales are calculated from physical terms, not from the nearly zero residuals of accepted mechanistic states. For fitting row $i$, define the signed equality term list $\mathcal T^{(b)}_{ir}$ as follows: mixer component $j$ uses $\{q_Pm_j,-x_j,-r_Ic_{N,j},-(r_R/q_U)g_{U,j}\}$; the first invariant block uses $\{(Ac_1)_k,-(Am)_k\}$; invariant block $h\geq2$ uses $\{(Ac_h)_k,-(Ac_{h-1})_k\}$; Clarifier component $j$ uses $\{g_{E,j},g_{U,j},-q_Cc_{N,j}\}$; soluble component $j$ uses $\{(E_Sg_U)_j,-q_U(E_Sc_N)_j\}$; and the endpoint rows use $\{q_Es_1,-t_X^\top g_E\}$ and $\{q_Us_{N_\ell},-t_X^\top g_U\}$. Then
+\begin{equation}
+\label{eq:balance_scale}
+(D_b)_{rr}=\max\!\left\{10^{-12},
+\left[\frac1n\sum_{i\in\mathcal I}\frac1{|\mathcal T^{(b)}_{ir}|}
+\sum_{t\in\mathcal T^{(b)}_{ir}}t^2\right]^{1/2}\right\}.
+\end{equation}
+For inequality row $r$, the term lists are $\{q_U(E_Xc_N)_j,-(E_Xg_U)_j\}$, $\{s_1,-s_\ell\}$, or $\{s_\ell,-s_{N_\ell}\}$ in the row order of Equation~\eqref{eq:network_inequality_operator}, and
+\begin{equation}
+\label{eq:inequality_scale}
+(D_g)_{rr}=\max\!\left\{10^{-12},
+\left[\frac1n\sum_{i\in\mathcal I}\frac1{|\mathcal T^{(g)}_{ir}|}
+\sum_{t\in\mathcal T^{(g)}_{ir}}t^2\right]^{1/2}\right\}.
+\end{equation}
+The grouping and row order in Equations~\eqref{eq:balance_scale}--\eqref{eq:inequality_scale} are part of the deployed-response and lower-QP definition.
+
+\subsection{Computational Feasibility Gate}
+
+The feasibility gate is executed before the 4,000-row assessment, production refit, and optimization searches. The fixed estimator requires two factorizations: a $16{,}000\times351$ development design and a $20{,}000\times351$ production design, each with 170 simultaneous right-hand sides. Define the logical scientific workloads
+\begin{equation}
+N_{\mathrm{QP}}^{\mathrm{sci}}=4000+20000+101(25000)+101=2{,}549{,}101,
+\qquad
+N_{\mathrm{mech}}^{\mathrm{sci}}=20000+10000+100(2500)=280{,}000.
+\end{equation}
+The final 101 QPs are cold incumbent replays. These counts exclude designated timing repetitions and count an evaluation once even if its prescribed internal retry is used; the end-to-end timing quantities below include that retry route. They are workload projections, not counts of internal linear-system or nonlinear-residual evaluations.
+
+The first 256 Latin-hypercube points form a timing preflight while remaining part of the immutable design. Their complete retry times define $t_{\mathrm{mech},95}$. The remaining mechanistic design is generated only when $N_{\mathrm{mech}}^{\mathrm{sci}}t_{\mathrm{mech},95}$ fits the declared core-time envelope. After the 16,000-row development fit, 1000 evenly spaced development rows are cold-deployed to define $t_{\mathrm{QP},95}$, and the observed development factorization time is $t_{\mathrm{fit}}$. The factor 2.25 below accounts for the measured development fit and a production fit projected in proportion to row count. The conservative single-thread scientific-work projection is
+\begin{equation}
+T_{\mathrm{proj}}=2.25t_{\mathrm{fit}}
++N_{\mathrm{QP}}^{\mathrm{sci}}t_{\mathrm{QP},95}
++N_{\mathrm{mech}}^{\mathrm{sci}}t_{\mathrm{mech},95}.
+\end{equation}
+If $M_{\mathrm{fit}}$, $M_{\mathrm{QP}}$, and $M_{\mathrm{mech}}$ are the measured preflight peak resident memories, set $M_{\mathrm{proj}}=\max(1.25M_{\mathrm{fit}},M_{\mathrm{QP}},M_{\mathrm{mech}})$. The study proceeds to assessment only when $T_{\mathrm{proj}}\leq30$ core-days, $M_{\mathrm{proj}}\leq51.2$ GiB within a 64-GiB allocation, every preflight state passes its full acceptance contract, and every preflight QP passes Equation~\eqref{eq:lower_acceptance}. Failure stops the study; timing observations do not change the estimator, tolerances, sample counts, or search budgets. The diagnostic timing repetitions reported later are accounted separately and do not enter these scientific-evaluation counts.
+
+\subsection{One-Time Predictive Assessment and Production Refit}
+
+The development response uses $\mathcal I=\mathcal D$. Its centers, scales, coefficient matrix, and row scales remain fixed while all 4,000 assessment rows are evaluated. For assessment row $i$, coordinate $j$, and prediction form $h\in\{\mathrm{raw},\mathrm{aff},\mathrm{dep}\}$, let $e_{ij}^{(h)}=\widehat y_{ij}^{(h)}-Y_{ij}$. With $n_A=4000$,
+\begin{align}
+\mathrm{RMSE}_j^{(h)}&=\left[\frac1{n_A}\sum_{i\in\mathcal A}(e_{ij}^{(h)})^2\right]^{1/2},
+&\mathrm{MAE}_j^{(h)}&=\frac1{n_A}\sum_{i\in\mathcal A}|e_{ij}^{(h)}|,\\
+\mathrm{Bias}_j^{(h)}&=\frac1{n_A}\sum_{i\in\mathcal A}e_{ij}^{(h)},
+&\mathrm{nRMSE}_j^{(h)}&=\frac{\mathrm{RMSE}_j^{(h)}}{s_{\chi,j}},\\
+R_j^{2,(h)}&=1-\frac{\sum_{i\in\mathcal A}(e_{ij}^{(h)})^2}
+{\sum_{i\in\mathcal A}(Y_{ij}-\overline Y_{\mathcal A,j})^2}.
+\end{align}
+For the $R^2$ denominator, Equation~\eqref{eq:nonzero_variance_rule} is applied to target coordinate $j$ with $\mathcal I=\mathcal A$; a failing denominator is reported as undefined. For a coordinate block $\mathcal B$, the standardized block error is
+\begin{equation}
+\label{eq:assessment_block_error}
+E_{\mathcal B}^{(h)}=
+\left[\frac1{n_A|\mathcal B|}\sum_{i\in\mathcal A}\sum_{j\in\mathcal B}
+\left(\frac{e_{ij}^{(h)}}{s_{\chi,j}}\right)^2\right]^{1/2}.
+\end{equation}
+It is reported for the mixer, every CSTR, both outlet-flow blocks, the layer profile, and the complete state. Overflow and underflow COD, TN, TP, and TSS and normalized Clarifier inventory use the same RMSE, MAE, bias, nRMSE, and $R^2$ definitions. Each derived-response standard deviation is calculated on $\mathcal D$ and must pass Equation~\eqref{eq:nonzero_variance_rule} before it is used as an nRMSE denominator; failure invalidates the assessment.
+
+The assessment also quantifies reliance on projection. Let
+\begin{equation}
+e_i^{\mathrm{raw}}=D_\chi^{-1}(\chi_{\mathrm{raw},i}-Y_i),
+\quad e_i^{\mathrm{dep}}=D_\chi^{-1}(\widehat\chi_i-Y_i),
+\quad u_i=D_\chi^{-1}(\widehat\chi_i-\chi_{\mathrm{raw},i}),
+\quad \kappa_{\mathrm{corr},i}=\frac{\|u_i\|_2}{\sqrt L}.
+\end{equation}
+Define
+\begin{equation}
+\label{eq:correction_trust_metrics}
+E_{\mathrm{state}}^{\mathrm{dep}}=
+\left[\frac1{n_AL}\sum_{i\in\mathcal A}\|e_i^{\mathrm{dep}}\|_2^2\right]^{1/2},
+\qquad
+\rho_{\mathrm{corr}}=
+\left[\frac{\sum_{i\in\mathcal A}\|u_i\|_2^2}
+{\max(10^{-24},\sum_{i\in\mathcal A}\|e_i^{\mathrm{raw}}\|_2^2)}\right]^{1/2}.
+\end{equation}
+If $\kappa_{\mathrm{corr},(1)}\leq\cdots\leq\kappa_{\mathrm{corr},(n_A)}$ are ordered, then $Q_{0.95}(\kappa_{\mathrm{corr}})=\kappa_{\mathrm{corr},(\lceil0.95n_A\rceil)}$.
+
+The development response is admissible only when all 4,000 deployed QPs pass Equation~\eqref{eq:lower_acceptance}, $E_{\mathrm{state}}^{\mathrm{dep}}<1$, $\rho_{\mathrm{corr}}\leq0.50$, $Q_{0.95}(\kappa_{\mathrm{corr}})\leq0.50$, and
+\begin{equation}
+\label{eq:assessment_trust_gate}
+\|e_i^{\mathrm{dep}}\|_2^2\leq\|e_i^{\mathrm{raw}}\|_2^2
++10^{-6}\left(1+\|e_i^{\mathrm{raw}}\|_2^2\right),
+\qquad i\in\mathcal A.
+\end{equation}
+The final inequality checks the non-expansive geometry of projection relative to an accepted mechanistic state. Failure of any assessment condition ends the study; assessment responses do not alter the estimator.
+
+After the assessment record is sealed, the production response is refitted on all 20,000 rows using the unchanged equations. Every center, scale, row scale, QR factorization, SVD check, and coefficient is recomputed. The four mechanistic overflow composite coordinates used in $D_T$ must each pass Equation~\eqref{eq:nonzero_variance_rule} on the 20,000 production rows before their population standard deviations are inverted. The production response is frozen only after Equations~\eqref{eq:nonzero_variance_rule}, \eqref{eq:design_acceptance}, and \eqref{eq:coefficient_acceptance} pass and all 20,000 production-row deployments pass Equation~\eqref{eq:lower_acceptance}.
 
 \subsection{Nominal Objective and Constraints}
 
-For Equation~\eqref{eq:nominal_influent}, set $T=I_{\mathrm{comp}}$ and $p=\tfrac14\mathbf1_4$. Let $D_T$ contain production-fit standard deviations of overflow COD, TN, TP, and TSS. The primary objective is
+For Equation~\eqref{eq:nominal_influent}, set $T=I_{\mathrm{comp}}$ and $\alpha_Q=\tfrac14\mathbf1_4$. Let $D_T$ contain production-fit standard deviations of overflow COD, TN, TP, and TSS. The primary objective is
 \begin{equation}
 \label{eq:case_objective}
 \begin{split}
-J={}&0.50\,p^\top D_T^{-1}I_{\mathrm{comp}}c_E
+J={}&0.50\,\alpha_Q^\top D_T^{-1}I_{\mathrm{comp}}c_E
 +0.15\,\frac{H-H^L}{H^U-H^L}
 +0.20\,a\\
 &+0.05\,\frac{r_I-r_I^L}{r_I^U-r_I^L}
@@ -819,64 +995,409 @@ J={}&0.50\,p^\top D_T^{-1}I_{\mathrm{comp}}c_E
 \end{equation}
 The final term is proportional to the wasted-solids mass rate $Q_0w\,t_X^\top c_U$; penalizing $w$ alone would treat a dilute and a concentrated waste stream as equally costly. The constant $Q_0$ cancels in the normalization. All six coefficients are declared before optimization and sum to one. They define a transparent dimensionless case, not a claim of universal economic equivalence. Sensitivity runs change the five non-quality coefficients while retaining the frozen surrogate and original normalization constants.
 
-Accepted upper candidates must satisfy the SRT interval, Clarifier SOR and SLR limits, maximum pumpable underflow TSS, and any activated discharge limits. A violation rejects the upper candidate; none of these requirements is inserted into the lower QP to force the prediction toward compliance.
+The production design also defines a leverage support screen. With $\Phi_P$ denoting the 20,000-row production feature matrix,
+\begin{equation}
+\label{eq:leverage_screen}
+\ell(\vartheta,x)=\phi(\vartheta,x)^\top(\Phi_P^\top\Phi_P)^{-1}\phi(\vartheta,x),
+\qquad
+\ell_{\max}=\max_{i=1,\ldots,20000}\ell(\vartheta_i,x_i).
+\end{equation}
+The displayed inverse defines the scalar; triangular solves with the production QR factor are used numerically.
+
+Three further quantities guard the physical relaxation. The correction magnitude is $\kappa_{\mathrm{corr}}=\|\widehat u\|_2/\sqrt L$. For particulate coordinates whose feed mass exceeds $10^{-10}q_C\max(1,|\mu_{c_N,j}|+s_{c_N,j})$, let $\Delta_\eta=\max_j\eta_j-\min_j\eta_j$; set $\Delta_\eta=0$ if fewer than two ratios are available. Finally, calculate the layer fluxes in Equations~\eqref{eq:clarifier_flux_limiter}--\eqref{eq:clarifier_total_flux} from the deployed profile and define
+\begin{equation}
+\label{eq:clarifier_flux_screen}
+r_{\mathrm{flux}}=
+\frac{\displaystyle\max_\ell\left|
+A_{\mathrm{cl}}(J_{\ell-1/2}-J_{\ell+1/2})
++\mathbf1_{\{\ell=f\}}Q_0q_Cs_F\right|}
+{Q_0\max(q_Cs_F,1)}.
+\end{equation}
+Thus a candidate cannot obtain a favorable SRT by relying on a large projection, unsupported polynomial leverage, component-selective particulate capture, or a layer profile that strongly violates the nonlinear Clarifier flux equation.
+
+No additional discharge constraint is active in the primary case; COD, TN, TP, and TSS are represented in the objective. The complete dimensionless upper-constraint vector is
+\begin{equation}
+\label{eq:complete_capacity_vector}
+\widetilde g_{\mathrm{cap}}=
+\begin{bmatrix}
+(8-\mathrm{SRT})/8\\
+(\mathrm{SRT}-30)/30\\
+(\mathrm{SOR}-20)/20\\
+(\mathrm{SLR}-100)/100\\
+(t_X^\top c_U-15000)/15000\\
+(\kappa_{\mathrm{corr}}-0.50)/0.50\\
+(\ell-\ell_{\max})/\max(\ell_{\max},10^{-12})\\
+(\Delta_\eta-0.05)/0.05\\
+(r_{\mathrm{flux}}-0.05)/0.05
+\end{bmatrix}.
+\end{equation}
+Here the dimensional limits use days, m d$^{-1}$, kg TSS m$^{-2}$ d$^{-1}$, and g TSS m$^{-3}$ as appropriate. A successfully deployed candidate is upper-feasible when $\|[\widetilde g_{\mathrm{cap}}]_+\|_\infty\leq10^{-8}$. These requirements are checked after the lower QP and therefore cannot move its state toward compliance.
 
 \subsection{Lower-Level Numerical Acceptance}
 
-Equation~\eqref{eq:network_lower_qp} is solved in double precision with a sparse QP solver (Stellato et al., 2018). The 77-row equality operator is assembled from the candidate flows and checked for rank. A nominally optimal status is necessary but not sufficient: all quantities are recomputed from the unrounded state in their dimensionless coordinates. Acceptance requires
+For a fixed candidate, put Equation~\eqref{eq:network_lower_qp} in the standard scaled form
+\begin{equation}
+\label{eq:standard_lower_qp}
+\mathsf E=D_b^{-1}\mathcal H D_\chi,
+\quad e=D_b^{-1}(b-\mathcal H\chi_{\mathrm{raw}}),
+\quad
+\mathsf I=\begin{bmatrix}-I_L\\D_g^{-1}\mathcal G D_\chi\end{bmatrix},
+\quad
+h_{\mathrm{QP}}=\begin{bmatrix}D_\chi^{-1}\chi_{\mathrm{raw}}\\-D_g^{-1}\mathcal G\chi_{\mathrm{raw}}\end{bmatrix}.
+\end{equation}
+Thus $\widehat u$ minimizes $\tfrac12u^\top u$ subject to $\mathsf Eu=e$ and $\mathsf Iu\leq h_{\mathrm{QP}}$. If $\sigma_1\geq\cdots\geq\sigma_R$ are the singular values of $\mathsf E$, the candidate is rejected unless
+\begin{equation}
+\sigma_R>\max(R,L)\varepsilon_{\mathrm{mach}}\sigma_1.
+\end{equation}
+
+Let $\lambda_E\in\R^R$ be the equality multiplier, $\lambda_I\in\R_+^{L+R_g}$ the inequality multiplier, and $\varsigma=h_{\mathrm{QP}}-\mathsf I\widehat u$ the inequality slack. The independently recomputed KKT relations are
+\begin{equation}
+\mathsf E\widehat u=e,\quad \varsigma\geq0,\quad \lambda_I\geq0,\quad
+\widehat u+\mathsf E^\top\lambda_E+\mathsf I^\top\lambda_I=0,
+\quad \lambda_I\odot\varsigma=0.
+\end{equation}
+Their dimensionless residuals are
+\begin{align}
+r_E&=\|\mathsf E\widehat u-e\|_\infty,
+&r_G&=\|[D_g^{-1}\mathcal G\widehat\chi]_+\|_\infty,\\
+r_+&=\|[-D_\chi^{-1}\widehat\chi]_+\|_\infty,
+&r_{\mathrm{dual}}&=\frac{\|[-\lambda_I]_+\|_\infty}{1+\|\lambda_I\|_\infty},\\
+r_{\mathrm{stat}}&=
+\frac{\|\widehat u+\mathsf E^\top\lambda_E+\mathsf I^\top\lambda_I\|_\infty}
+{1+\|\widehat u\|_\infty+\|\mathsf E^\top\lambda_E\|_\infty+\|\mathsf I^\top\lambda_I\|_\infty},
+&r_{\mathrm{comp}}&=
+\frac{\|\lambda_I\odot\varsigma\|_\infty}
+{1+\|\lambda_I\|_\infty\|\varsigma\|_\infty}.
+\end{align}
+Acceptance requires finite primal and dual arrays and
 \begin{equation}
 \label{eq:lower_acceptance}
-\begin{aligned}
-\|D_b^{-1}(\mathcal H\widehat\chi-b)\|_\infty&\leq10^{-8},
-&\max[D_g^{-1}\mathcal G\widehat\chi]_+&\leq10^{-8},\\
-\min_j(\widehat\chi_j/s_{\chi,j})&\geq-10^{-10},
-&\text{scaled stationarity residual}&\leq10^{-8},\\
-\text{scaled dual-feasibility residual}&\leq10^{-8},
-&\text{scaled complementarity residual}&\leq10^{-8}.
-\end{aligned}
+r_E,r_G,r_{\mathrm{stat}},r_{\mathrm{dual}},r_{\mathrm{comp}}\leq10^{-8},
+\qquad r_+\leq10^{-10}.
 \end{equation}
-Here $[\cdot]_+$ denotes the positive part. The plant-boundary identity, componentwise Clarifier balance, layer-derived inventory, and recovered concentrations are checked separately in physical units and in scaled form. Deployment uses $10^{-8}$ absolute and relative solver tolerances and polishing. One newly constructed cold retry is allowed after a failed warm solve. A second failure terminates the upper candidate; no raw, affine, clipped, influent, or previous state is scored instead.
+Multipliers in these equations correspond to the displayed scaled matrices regardless of internal solver scaling. The QP uses double precision, absolute and relative tolerances $10^{-8}$, polishing, and at most 100,000 iterations (Stellato et al., 2018). Any solver status is provisional until Equation~\eqref{eq:lower_acceptance} passes. Every assessment, production, timing, DIRECT, face, pattern, and incumbent-replay QP starts from zero primal and dual arrays. This all-cold rule costs more factorization work than a lineage-dependent warm start, but it removes execution-order and parent-selection ambiguity from the scientific result. If the first solve fails acceptance, one cold retry reconstructs the factorization and again starts all arrays at zero; failure of that retry invalidates the candidate. The final incumbent is evaluated once more by an independently constructed cold QP. The plant-boundary identity, Clarifier balances, inventory, and recovered concentrations are also replayed from the unrounded state; no raw, affine, clipped, influent, or preceding state is substituted.
 
 \subsection{Outer Search and Mechanistic Validation}
 
-The five controls are normalized to $[0,1]^5$. For each influent, at most 25,000 distinct attempted candidate evaluations are allocated to 18,000 full-box DIRECT evaluations, all 32 corners, 300 DIRECT evaluations on each of the ten coordinate faces, and up to 3968 local pattern evaluations. Failed and infeasible candidates consume budget; exact memoization prevents duplicate physical evaluations. The local normalized step is halved from $1/16$ to $1/512$; early termination additionally requires relative incumbent change below $10^{-8}$ over 500 attempted evaluations. Search budgets, achieved resolution, failures, solver versions, and termination reasons are archived. The final incumbent is recomputed from a cold lower solve at the strict tolerances in Equation~\eqref{eq:lower_acceptance}.
+The first five entries of Equation~\eqref{eq:complete_capacity_vector} are engineering constraints; the final four are surrogate-trust constraints. For a successfully deployed surrogate state, let
+\begin{equation}
+V_{\mathrm{surr}}=\|[\widetilde g_{\mathrm{cap}}]_+\|_\infty.
+\end{equation}
+The finite scalar supplied to the search algorithm is
+\begin{equation}
+\label{eq:search_merit}
+F_{\mathrm{search}}=
+\begin{cases}
+J/(1+J), & \text{accepted lower state and }V_{\mathrm{surr}}\leq10^{-8},\\
+1+V_{\mathrm{surr}}/(1+V_{\mathrm{surr}}), & \text{accepted lower state and }V_{\mathrm{surr}}>10^{-8},\\
+2, & \text{failed, non-finite, or undefined candidate}.
+\end{cases}
+\end{equation}
+Because $J\geq0$, every feasible point ranks ahead of every infeasible point, every evaluated infeasible point ranks ahead of a failed point, and ordering by $J$ is unchanged among feasible points. The displayed transforms are part of the optimizer definition: their numerical spacing, not only their ordering, determines the DIRECT lower hull. A failed lower solve, invalid SRT denominator, or non-finite response consumes one distinct-evaluation unit. Candidate keys are the exact binary representations of the normalized coordinates; a cached duplicate consumes no additional unit.
 
-For the nominal case and each validation case, the complete ASM2d-TSN--Clarifier model is solved at the surrogate-selected decisions without refitting or feedback. This matched calculation measures prediction fidelity. It is inserted first into the mechanistic candidate archive and counts against the reference budget. Decision quality is then evaluated by an independent mechanistic DIRECT--corner--pattern search over the identical domain, objective, and upper constraints. The nominal reference permits 10,000 attempted candidates; each robustness reference permits 2500, including a clipped and deduplicated $3^5$ neighborhood with normalized step $1/128$. Every failure consumes budget.
+The five controls are normalized to $[0,1]^5$. The center initializes the full-box DIRECT partition, and all 32 corners are evaluated as separate boundary probes. Corner and later face evaluations are eligible incumbents but do not alter the full-box DIRECT hull. For rectangle $r$, let $c_r$ be its center, $F_r=F_{\mathrm{search}}(c_r)$, and $d_r$ the Euclidean distance from its center to a vertex. With $F_{\min}$ the smallest merit among centers in the current partition, rectangle $r$ is potentially optimal when some $K_r\geq0$ satisfies
+\begin{equation}
+F_r-K_rd_r\leq F_j-K_rd_j\quad\text{for every rectangle }j,
+\qquad
+F_r-K_rd_r\leq F_{\min}-\epsilon_{\mathrm{DIR}}|F_{\min}|,
+\end{equation}
+where $\epsilon_{\mathrm{DIR}}=10^{-4}$. These inequalities are tested from the lower convex hull of the distinct $(d_r,F_r)$ pairs. A selected rectangle is trisected along every longest coordinate. If its longest side is $L_r$, the new points are $c_r\pm(L_r/3)e_j$ for those coordinates; coordinates are split in increasing order of the smaller merit at their two trial points, with coordinate index breaking ties. For an exact binary64 tie group with the same $(d_r,F_r)$, at most one member is split per iteration; iteration number cycles through the members in lexicographic lower-corner order to avoid a fixed spatial bias on flat failure plateaus. Trial batches are evaluated synchronously and committed in lexicographic coordinate order.
 
-If the selected point violates a mechanistic capacity constraint, the case is classified as a decision-feasibility failure and ordinary finite regret is not reported. Otherwise, if $\widehat\vartheta_s$ is the surrogate decision and $\vartheta_{\mathrm{ASM},s}^*$ is the best verified mechanistic incumbent, define
+The surrogate search has 25,000 distinct-attempt units. The full-box partition contributes at most 18,000 globally new keys, including its center but excluding the 32 separately counted corners, or stops when every rectangle has maximum side length at most $1/1024$. Next, ten four-dimensional DIRECT partitions search the coordinate faces in the order $z_1=0,z_1=1,\ldots,z_5=0,z_5=1$. Each face contributes at most 300 globally new keys under the same rule and resolution; cached points are free, and a face's hull uses only centers from that face partition. Thus at least 3968 attempts, plus any unused DIRECT quota, remain for local work.
+
+Local seeds are chosen by increasing $F_{\mathrm{search}}$. The best seed is retained, and up to three further seeds are selected greedily subject to $\ell_\infty$ separation of at least $1/8$; if necessary, that threshold is halved until four seeds or all distinct basins are obtained. Each seed starts with mesh $\Delta=1/16$. In cyclic seed order, a complete poll evaluates the axial directions $\{\pm e_j\}$ first and then, lexicographically, all pairwise directions $\{\pm e_j\pm e_k:j<k\}$. Out-of-box coordinates are clipped and duplicates removed. The smallest-merit poll point is accepted if it strictly improves the center; otherwise that seed's mesh is halved. A seed terminates after an unsuccessful poll at $\Delta=1/512$. A split or poll begins only when all of its uncached trial points fit the phase and total budgets. The final feasible incumbent is recomputed by a cold lower solve. If no feasible point is found, the outcome is ``no feasible incumbent''; the smallest violation is reported, but no selected decision or finite regret is defined. This is a finite-resolution refinement, not a stationarity or global-optimality certificate.
+
+For the nominal case and each validation case, the complete mechanistic model is next evaluated at the selected decisions without refitting. Four outcomes are distinguished. If the surrogate search has no feasible incumbent, the case is a surrogate-optimization failure. If the fixed mechanistic solve does not return an accepted, stable steady state, the case is a mechanistic-evaluation failure. If an accepted mechanistic state violates any of the five engineering constraints, the case is a decision-feasibility failure. None of these three outcomes has an ordinary finite regret. If the selected point is accepted and engineering-feasible, it is inserted first into the mechanistic archive and counts against the reference budget.
+
+The mechanistic reference uses the same search merit with $V_{\mathrm{ASM}}$ formed from only the five engineering constraints. Its nominal budget is 10,000 distinct attempts and each robustness budget is 2500. Before DIRECT begins, the selected point and the clipped, deduplicated 50-direction pattern stencil at step $2^{-7}$ are evaluated in center, axial, then lexicographic pairwise order. Corners not already cached are evaluated next. In the nominal reference, the full-box DIRECT partition contributes at most 7000 globally new keys and each coordinate face at most 100; in a robustness reference, the corresponding caps are 1700 and 25. Full-box, corner, stencil, face, failed, and local attempts all count against the stated total. Every remaining unit is assigned to the same multi-basin pattern rule, using up to four nominal seeds and one robustness seed. Even when every preceding quota is filled without a duplicate, at least 1917 nominal units and 467 robustness units remain for local refinement. Every failed mechanistic attempt consumes one unit. If $\widehat\vartheta_s$ is an accepted engineering-feasible surrogate decision and $\vartheta_{\mathrm{ASM},s}^*$ is the best verified mechanistic incumbent, define
 \begin{equation}
 \label{eq:regret}
 \mathcal R_s=
 J[\widehat\vartheta_s,\chi_{\mathrm{ASM}}(\widehat\vartheta_s;x_s)]
 -J[\vartheta_{\mathrm{ASM},s}^*,\chi_{\mathrm{ASM}}(\vartheta_{\mathrm{ASM},s}^*;x_s)].
 \end{equation}
-Because the archive already contains the feasible selected point, its best objective cannot be larger than that point's objective. Hence $\mathcal R_s\geq0$ up to roundoff. A value below $-10^{-8}$ indicates inconsistent objectives, constraints, or archive insertion and invalidates the run; additional searching cannot repair that bookkeeping error. The reported quantity is a gap to a finite-budget incumbent and is not a certificate of regret relative to an unknown global optimum.
+Because the archive already contains the feasible selected point, its best objective cannot be larger than that point's objective. Hence $\mathcal R_s\geq0$ up to roundoff. A value below $-10^{-8}$ indicates inconsistent objectives, constraints, or archive insertion and invalidates the case. The reported quantity is a gap to a finite-budget incumbent and is not a certificate relative to an unknown global optimum.
 
 \subsection{Robustness, Reporting, and Reproducibility}
 
-After the nominal problem and all scales are frozen, 100 fresh-influent profiles are generated by an independent scrambled Latin hypercube with root seed 314159. No response from these profiles enters coefficient estimation, scaling, objective selection, or solver tuning. Each case retains the selected controls, objective decomposition, raw and corrected network states, Clarifier mass flows, recovery and densification factors, physical residuals, mechanistic response, mechanistic reference, regret, evaluation counts, and wall-clock durations.
+After the nominal problem and all scales are frozen, 100 fresh-influent profiles are generated by the Latin-hypercube construction in the Mechanistic Design subsection, restricted to the 20 influent dimensions and restarting its 64-bit state at $\mathsf q_0=314159$. No response from these profiles enters estimation, scaling, assessment, objective definition, trust limits, or numerical tolerances. Each case retains the selected controls, objective decomposition, raw and corrected states, Clarifier mass flows, recovery and densification factors, physical residuals, mechanistic response, mechanistic reference, outcome class, regret when defined, evaluation counts, and wall-clock durations.
 
 Robustness summaries report means, medians, interquartile ranges, 95th percentiles, maxima, failure frequencies, and bound-activity fractions. Clarifier reporting includes outlet component and composite errors, common-recovery deviation, layer-profile and inventory errors, loadings, SRT, and mass closure. Reactor reporting includes every stage and the axial profiles of dissolved oxygen, nitrogen species, phosphorus species, and solids.
 
-Timing uses a monotonic high-resolution counter with one numerical-library thread. Separate records are kept for mechanistic design generation, cross-validation, the 16,000-row assessment fit, the 20,000-row production fit, raw inference, matrix construction, the lower QP, end-to-end deployed inference, surrogate optimization, selected-point mechanistic simulation, and mechanistic search. Single-state timing uses 100 untimed warmups followed by 1000 fixed-sequence evaluations; batch timing uses two untimed batches followed by 20 batches of 1000. Cold and warm QP setup and solve time are not combined.
+Timing uses a monotonic high-resolution counter with one numerical thread. Separate records are kept for mechanistic design generation, the 16,000-row development fit, assessment, the 20,000-row production fit, raw inference, matrix construction, the lower QP, end-to-end deployed inference, surrogate optimization, selected-point mechanistic simulation, and mechanistic search. Single-state timing uses 100 untimed warmups followed by 1000 fixed-sequence evaluations; batch timing uses two untimed batches followed by 20 batches of 1000. Cold and warm QP setup and solve times remain separate.
 
-All random streams, component and feature orders, topology, Clarifier parameters, numerical tolerances, coefficient arrays, scales, candidate archives, source commit and file hashes, software versions, thread settings, and environment fields are stored in an immutable run manifest. Deterministic replay spans interior and boundary decisions and low and high recycle ratios. Terminal acceptance verifies the 20,000 design rows, 4,000 assessment predictions, nominal case, 100 robustness cases, every registered hash, and every physical replay. Partial or smoke-profile files cannot populate the article.
+The permanent study record contains the random-generator states, component and feature orders, topology, all parameter values, numerical tolerances, fitted coefficients, scales, assessment values, and complete candidate archives. Terminal acceptance replays the 20,000 design rows, 4,000 assessment predictions, nominal case, 100 robustness cases, and every stated physical check. Only a complete record satisfying the contracts in this article is eligible for reporting.
 
 \section{Results and Discussion}
 
-Three conclusions follow analytically before any case-study numbers are inspected. First, the flow definitions close exactly and lead to the plant-boundary inventory in Equation~\eqref{eq:plant_boundary_invariant}; internal recycle ratios can change internal concentrations but cannot appear as external generation or loss. Second, Equation~\eqref{eq:network_lower_qp} has a nonempty feasible set and an identity Hessian, so every accepted upper candidate has one and only one deployed state. Third, Clarifier inventory can no longer vary independently of the solids profile because Equation~\eqref{eq:clarifier_inventory} derives it from ten corrected layer concentrations.
+Three properties follow directly from the formulation. First, the flow definitions close exactly and lead to the plant-boundary inventory in Equation~\eqref{eq:plant_boundary_invariant}; internal recycle ratios change internal concentrations without appearing as external generation or loss. Second, Equation~\eqref{eq:network_lower_qp} has a nonempty feasible set and an identity Hessian, so every accepted upper candidate has one deployed state. Third, Equation~\eqref{eq:clarifier_inventory} derives Clarifier inventory from ten corrected layer concentrations.
 
-The revised regression also has a clearer interpretation than a recursively factorized response. Unique monomials reduce the five-control, 20-influent feature count from 551 ordered-product columns to 351 independent columns. Standardizing inputs, outputs, and balance terms removes the unit dependence that would otherwise make a common ridge penalty or coefficient bound incomparable across COD, nitrogen, phosphorus, TSS, and alkalinity. Most importantly, the single coefficient matrix in Equation~\eqref{eq:training_objective} is the identifiable input--response map and is obtained from a strictly convex problem. The training algorithm therefore has no sweep-order dependence, no post-hoc coupling contraction, and no fitted-state QP fallback that could return a point different from the displayed minimizer.
+The regression has a direct numerical interpretation. Its 351 dimensionless monomials form one checked full-column-rank design, and a pivoted QR factorization estimates all 170 responses. An independent SVD verifies rank, condition number, and coefficient agreement. The set held out from the development fit quantifies native and standardized prediction errors and measures reliance on physical correction. Production use begins only after the fixed assessment gate passes.
 
-These analytical properties should not be confused with a complete mechanistic guarantee. The QP preserves the stated balances, signs, clarification directions, and layer envelope, but it does not enforce all 28 reaction-rate equations or the nonlinear flux limiter. It also does not impose exact equality of every particulate recovery, because that common-composition condition is bilinear when both feed state and recovery are variables. The matched mechanistic simulations, correction-displacement summaries, and recovery diagnostics are therefore essential evidence rather than optional confirmation.
+The QP preserves the stated balances, signs, clarification directions, and layer envelope; it does not enforce all 28 reaction-rate equations or the nonlinear flux limiter. Exact equality of every particulate recovery is bilinear when both feed state and recovery are variables. The leverage, correction, recovery-spread, and flux-residual screens bound this relaxation, while matched mechanistic simulations provide the independent test of kinetics and decision feasibility.
 
-The interpretation of the optimization is similarly bounded. Changing $H$ at fixed $Q_0$ changes tank volume, so the primary problem is joint design and operation. The number of stages is prescribed, not optimized. Finally, DIRECT and pattern refinement return a verified finite-budget incumbent. Prediction error at the selected point and the non-negative incumbent gap in Equation~\eqref{eq:regret} answer different questions and must be reported separately.
+The interpretation of the optimization is similarly bounded. Changing $H$ at fixed $Q_0$ changes tank volume, so the primary problem is joint design and operation. The number of stages is prescribed, not optimized. Finally, boundary-augmented DIRECT and multi-basin pattern refinement return a verified finite-budget incumbent. Prediction error at the selected point and the non-negative incumbent gap in Equation~\eqref{eq:regret} answer different questions and must be reported separately.
 
 \section{Conclusion}
 
-The recycling $N$-stage activated sludge system can be optimized without breaking the process into disconnected surrogate units. The formulation follows the actual stream path, predicts the complete mixer--reactor--Clarifier state, and applies one unique scaled projection before evaluating engineering preferences. Replacing a free Clarifier-inventory scalar with layer TSS states makes whole-plant SRT traceable, while component mass-flow coordinates describe clarification as recovery into a smaller underflow rather than solids creation.
+The recycling $N$-stage activated sludge system is represented as one mixer--reactor--Clarifier response and one unique scaled physical projection. Ten Clarifier TSS states make whole-plant SRT traceable, while component mass-flow coordinates describe clarification as recovery into a smaller underflow.
 
-The training procedure is fully specified in the main article and resolves the identified mathematical inefficiencies: inputs and states are dimensionless, quadratic cross-products are not duplicated, the fitted map is identifiable, loss terms retain their meaning across sample sizes, and one convex augmented least-squares solve replaces a nonconvex recursive sequence of per-sample QPs. The resulting physical guarantees are exact only for the declared linear network contract; independent ASM2d-TSN--Clarifier evaluation remains necessary for kinetics, flux behavior, feasibility, and decision quality. Within those limits, the framework provides a cohesive route from an activated sludge process diagram to a reproducible bounded optimization.
+Inputs, targets, and unique quadratic features are standardized from the applicable fitting rows. A full-rank multiresponse least-squares problem is solved by pivoted QR and checked independently by SVD; a set held out from the development fit gates production use; and the unchanged estimator is refitted on all 20,000 states. The physical guarantees are exact for the declared linear network contract, while nonlinear trust screens and independent ASM2d-TSN--Clarifier evaluation address kinetics, flux behavior, operational feasibility, and decision quality. The complete route from process equations to the bounded incumbent is specified in this article.
+
+\appendix
+
+\section{Complete ASM2d-TSN Mechanistic Definition}
+\label{app:mechanistic_definition}
+
+\subsection{Rate functions and process rates}
+
+For a non-negative concentration $z$ and a positive half-saturation constant $K$, define
+\begin{equation}
+M(z;K)=\frac{z}{K+z},\qquad \overline M(z;K)=\frac{K}{K+z}.
+\end{equation}
+Let $S_{\mathrm{NOx}}=S_{\mathrm{NO2}}+S_{\mathrm{NO3}}$ and define the electron-acceptor and carbon shares
+\begin{equation}
+\alpha_2=\frac{S_{\mathrm{NO2}}}{S_{\mathrm{NOx}}},\quad
+\alpha_3=\frac{S_{\mathrm{NO3}}}{S_{\mathrm{NOx}}},\quad
+\alpha_F=\frac{S_F}{S_F+S_A},\quad
+\alpha_A=\frac{S_A}{S_F+S_A}.
+\end{equation}
+A share is zero when its denominator is zero. Hydrolysable substrate availability and the PAO storage ratios are
+\begin{equation}
+\theta_X=\frac{X_S}{K_XX_H+X_S},\qquad
+r_{PP}=\frac{X_{PP}}{X_{PAO}},\qquad
+r_{PHA}=\frac{X_{PHA}}{X_{PAO}},
+\end{equation}
+The value of $\theta_X$ is zero when both $X_H$ and $X_S$ are zero. When $X_{PAO}=0$, both storage ratios are defined as zero; this convention makes every PAO rate evaluable at the non-negative boundary.
+\begin{equation}
+\pi_{PP}=M(r_{PP};K_{PP}),\quad
+\pi_{PHA}=M(r_{PHA};K_{PHA}),\quad
+c_{PP}=\frac{[K_{\max}-r_{PP}]_+}{K_{IPP}+[K_{\max}-r_{PP}]_+}.
+\end{equation}
+All PAO rates that multiply $X_{PAO}$ are defined as zero when $X_{PAO}=0$. The nutrient factors used repeatedly below are
+\begin{align}
+L_H={}&M(S_{NH4};K_{NH4,H})M(S_{PO4};K_{PO4,H})M(S_{ALK};K_{ALK,H}),\\
+L_P={}&M(S_{NH4};K_{NH4,PAO})M(S_{PO4};K_{PO4,PAO})M(S_{ALK};K_{ALK,PAO}),\\
+L_N={}&M(S_{PO4};K_{PO4,nit})M(S_{ALK};K_{ALK,nit}).
+\end{align}
+
+The hydrolysis, heterotrophic growth, fermentation, and heterotroph-decay rates are
+\begin{align}
+\rho_1={}&K_HM(S_O;K_{O,hyd})\theta_XX_H,\\
+\rho_2={}&\eta_{hyd,NO2}K_H\overline M(S_O;K_{O,hyd})M(S_{NO2};K_{NO2,hyd})\alpha_2\theta_XX_H,\\
+\rho_3={}&\eta_{hyd,NO3}K_H\overline M(S_O;K_{O,hyd})M(S_{NO3};K_{NO3,hyd})\alpha_3\theta_XX_H,\\
+\rho_4={}&\eta_{hyd,fe}K_H\overline M(S_O;K_{O,hyd})\overline M(S_{NOx};K_{NOx,hyd})\theta_XX_H,\\
+\rho_5={}&\mu_HM(S_O;K_{O,H})M(S_F;K_F)\alpha_FL_HX_H,\\
+\rho_6={}&\mu_HM(S_O;K_{O,H})M(S_A;K_A)\alpha_AL_HX_H,\\
+\rho_7={}&\mu_H\overline M(S_O;K_{O,H})M(S_F;K_F)\alpha_FL_H\eta_{H,NO3}M(S_{NO3};K_{NO3,H})\alpha_3X_H,\\
+\rho_8={}&\mu_H\overline M(S_O;K_{O,H})M(S_F;K_F)\alpha_FL_H\eta_{H,NO2}M(S_{NO2};K_{NO2,H})\alpha_2X_H,\\
+\rho_9={}&\mu_H\overline M(S_O;K_{O,H})M(S_A;K_A)\alpha_AL_H\eta_{H,NO3}M(S_{NO3};K_{NO3,H})\alpha_3X_H,\\
+\rho_{10}={}&\mu_H\overline M(S_O;K_{O,H})M(S_A;K_A)\alpha_AL_H\eta_{H,NO2}M(S_{NO2};K_{NO2,H})\alpha_2X_H,\\
+\rho_{11}={}&q_{fe}\overline M(S_O;K_{O,H})\overline M(S_{NOx};K_{NOx,H})M(S_F;K_{fe})M(S_{ALK};K_{ALK,H})X_H,\\
+\rho_{12}={}&b_HX_H.
+\end{align}
+Here $q_{fe}$ enters $\rho_{11}$ directly as a rate constant with units d$^{-1}$.
+
+The PAO storage, growth, and decay rates are
+\begin{align}
+\rho_{13}={}&q_{PHA}M(S_A;K_A)\overline M(S_O;K_{O,PAO})\overline M(S_{NOx};K_{NOx,PAO})M(S_{ALK};K_{ALK,PAO})\pi_{PP}X_{PAO},\\
+\rho_{14}={}&q_{PP}M(S_O;K_{O,PAO})M(S_{PO4};K_{PS})M(S_{ALK};K_{ALK,PAO})\pi_{PHA}c_{PP}X_{PAO},\\
+\rho_{15}={}&q_{PP}\overline M(S_O;K_{O,PAO})M(S_{PO4};K_{PS})M(S_{ALK};K_{ALK,PAO})\pi_{PHA}c_{PP}\\
+&\quad\times\eta_{PAO,NO3}M(S_{NO3};K_{NO3,PAO})\alpha_3X_{PAO},\\
+\rho_{16}={}&q_{PP}\overline M(S_O;K_{O,PAO})M(S_{PO4};K_{PS})M(S_{ALK};K_{ALK,PAO})\pi_{PHA}c_{PP}\\
+&\quad\times\eta_{PAO,NO2}M(S_{NO2};K_{NO2,PAO})\alpha_2X_{PAO},\\
+\rho_{17}={}&\mu_{PAO}M(S_O;K_{O,PAO})L_P\pi_{PHA}X_{PAO},\\
+\rho_{18}={}&\mu_{PAO}\overline M(S_O;K_{O,PAO})L_P\pi_{PHA}\eta_{PAO,NO3}M(S_{NO3};K_{NO3,PAO})\alpha_3X_{PAO},\\
+\rho_{19}={}&\mu_{PAO}\overline M(S_O;K_{O,PAO})L_P\pi_{PHA}\eta_{PAO,NO2}M(S_{NO2};K_{NO2,PAO})\alpha_2X_{PAO},\\
+\rho_{20}={}&b_{PAO}M(S_{ALK};K_{ALK,PAO})X_{PAO},\\
+\rho_{21}={}&b_{PP}M(S_{ALK};K_{ALK,PAO})X_{PP},\\
+\rho_{22}={}&b_{PHA}M(S_{ALK};K_{ALK,PAO})X_{PHA}.
+\end{align}
+The oxygen and NOx inhibition in $\rho_{13}$ makes PHA storage anaerobic. The nitrifier and chemical rates are
+\begin{align}
+\rho_{23}={}&\mu_{AOB}M(S_O;K_{O,AOB})M(S_{NH4};K_{NH4,AOB})L_NX_{AOB},\\
+\rho_{24}={}&\mu_{NOB}M(S_O;K_{O,NOB})M(S_{NO2};K_{NO2,NOB})L_NX_{NOB},\\
+\rho_{25}={}&b_{AOB}X_{AOB},\qquad \rho_{26}=b_{NOB}X_{NOB},\\
+\rho_{27}={}&k_{PRE}S_{PO4}X_{MeOH},\\
+\rho_{28}={}&k_{RED}i_{PMeP}M(S_{ALK};K_{ALK,chem})X_{MeP}.
+\end{align}
+The factor $i_{PMeP}=1/4.87$ g P g TSS$^{-1}$ converts redissolving $X_{MeP}$ to the phosphorus basis used by process 28. At a component state $c$, the process-rate vector used in the reactor equations is
+\begin{equation}
+\varrho(c)=[\rho_1(c),\ldots,\rho_{28}(c)]^\top\in\R_+^{28},
+\qquad \varrho_i=\varrho(c_i).
+\end{equation}
+Rates $\rho_{1:13}$, $\rho_{17:20}$, $\rho_{22:26}$ have a COD mass basis; $\rho_{14:16}$, $\rho_{21}$, and $\rho_{27:28}$ have a phosphorus mass basis. Each row of $\nu$ below converts its rate basis into the units of all 20 component coordinates, so $\nu^\top\varrho(c)$ is a component-rate vector.
+Oxygen transfer in reactor $i$ is
+\begin{equation}
+\omega_i=k_La_i(S_{O,sat}-c_{i,S_O}),\qquad S_{O,sat}=8.5\ \mathrm{g\ O_2\,m^{-3}},
+\end{equation}
+with $k_La_i=0$ d$^{-1}$ for $i=1,2$ and $k_La_i=47a$ d$^{-1}$ for $i=3,4,5$.
+
+\subsection{Stoichiometric matrix and invariant operator}
+\label{app:stoichiometry}
+
+Let $e_j\in\R^F$ be the column coordinate vector for component $j$; its transpose is the corresponding row selector. Omitted coefficients below are zero. Define the preliminary process rows
+\begin{align}
+\bar\nu_{1:4}&=(1-f_{SI})e_{S_F}^\top+f_{SI}e_{S_I}^\top-e_{X_S}^\top,\\
+\bar\nu_5&=-Y_H^{-1}e_{S_F}^\top+(1-Y_H^{-1})e_{S_O}^\top+e_{X_H}^\top,\\
+\bar\nu_6&=-Y_H^{-1}e_{S_A}^\top+(1-Y_H^{-1})e_{S_O}^\top+e_{X_H}^\top,\\
+\bar\nu_7&=-Y_H^{-1}e_{S_F}^\top+\beta_H(e_{S_{NO2}}-e_{S_{NO3}})^\top+e_{X_H}^\top,\\
+\bar\nu_8&=-Y_H^{-1}e_{S_F}^\top+\gamma_H(e_{S_{N2}}-e_{S_{NO2}})^\top+e_{X_H}^\top,\\
+\bar\nu_9&=-Y_H^{-1}e_{S_A}^\top+\beta_H(e_{S_{NO2}}-e_{S_{NO3}})^\top+e_{X_H}^\top,\\
+\bar\nu_{10}&=-Y_H^{-1}e_{S_A}^\top+\gamma_H(e_{S_{N2}}-e_{S_{NO2}})^\top+e_{X_H}^\top,\\
+\bar\nu_{11}&=e_{S_A}^\top-e_{S_F}^\top,\\
+\bar\nu_{12}&=f_{XI}e_{X_I}^\top+(1-f_{XI})e_{X_S}^\top-e_{X_H}^\top,\\
+\bar\nu_{13}&=-e_{S_A}^\top-Y_{PO4}e_{X_{PP}}^\top+e_{X_{PHA}}^\top,\\
+\bar\nu_{14}&=-Y_{PHA}e_{S_O}^\top+e_{X_{PP}}^\top-Y_{PHA}e_{X_{PHA}}^\top,\\
+\bar\nu_{15}&=\beta_S(e_{S_{NO2}}-e_{S_{NO3}})^\top+e_{X_{PP}}^\top-Y_{PHA}e_{X_{PHA}}^\top,\\
+\bar\nu_{16}&=\gamma_S(e_{S_{N2}}-e_{S_{NO2}})^\top+e_{X_{PP}}^\top-Y_{PHA}e_{X_{PHA}}^\top,\\
+\bar\nu_{17}&=(1-Y_{PAO}^{-1})e_{S_O}^\top+e_{X_{PAO}}^\top-Y_{PAO}^{-1}e_{X_{PHA}}^\top,\\
+\bar\nu_{18}&=\beta_P(e_{S_{NO2}}-e_{S_{NO3}})^\top+e_{X_{PAO}}^\top-Y_{PAO}^{-1}e_{X_{PHA}}^\top,\\
+\bar\nu_{19}&=\gamma_P(e_{S_{N2}}-e_{S_{NO2}})^\top+e_{X_{PAO}}^\top-Y_{PAO}^{-1}e_{X_{PHA}}^\top,\\
+\bar\nu_{20}&=f_{XI}e_{X_I}^\top+(1-f_{XI})e_{X_S}^\top-e_{X_{PAO}}^\top,\\
+\bar\nu_{21}&=-e_{X_{PP}}^\top,\qquad \bar\nu_{22}=e_{S_A}^\top-e_{X_{PHA}}^\top,\\
+\bar\nu_{23}&=-\frac{3.43-Y_{AOB}}{Y_{AOB}}e_{S_O}^\top+Y_{AOB}^{-1}e_{S_{NO2}}^\top+e_{X_{AOB}}^\top,\\
+\bar\nu_{24}&=-\frac{1.14-Y_{NOB}}{Y_{NOB}}e_{S_O}^\top-Y_{NOB}^{-1}e_{S_{NO2}}^\top+Y_{NOB}^{-1}e_{S_{NO3}}^\top+e_{X_{NOB}}^\top,\\
+\bar\nu_{25}&=f_{XI}e_{X_I}^\top+(1-f_{XI})e_{X_S}^\top-e_{X_{AOB}}^\top,\\
+\bar\nu_{26}&=f_{XI}e_{X_I}^\top+(1-f_{XI})e_{X_S}^\top-e_{X_{NOB}}^\top,\\
+\bar\nu_{27}&=-e_{S_{PO4}}^\top-\gamma_{OH}e_{X_{MeOH}}^\top+i_{PMeP}^{-1}e_{X_{MeP}}^\top,\\
+\bar\nu_{28}&=e_{S_{PO4}}^\top+\gamma_{OH}e_{X_{MeOH}}^\top-i_{PMeP}^{-1}e_{X_{MeP}}^\top,
+\end{align}
+where
+\begin{equation}
+\beta_H=\frac{1-Y_H}{(8/7)Y_H},\quad \gamma_H=\frac{1-Y_H}{1.72Y_H},\quad
+\beta_S=\frac{Y_{PHA}}{8/7},\quad \gamma_S=\frac{Y_{PHA}}{1.72},
+\end{equation}
+\begin{equation}
+\beta_P=\frac{1-Y_{PAO}}{(8/7)Y_{PAO}},\qquad
+\gamma_P=\frac{1-Y_{PAO}}{1.72Y_{PAO}}.
+\end{equation}
+
+Define
+\begin{align}
+\mathcal N={}&\{S_F,S_I,S_{N2},S_{NO2},S_{NO3},X_I,X_S,X_H,X_{PAO},X_{AOB},X_{NOB}\},\\
+\mathcal P={}&\{S_F,S_I,X_I,X_S,X_H,X_{PAO},X_{AOB},X_{NOB},X_{PP},X_{MeP}\}.
+\end{align}
+Nitrogen continuity completes every $S_{NH4}$ coefficient:
+\begin{equation}
+\nu_{p,S_{NH4}}=-\sum_{j\in\mathcal N}n_j\bar\nu_{p,j},
+\end{equation}
+where $n_{S_F}=i_{NSF}$, $n_{S_I}=i_{NSI}$, $n_{S_{N2}}=n_{S_{NO2}}=n_{S_{NO3}}=1$, $n_{X_I}=i_{NXI}$, $n_{X_S}=i_{NXS}$, and $n_{X_H}=n_{X_{PAO}}=n_{X_{AOB}}=n_{X_{NOB}}=i_{NBM}$. Except for the explicitly specified rows 27--28, phosphorus continuity gives
+\begin{equation}
+\nu_{p,S_{PO4}}=-\sum_{j\in\mathcal P}p_j\bar\nu_{p,j},
+\end{equation}
+where $p_{S_F}=i_{PSF}$, $p_{S_I}=i_{PSI}$, $p_{X_I}=i_{PXI}$, $p_{X_S}=i_{PXS}$, $p_{X_H}=p_{X_{PAO}}=p_{X_{AOB}}=p_{X_{NOB}}=i_{PBM}$, $p_{X_{PP}}=1$, and $p_{X_{MeP}}=i_{PMeP}$. All weights not listed are zero. Alkalinity is then
+\begin{equation}
+\nu_{p,S_{ALK}}=\frac{\nu_{p,S_{NH4}}}{14}-\frac{\nu_{p,S_{NO2}}}{14}-\frac{\nu_{p,S_{NO3}}}{14}+\frac{\nu_{p,S_{PO4}}}{31}.
+\end{equation}
+For every other coordinate $j\notin\{S_{NH4},S_{PO4},S_{ALK}\}$, set $\nu_{p,j}=\bar\nu_{p,j}$; rows 27--28 retain their displayed $S_{PO4}$ entries. Together with the preliminary rows, these rules define all entries of $\nu\in\R^{28\times20}$.
+
+The deterministic physical conservation rows are
+\begin{align}
+b_{SI}={}&e_{S_I}^\top,\\
+b_N={}&e_{S_{NH4}}^\top+e_{S_{NO2}}^\top+e_{S_{NO3}}^\top+e_{S_{N2}}^\top+i_{NSI}e_{S_I}^\top+i_{NSF}e_{S_F}^\top
++i_{NXI}e_{X_I}^\top+i_{NXS}e_{X_S}^\top\\
+&+i_{NBM}(e_{X_H}+e_{X_{PAO}}+e_{X_{AOB}}+e_{X_{NOB}})^\top,\\
+b_P={}&e_{S_{PO4}}^\top+i_{PSI}e_{S_I}^\top+i_{PSF}e_{S_F}^\top+i_{PXI}e_{X_I}^\top+i_{PXS}e_{X_S}^\top+e_{X_{PP}}^\top\\
+&+i_{PBM}(e_{X_H}+e_{X_{PAO}}+e_{X_{AOB}}+e_{X_{NOB}})^\top+i_{PMeP}e_{X_{MeP}}^\top,\\
+b_{alk}={}&e_{S_{ALK}}^\top-(1/14)e_{S_{NH4}}^\top+(1/14)e_{S_{NO2}}^\top+(1/14)e_{S_{NO3}}^\top-(1/31)e_{S_{PO4}}^\top,\\
+b_{metal}={}&\gamma_{OH}e_{X_{MeP}}^\top+i_{PMeP}^{-1}e_{X_{MeOH}}^\top.
+\end{align}
+With
+\begin{equation}
+B=\begin{bmatrix}b_{SI}\\b_N\\b_P\\b_{alk}\\b_{metal}\end{bmatrix}\in\R^{5\times20}
+\end{equation}
+and $b_k$ denoting row $k$, define the deterministic row-normalized operator
+\begin{equation}
+D_A=\diag(\|b_1\|_2^{-1},\ldots,\|b_5\|_2^{-1}),
+\qquad A=D_AB.
+\end{equation}
+Thus $A\nu^\top=0$, $Ae_{S_O}=0$, $\operatorname{rank}(A)=5$, and every row of $A$ has unit Euclidean norm. No linear combination is taken between the five named inventories.
+
+\subsection{Composite maps}
+
+In the component order of Equation~\eqref{eq:component_order}, the rows of the composite map are COD, reported TN, TP, and TSS:
+{\scriptsize
+\begin{equation}
+\label{eq:exact_composite_matrix}
+I_{\mathrm{comp}}=\begin{bmatrix}
+0&1&1&0&0&0&0&0&1&0&1&1&1&1&0&1&1&1&0&0\\
+0&0&0&1&1&1&0&0&0.01&0&0.02&0&0.07&0.07&0&0&0.07&0.07&0&0\\
+0&0&0&0&0&0&0&1&0&0&0.01&0&0.02&0.02&1&0&0.02&0.02&i_{PMeP}&0\\
+0&0&0&0&0&0&0&0&0&0&0.75&0.75&0.90&0.90&3.23&0.60&0.90&0.90&1&1
+\end{bmatrix}.
+\end{equation}
+}
+Reported TN excludes $S_{N2}$ because it represents converted dinitrogen rather than a regulated aqueous nitrogen species. The TSS vector is the transpose of the last row:
+\begin{equation}
+t_X=(0,0,0,0,0,0,0,0,0,0,0.75,0.75,0.90,0.90,3.23,0.60,0.90,0.90,1,1)^\top.
+\end{equation}
+
+\subsection{Fixed biological and chemical parameters}
+
+\begin{longtable}{llll}
+\caption{Complete ASM2d-TSN parameter set.}\label{tab:complete_asm_parameters}\\
+\toprule
+Group & Symbol & Value & Unit \\
+\midrule
+\endfirsthead
+\toprule
+Group & Symbol & Value & Unit \\
+\midrule
+\endhead
+Stoichiometry & $Y_H$ & 0.625 & g COD g COD$^{-1}$ \\
+ & $Y_{PAO}$ & 0.625 & g COD g COD$^{-1}$ \\
+ & $Y_{PHA}$ & 0.20 & g COD g P$^{-1}$ \\
+ & $Y_{PO4}$ & 0.40 & g P g COD$^{-1}$ \\
+ & $Y_{AOB}$ & 0.18 & g COD g N$^{-1}$ \\
+ & $Y_{NOB}$ & 0.08 & g COD g N$^{-1}$ \\
+ & $f_{SI}$ & 0 & -- \\
+ & $f_{XI}$ & 0.10 & -- \\
+Composition & $i_{NSI},i_{NSF}$ & 0.01, 0 & g N g COD$^{-1}$ \\
+ & $i_{NXI},i_{NXS},i_{NBM}$ & 0.02, 0, 0.07 & g N g COD$^{-1}$ \\
+ & $i_{PSI},i_{PSF}$ & 0, 0 & g P g COD$^{-1}$ \\
+ & $i_{PXI},i_{PXS},i_{PBM}$ & 0.01, 0, 0.02 & g P g COD$^{-1}$ \\
+ & $i_{PMeP}$ & $1/4.87$ & g P g TSS$^{-1}$ \\
+ & $i_{TSS,XI},i_{TSS,XS}$ & 0.75, 0.75 & g TSS g COD$^{-1}$ \\
+ & $i_{TSS,BM},i_{TSS,PHA}$ & 0.90, 0.60 & g TSS g COD$^{-1}$ \\
+ & $i_{TSS,PP}$ & 3.23 & g TSS g P$^{-1}$ \\
+Hydrolysis & $K_H$ & 3.0 & d$^{-1}$ \\
+ & $\eta_{hyd,NO3},\eta_{hyd,NO2},\eta_{hyd,fe}$ & 0.6, 0.6, 0.4 & -- \\
+ & $K_{O,hyd}$ & 0.20 & g O$_2$ m$^{-3}$ \\
+ & $K_{NO3,hyd},K_{NO2,hyd},K_{NOx,hyd}$ & 0.5, 0.5, 0.5 & g N m$^{-3}$ \\
+ & $K_X$ & 0.10 & g $X_S$ g $X_H^{-1}$ \\
+Heterotrophs & $\mu_H,q_{fe},b_H$ & 6.0, 3.0, 0.40 & d$^{-1}$ \\
+ & $\eta_{H,NO3},\eta_{H,NO2}$ & 0.9, 0.9 & -- \\
+ & $K_{O,H}$ & 0.20 & g O$_2$ m$^{-3}$ \\
+ & $K_F,K_{fe},K_A$ & 4, 4, 4 & g COD m$^{-3}$ \\
+ & $K_{NO3,H},K_{NO2,H},K_{NOx,H}$ & 0.5, 0.5, 0.5 & g N m$^{-3}$ \\
+ & $K_{NH4,H}$ & 0.05 & g N m$^{-3}$ \\
+ & $K_{PO4,H}$ & 0.01 & g P m$^{-3}$ \\
+ & $K_{ALK,H}$ & 0.10 & mol HCO$_3^-$ m$^{-3}$ \\
+PAO & $q_{PHA}$ & 5.0 & d$^{-1}$ \\
+ & $q_{PP}$ & 0.60 & g P (g COD d)$^{-1}$ \\
+ & $\mu_{PAO}$ & 0.56 & d$^{-1}$ \\
+ & $\eta_{PAO,NO3},\eta_{PAO,NO2}$ & 0.07, 0.90 & -- \\
+ & $b_{PAO},b_{PP},b_{PHA}$ & 0.20, 0.20, 0.20 & d$^{-1}$ \\
+ & $K_{O,PAO}$ & 0.20 & g O$_2$ m$^{-3}$ \\
+ & $K_{NO3,PAO},K_{NO2,PAO},K_{NOx,PAO}$ & 0.5, 0.5, 0.5 & g N m$^{-3}$ \\
+ & $K_{NH4,PAO}$ & 0.05 & g N m$^{-3}$ \\
+ & $K_{PS},K_{PO4,PAO}$ & 0.20, 0.01 & g P m$^{-3}$ \\
+ & $K_{ALK,PAO}$ & 0.10 & mol HCO$_3^-$ m$^{-3}$ \\
+ & $K_{PP},K_{\max},K_{IPP}$ & 0.01, 0.34, 0.02 & g P g COD$^{-1}$ \\
+ & $K_{PHA}$ & 0.01 & g COD g COD$^{-1}$ \\
+Nitrifiers & $\mu_{AOB},\mu_{NOB}$ & 1.81, 1.52 & d$^{-1}$ \\
+ & $b_{AOB},b_{NOB}$ & 0.20, 0.17 & d$^{-1}$ \\
+ & $K_{O,AOB},K_{O,NOB}$ & 0.74, 1.75 & g O$_2$ m$^{-3}$ \\
+ & $K_{NH4,AOB},K_{NO2,NOB}$ & 0.5, 0.5 & g N m$^{-3}$ \\
+ & $K_{ALK,nit}$ & 0.5 & mol HCO$_3^-$ m$^{-3}$ \\
+ & $K_{PO4,nit}$ & 0.01 & g P m$^{-3}$ \\
+Chemical & $k_{PRE}$ & 1.0 & m$^3$ (g TSS d)$^{-1}$ \\
+ & $k_{RED}$ & 0.60 & d$^{-1}$ \\
+ & $\gamma_{OH}$ & 3.45 & g TSS g P$^{-1}$ \\
+ & $K_{ALK,chem}$ & 0.50 & mol HCO$_3^-$ m$^{-3}$ \\
+\bottomrule
+\end{longtable}
 
 \section*{CRediT authorship contribution statement}
 
@@ -888,7 +1409,7 @@ This work is funded by the Department of Science and Technology of the Philippin
 
 \section*{Data availability}
 
-The implementation, fixed design, fitted arrays, and immutable article-eligible result bundle will be archived with their manifest at \url{https://github.com/egbertoselerio1997/surrogate-optimization-arch}. The equations and complete training contract needed to interpret those files are contained in this article.
+All equations, parameter values, coordinate orders, sampling rules, estimators, acceptance tests, and search rules needed to reproduce the calculation are contained in this article. The generated 20,000-state table, fitted coefficient matrix, assessment table, and complete optimization archives will be deposited as a public research-data record when the numerical study is complete.
 
 \section*{References}
 
@@ -909,8 +1430,6 @@ The implementation, fixed design, fitted arrays, and immutable article-eligible 
 \noindent Jones, D. R., Perttunen, C. D., \& Stuckman, B. E. (1993). Lipschitzian optimization without the Lipschitz constant. \textit{Journal of Optimization Theory and Applications, 79}(1), 157--181. doi: 10.1007/BF00941892.
 
 \noindent McKay, M. D., Beckman, R. J., \& Conover, W. J. (1979). A comparison of three methods for selecting values of input variables in the analysis of output from a computer code. \textit{Technometrics, 21}(2), 239--245. doi: 10.1080/00401706.1979.10489755.
-
-\noindent Paige, C. C., \& Saunders, M. A. (1982). LSQR: An algorithm for sparse linear equations and sparse least squares. \textit{ACM Transactions on Mathematical Software, 8}(1), 43--71. doi: 10.1145/355984.355989.
 
 \noindent Selerio Jr., E. F. (2026). An interpretable statistical surrogate of activated sludge systems that preserves mass conservation and component non-negativity. \textit{Digital Chemical Engineering, 20}, 100329. doi: 10.1016/j.dche.2026.100329.
 
