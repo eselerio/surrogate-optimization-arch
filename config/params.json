@@ -1,2001 +1,1331 @@
 {
-  "run": {
-    "run_id": "article_final_v2",
-    "default_profile": "full",
-    "profile_env_var": "ICSOR_PROFILE",
-    "resume": true,
-    "resume_policy": "matching_contract_only",
-    "threads": 12,
-    "solver_chains": 12,
-    "hardware_profile": "cpu_multicore",
-    "profiles": {
-      "full": {},
-      "smoke": {
-        "run_id": "article_smoke_13model_v1",
-        "run": {
-          "threads": 2,
-          "solver_chains": 2,
-          "hardware_profile": "cpu_smoke"
-        },
-        "simulation": {
-          "sampling": {
-            "id_samples": 80,
-            "n_chains": 2,
-            "parallel_workers": 2
-          },
-          "ood": {
-            "regimes": {
-              "mild": {
-                "n_samples": 6
+    "run":  {
+                "run_id":  "article_full_v1",
+                "default_profile":  "full",
+                "profile_env_var":  "SURROGATE_OPT_PROFILE",
+                "run_id_env_var":  "SURROGATE_OPT_RUN_ID",
+                "dataset_source_run_env_var":  "SURROGATE_OPT_DATASET_SOURCE_RUN_ID",
+                "resume":  true,
+                "resume_policy":  "matching_contract_only",
+                "threads":  12,
+                "solver_chains":  12,
+                "hardware_profile":  "cpu_multicore",
+                "profiles":  {
+                                 "full":  {
+
+                                          },
+                                 "smoke":  {
+                                               "run_id":  "article_smoke_v1",
+                                               "run":  {
+                                                           "threads":  2,
+                                                           "solver_chains":  2,
+                                                           "hardware_profile":  "cpu_smoke"
+                                                       },
+                                               "simulation":  {
+                                                                  "sampling":  {
+                                                                                   "id_samples":  160,
+                                                                                   "n_chains":  2,
+                                                                                   "parallel_workers":  2,
+                                                                                   "parallel_chunk_size":  16
+                                                                               }
+                                                              },
+                                               "icsor":  {
+                                                             "max_outer_iterations":  4,
+                                                             "objective_regression_window":  3
+                                                         },
+                                               "optimization":  {
+                                                                    "surrogate_search":  {
+                                                                                             "total_verified_budget":  350,
+                                                                                             "interior_direct_maxfun":  140,
+                                                                                             "edge_direct_maxfun":  25,
+                                                                                             "independent_grid_points":  [
+                                                                                                                             9,
+                                                                                                                             7
+                                                                                                                         ],
+                                                                                             "direct_len_tol":  0.03,
+                                                                                             "mesh_initial_step":  [
+                                                                                                                       1.0,
+                                                                                                                       0.1
+                                                                                                                   ],
+                                                                                             "mesh_min_step":  [
+                                                                                                                   0.25,
+                                                                                                                   0.025
+                                                                                                               ]
+                                                                                         },
+                                                                    "mechanistic_search":  {
+                                                                                               "total_verified_budget":  180,
+                                                                                               "interior_direct_maxfun":  50,
+                                                                                               "edge_direct_maxfun":  10,
+                                                                                               "independent_grid_points":  [
+                                                                                                                               7,
+                                                                                                                               5
+                                                                                                                           ],
+                                                                                               "direct_len_tol":  0.08,
+                                                                                               "mesh_initial_step":  [
+                                                                                                                         2.0,
+                                                                                                                         0.2
+                                                                                                                     ],
+                                                                                               "mesh_min_step":  [
+                                                                                                                     0.5,
+                                                                                                                     0.05
+                                                                                                                 ]
+                                                                                           }
+                                                                },
+                                               "robustness":  {
+                                                                  "n_cases":  3
+                                                              },
+                                               "timing":  {
+                                                              "batch_size":  16,
+                                                              "warmup_runs":  1,
+                                                              "measured_runs":  3,
+                                                              "single_prediction_repeats":  10
+                                                          }
+                                           }
+                             }
+            },
+    "simulation":  {
+                       "schema_version":  "4.0",
+                       "sampling":  {
+                                        "id_samples":  10000,
+                                        "seed":  42,
+                                        "n_chains":  12,
+                                        "max_sample_attempts":  25,
+                                        "parallel_workers":  12,
+                                        "parallel_chunk_size":  64
+                                    },
+                       "operational_columns":  [
+                                                   "HRT",
+                                                   "Aeration"
+                                               ],
+                       "operational_ranges":  {
+                                                  "HRT":  [
+                                                              6,
+                                                              36
+                                                          ],
+                                                  "Aeration":  [
+                                                                   0.5,
+                                                                   2.5
+                                                               ]
+                                              },
+                       "ood":  {
+                                   "candidate_mix":  {
+                                                         "one_variable":  0.7,
+                                                         "two_variables":  0.3
+                                                     },
+                                   "other_variables":  "id_ranges",
+                                   "regimes":  {
+                                                   "mild":  {
+                                                                "n_samples":  600,
+                                                                "ranges":  {
+                                                                               "HRT":  [
+                                                                                           39,
+                                                                                           43.5
+                                                                                       ],
+                                                                               "Aeration":  [
+                                                                                                2.7,
+                                                                                                3
+                                                                                            ],
+                                                                               "S_NH4":  [
+                                                                                             59.3,
+                                                                                             65.8
+                                                                                         ],
+                                                                               "X_S":  [
+                                                                                           302,
+                                                                                           335
+                                                                                       ]
+                                                                           }
+                                                            },
+                                                   "severe":  {
+                                                                  "n_samples":  600,
+                                                                  "ranges":  {
+                                                                                 "HRT":  [
+                                                                                             46.5,
+                                                                                             54
+                                                                                         ],
+                                                                                 "Aeration":  [
+                                                                                                  3.2,
+                                                                                                  3.7
+                                                                                              ],
+                                                                                 "S_NH4":  [
+                                                                                               70.1,
+                                                                                               80.8
+                                                                                           ],
+                                                                                 "X_S":  [
+                                                                                             357,
+                                                                                             412
+                                                                                         ]
+                                                                             }
+                                                              }
+                                               }
+                               },
+                       "solver":  {
+                                      "lower_bound":  1E-08,
+                                      "upper_bound":  1500,
+                                      "initial_guess_floor":  1E-06,
+                                      "warm_start_previous_weight":  0.55,
+                                      "warm_start_influent_weight":  0.45,
+                                      "initial_s_a_fraction":  0.7,
+                                      "initial_s_f_fraction":  0.7,
+                                      "initial_heterotroph_to_xs_ratio":  0.25,
+                                      "initial_pao_to_pp_ratio":  1.2,
+                                      "initial_aob_to_nh4_ratio":  0.03,
+                                      "initial_nob_to_no2_ratio":  0.1,
+                                      "multistart_s_a_fraction":  0.35,
+                                      "multistart_s_f_fraction":  0.35,
+                                      "multistart_heterotroph_to_xs_ratio":  0.45,
+                                      "multistart_pao_to_pp_ratio":  1.8,
+                                      "multistart_aob_to_nh4_ratio":  0.08,
+                                      "multistart_nob_to_no2_ratio":  0.25,
+                                      "dynamic_relaxation_days":  20,
+                                      "dynamic_absolute_tolerance":  1E-08,
+                                      "dynamic_relative_tolerance":  1E-06,
+                                      "dynamic_max_step":  0.25,
+                                      "residual_tolerance":  1E-09,
+                                      "variable_tolerance":  1E-09,
+                                      "gradient_tolerance":  1E-09,
+                                      "acceptance_residual_max":  1E-09,
+                                      "max_nfev":  1200
+                                  },
+                       "influent_state_ranges":  {
+                                                     "S_O":  [
+                                                                 0,
+                                                                 0.5
+                                                             ],
+                                                     "S_F":  [
+                                                                 20,
+                                                                 180
+                                                             ],
+                                                     "S_A":  [
+                                                                 5,
+                                                                 80
+                                                             ],
+                                                     "S_NH4":  [
+                                                                   12,
+                                                                   55
+                                                               ],
+                                                     "S_NO2":  [
+                                                                   0,
+                                                                   3
+                                                               ],
+                                                     "S_NO3":  [
+                                                                   0,
+                                                                   8
+                                                               ],
+                                                     "S_N2":  [
+                                                                  0,
+                                                                  2
+                                                              ],
+                                                     "S_PO4":  [
+                                                                   2,
+                                                                   18
+                                                               ],
+                                                     "S_I":  [
+                                                                 10,
+                                                                 90
+                                                             ],
+                                                     "S_ALK":  [
+                                                                   80,
+                                                                   260
+                                                               ],
+                                                     "X_I":  [
+                                                                 20,
+                                                                 120
+                                                             ],
+                                                     "X_S":  [
+                                                                 60,
+                                                                 280
+                                                             ],
+                                                     "X_H":  [
+                                                                 15,
+                                                                 100
+                                                             ],
+                                                     "X_PAO":  [
+                                                                   5,
+                                                                   60
+                                                               ],
+                                                     "X_PP":  [
+                                                                  2,
+                                                                  20
+                                                              ],
+                                                     "X_PHA":  [
+                                                                   1,
+                                                                   30
+                                                               ],
+                                                     "X_AOB":  [
+                                                                   0.5,
+                                                                   8
+                                                               ],
+                                                     "X_NOB":  [
+                                                                   0.5,
+                                                                   8
+                                                               ],
+                                                     "X_MeP":  [
+                                                                   0,
+                                                                   12
+                                                               ],
+                                                     "X_MeOH":  [
+                                                                    0,
+                                                                    12
+                                                                ]
+                                                 },
+                       "aeration_model":  {
+                                              "do_saturation":  8.5,
+                                              "kla_base":  2,
+                                              "kla_per_aeration":  18
+                                          },
+                       "process_types":  [
+                                             "biochemical",
+                                             "biochemical",
+                                             "biochemical",
+                                             "biochemical",
+                                             "biochemical",
+                                             "biochemical",
+                                             "biochemical",
+                                             "biochemical",
+                                             "biochemical",
+                                             "biochemical",
+                                             "biochemical",
+                                             "biochemical",
+                                             "biochemical",
+                                             "biochemical",
+                                             "biochemical",
+                                             "biochemical",
+                                             "biochemical",
+                                             "biochemical",
+                                             "biochemical",
+                                             "biochemical",
+                                             "biochemical",
+                                             "biochemical",
+                                             "biochemical",
+                                             "biochemical",
+                                             "biochemical",
+                                             "biochemical",
+                                             "chemical",
+                                             "chemical"
+                                         ],
+                       "workbook":  {
+                                        "sheets":  [
+                                                       "stoichiometric_matrix",
+                                                       "composition_matrix",
+                                                       "parameter_table"
+                                                   ],
+                                        "dissolved_state_columns":  [
+                                                                        "S_O",
+                                                                        "S_F",
+                                                                        "S_A",
+                                                                        "S_NH4",
+                                                                        "S_NO2",
+                                                                        "S_NO3",
+                                                                        "S_N2",
+                                                                        "S_PO4",
+                                                                        "S_I",
+                                                                        "S_ALK"
+                                                                    ],
+                                        "particulate_state_columns":  [
+                                                                          "X_I",
+                                                                          "X_S",
+                                                                          "X_H",
+                                                                          "X_PAO",
+                                                                          "X_PP",
+                                                                          "X_PHA",
+                                                                          "X_AOB",
+                                                                          "X_NOB",
+                                                                          "X_MeP",
+                                                                          "X_MeOH"
+                                                                      ],
+                                        "state_columns":  [
+                                                              "S_O",
+                                                              "S_F",
+                                                              "S_A",
+                                                              "S_NH4",
+                                                              "S_NO2",
+                                                              "S_NO3",
+                                                              "S_N2",
+                                                              "S_PO4",
+                                                              "S_I",
+                                                              "S_ALK",
+                                                              "X_I",
+                                                              "X_S",
+                                                              "X_H",
+                                                              "X_PAO",
+                                                              "X_PP",
+                                                              "X_PHA",
+                                                              "X_AOB",
+                                                              "X_NOB",
+                                                              "X_MeP",
+                                                              "X_MeOH"
+                                                          ],
+                                        "state_units":  {
+                                                            "S_O":  "g O2/m^3",
+                                                            "S_F":  "g COD/m^3",
+                                                            "S_A":  "g COD/m^3",
+                                                            "S_NH4":  "g N/m^3",
+                                                            "S_NO2":  "g N/m^3",
+                                                            "S_NO3":  "g N/m^3",
+                                                            "S_N2":  "g N/m^3",
+                                                            "S_PO4":  "g P/m^3",
+                                                            "S_I":  "g COD/m^3",
+                                                            "S_ALK":  "mol/m^3",
+                                                            "X_I":  "g COD/m^3",
+                                                            "X_S":  "g COD/m^3",
+                                                            "X_H":  "g COD/m^3",
+                                                            "X_PAO":  "g COD/m^3",
+                                                            "X_PP":  "g P/m^3",
+                                                            "X_PHA":  "g COD/m^3",
+                                                            "X_AOB":  "g COD/m^3",
+                                                            "X_NOB":  "g COD/m^3",
+                                                            "X_MeP":  "g TSS/m^3",
+                                                            "X_MeOH":  "g TSS/m^3"
+                                                        },
+                                        "processes":  [
+                                                          {
+                                                              "index":  1,
+                                                              "name":  "Aerobic hydrolysis"
+                                                          },
+                                                          {
+                                                              "index":  2,
+                                                              "name":  "Anoxic hydrolysis (NO2)"
+                                                          },
+                                                          {
+                                                              "index":  3,
+                                                              "name":  "Anoxic hydrolysis (NO3)"
+                                                          },
+                                                          {
+                                                              "index":  4,
+                                                              "name":  "Anaerobic hydrolysis"
+                                                          },
+                                                          {
+                                                              "index":  5,
+                                                              "name":  "Aerobic growth on S_F"
+                                                          },
+                                                          {
+                                                              "index":  6,
+                                                              "name":  "Aerobic growth on S_A"
+                                                          },
+                                                          {
+                                                              "index":  7,
+                                                              "name":  "Anoxic growth on S_F (NO3 -\u003e NO2)"
+                                                          },
+                                                          {
+                                                              "index":  8,
+                                                              "name":  "Anoxic growth on S_F (NO2 -\u003e N2)"
+                                                          },
+                                                          {
+                                                              "index":  9,
+                                                              "name":  "Anoxic growth on S_A (NO3 -\u003e NO2)"
+                                                          },
+                                                          {
+                                                              "index":  10,
+                                                              "name":  "Anoxic growth on S_A (NO2 -\u003e N2)"
+                                                          },
+                                                          {
+                                                              "index":  11,
+                                                              "name":  "Fermentation"
+                                                          },
+                                                          {
+                                                              "index":  12,
+                                                              "name":  "Lysis of X_H"
+                                                          },
+                                                          {
+                                                              "index":  13,
+                                                              "name":  "Storage of X_PHA"
+                                                          },
+                                                          {
+                                                              "index":  14,
+                                                              "name":  "Aerobic storage of X_PP"
+                                                          },
+                                                          {
+                                                              "index":  15,
+                                                              "name":  "Anoxic storage of X_PP (NO3 -\u003e NO2)"
+                                                          },
+                                                          {
+                                                              "index":  16,
+                                                              "name":  "Anoxic storage of X_PP (NO2 -\u003e N2)"
+                                                          },
+                                                          {
+                                                              "index":  17,
+                                                              "name":  "Aerobic growth (PAO)"
+                                                          },
+                                                          {
+                                                              "index":  18,
+                                                              "name":  "Anoxic growth (PAO, NO3 -\u003e NO2)"
+                                                          },
+                                                          {
+                                                              "index":  19,
+                                                              "name":  "Anoxic growth (PAO, NO2 -\u003e N2)"
+                                                          },
+                                                          {
+                                                              "index":  20,
+                                                              "name":  "Lysis of X_PAO"
+                                                          },
+                                                          {
+                                                              "index":  21,
+                                                              "name":  "Lysis of X_PP"
+                                                          },
+                                                          {
+                                                              "index":  22,
+                                                              "name":  "Lysis of X_PHA"
+                                                          },
+                                                          {
+                                                              "index":  23,
+                                                              "name":  "Aerobic growth of X_AOB"
+                                                          },
+                                                          {
+                                                              "index":  24,
+                                                              "name":  "Aerobic growth of X_NOB"
+                                                          },
+                                                          {
+                                                              "index":  25,
+                                                              "name":  "Lysis of X_AOB"
+                                                          },
+                                                          {
+                                                              "index":  26,
+                                                              "name":  "Lysis of X_NOB"
+                                                          },
+                                                          {
+                                                              "index":  27,
+                                                              "name":  "Precipitation"
+                                                          },
+                                                          {
+                                                              "index":  28,
+                                                              "name":  "Redissolution"
+                                                          }
+                                                      ],
+                                        "parameters":  [
+                                                           {
+                                                               "category":  "Stoichiometric Parameters",
+                                                               "symbol":  "Y_H",
+                                                               "excel_name":  "Y_H",
+                                                               "description":  "Yield coefficient for heterotrophic biomass",
+                                                               "value":  0.625,
+                                                               "unit":  "g COD/g COD"
+                                                           },
+                                                           {
+                                                               "category":  "Stoichiometric Parameters",
+                                                               "symbol":  "Y_PAO",
+                                                               "excel_name":  "Y_PAO",
+                                                               "description":  "Yield coefficient for PAO biomass",
+                                                               "value":  0.625,
+                                                               "unit":  "g COD/g COD"
+                                                           },
+                                                           {
+                                                               "category":  "Stoichiometric Parameters",
+                                                               "symbol":  "Y_PHA",
+                                                               "excel_name":  "Y_PHA",
+                                                               "description":  "PHA requirement for PP storage",
+                                                               "value":  0.2,
+                                                               "unit":  "g COD/g P"
+                                                           },
+                                                           {
+                                                               "category":  "Stoichiometric Parameters",
+                                                               "symbol":  "Y_PO4",
+                                                               "excel_name":  "Y_PO4",
+                                                               "description":  "PO4 release per PHA stored",
+                                                               "value":  0.4,
+                                                               "unit":  "g P/g COD"
+                                                           },
+                                                           {
+                                                               "category":  "Stoichiometric Parameters",
+                                                               "symbol":  "Y_AOB",
+                                                               "excel_name":  "Y_AOB",
+                                                               "description":  "Yield coefficient for AOB biomass",
+                                                               "value":  0.18,
+                                                               "unit":  "g COD/g N"
+                                                           },
+                                                           {
+                                                               "category":  "Stoichiometric Parameters",
+                                                               "symbol":  "Y_NOB",
+                                                               "excel_name":  "Y_NOB",
+                                                               "description":  "Yield coefficient for NOB biomass",
+                                                               "value":  0.08,
+                                                               "unit":  "g COD/g N"
+                                                           },
+                                                           {
+                                                               "category":  "Stoichiometric Parameters",
+                                                               "symbol":  "f_SI",
+                                                               "excel_name":  "f_SI",
+                                                               "description":  "Production of S_I in hydrolysis",
+                                                               "value":  0,
+                                                               "unit":  "g COD/g COD"
+                                                           },
+                                                           {
+                                                               "category":  "Stoichiometric Parameters",
+                                                               "symbol":  "f_XI",
+                                                               "excel_name":  "f_XI",
+                                                               "description":  "Fraction of inert COD generated in biomass lysis",
+                                                               "value":  0.1,
+                                                               "unit":  "g COD/g COD"
+                                                           },
+                                                           {
+                                                               "category":  "Composition Parameters",
+                                                               "symbol":  "i_NSI",
+                                                               "excel_name":  "i_NSI",
+                                                               "description":  "Nitrogen content of S_I",
+                                                               "value":  0.01,
+                                                               "unit":  "g N/g COD"
+                                                           },
+                                                           {
+                                                               "category":  "Composition Parameters",
+                                                               "symbol":  "i_NSF",
+                                                               "excel_name":  "i_NSF",
+                                                               "description":  "Nitrogen content of S_F",
+                                                               "value":  0,
+                                                               "unit":  "g N/g COD"
+                                                           },
+                                                           {
+                                                               "category":  "Composition Parameters",
+                                                               "symbol":  "i_NXI",
+                                                               "excel_name":  "i_NXI",
+                                                               "description":  "Nitrogen content of X_I",
+                                                               "value":  0.02,
+                                                               "unit":  "g N/g COD"
+                                                           },
+                                                           {
+                                                               "category":  "Composition Parameters",
+                                                               "symbol":  "i_NXS",
+                                                               "excel_name":  "i_NXS",
+                                                               "description":  "Nitrogen content of X_S",
+                                                               "value":  0,
+                                                               "unit":  "g N/g COD"
+                                                           },
+                                                           {
+                                                               "category":  "Composition Parameters",
+                                                               "symbol":  "i_NBM",
+                                                               "excel_name":  "i_NBM",
+                                                               "description":  "Nitrogen content of biomass",
+                                                               "value":  0.07,
+                                                               "unit":  "g N/g COD"
+                                                           },
+                                                           {
+                                                               "category":  "Composition Parameters",
+                                                               "symbol":  "i_PSI",
+                                                               "excel_name":  "i_PSI",
+                                                               "description":  "Phosphorus content of S_I",
+                                                               "value":  0,
+                                                               "unit":  "g P/g COD"
+                                                           },
+                                                           {
+                                                               "category":  "Composition Parameters",
+                                                               "symbol":  "i_PSF",
+                                                               "excel_name":  "i_PSF",
+                                                               "description":  "Phosphorus content of S_F",
+                                                               "value":  0,
+                                                               "unit":  "g P/g COD"
+                                                           },
+                                                           {
+                                                               "category":  "Composition Parameters",
+                                                               "symbol":  "i_PXI",
+                                                               "excel_name":  "i_PXI",
+                                                               "description":  "Phosphorus content of X_I",
+                                                               "value":  0.01,
+                                                               "unit":  "g P/g COD"
+                                                           },
+                                                           {
+                                                               "category":  "Composition Parameters",
+                                                               "symbol":  "i_PXS",
+                                                               "excel_name":  "i_PXS",
+                                                               "description":  "Phosphorus content of X_S",
+                                                               "value":  0,
+                                                               "unit":  "g P/g COD"
+                                                           },
+                                                           {
+                                                               "category":  "Composition Parameters",
+                                                               "symbol":  "i_PBM",
+                                                               "excel_name":  "i_PBM",
+                                                               "description":  "Phosphorus content of biomass",
+                                                               "value":  0.02,
+                                                               "unit":  "g P/g COD"
+                                                           },
+                                                           {
+                                                               "category":  "Composition Parameters",
+                                                               "symbol":  "i_TSS_XI",
+                                                               "excel_name":  "i_TSS_XI",
+                                                               "description":  "TSS to COD ratio for X_I",
+                                                               "value":  0.75,
+                                                               "unit":  "g TSS/g COD"
+                                                           },
+                                                           {
+                                                               "category":  "Composition Parameters",
+                                                               "symbol":  "i_TSS_XS",
+                                                               "excel_name":  "i_TSS_XS",
+                                                               "description":  "TSS to COD ratio for X_S",
+                                                               "value":  0.75,
+                                                               "unit":  "g TSS/g COD"
+                                                           },
+                                                           {
+                                                               "category":  "Composition Parameters",
+                                                               "symbol":  "i_TSS_BM",
+                                                               "excel_name":  "i_TSS_BM",
+                                                               "description":  "TSS to COD ratio for biomass",
+                                                               "value":  0.9,
+                                                               "unit":  "g TSS/g COD"
+                                                           },
+                                                           {
+                                                               "category":  "Composition Parameters",
+                                                               "symbol":  "i_TSS_PHA",
+                                                               "excel_name":  "i_TSS_PHA",
+                                                               "description":  "TSS to COD ratio for X_PHA used in the TSS composite definition",
+                                                               "value":  0.6,
+                                                               "unit":  "g TSS/g COD"
+                                                           },
+                                                           {
+                                                               "category":  "Composition Parameters",
+                                                               "symbol":  "i_TSS_PP",
+                                                               "excel_name":  "i_TSS_PP",
+                                                               "description":  "TSS to P ratio for X_PP used in the TSS composite definition",
+                                                               "value":  3.23,
+                                                               "unit":  "g TSS/g P"
+                                                           },
+                                                           {
+                                                               "category":  "Composition Parameters",
+                                                               "symbol":  "i_PMeP",
+                                                               "excel_name":  "i_PMeP",
+                                                               "description":  "Phosphorus content of X_MeP derived from the precipitation stoichiometry",
+                                                               "value":  0.205,
+                                                               "unit":  "g P/g TSS"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (Hydrolysis)",
+                                                               "symbol":  "K_H",
+                                                               "excel_name":  "K_H",
+                                                               "description":  "Hydrolysis rate constant",
+                                                               "value":  3,
+                                                               "unit":  "d^-1"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (Hydrolysis)",
+                                                               "symbol":  "eta_hyd_NO3",
+                                                               "excel_name":  "eta_hyd_NO3",
+                                                               "description":  "Anoxic hydrolysis reduction factor via nitrate",
+                                                               "value":  0.6,
+                                                               "unit":  "-"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (Hydrolysis)",
+                                                               "symbol":  "eta_hyd_NO2",
+                                                               "excel_name":  "eta_hyd_NO2",
+                                                               "description":  "Anoxic hydrolysis reduction factor via nitrite",
+                                                               "value":  0.6,
+                                                               "unit":  "-"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (Hydrolysis)",
+                                                               "symbol":  "eta_hyd_fe",
+                                                               "excel_name":  "eta_hyd_fe",
+                                                               "description":  "Anaerobic hydrolysis reduction factor",
+                                                               "value":  0.4,
+                                                               "unit":  "-"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (Hydrolysis)",
+                                                               "symbol":  "K_O_hyd",
+                                                               "excel_name":  "K_O_hyd",
+                                                               "description":  "Oxygen saturation coefficient for hydrolysis",
+                                                               "value":  0.2,
+                                                               "unit":  "g O2/m^3"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (Hydrolysis)",
+                                                               "symbol":  "K_NO3_hyd",
+                                                               "excel_name":  "K_NO3_hyd",
+                                                               "description":  "Nitrate saturation coefficient for hydrolysis",
+                                                               "value":  0.5,
+                                                               "unit":  "g N/m^3"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (Hydrolysis)",
+                                                               "symbol":  "K_NO2_hyd",
+                                                               "excel_name":  "K_NO2_hyd",
+                                                               "description":  "Nitrite saturation coefficient for hydrolysis",
+                                                               "value":  0.5,
+                                                               "unit":  "g N/m^3"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (Hydrolysis)",
+                                                               "symbol":  "K_NOX_hyd",
+                                                               "excel_name":  "K_NOX_hyd",
+                                                               "description":  "Nitrogen oxide inhibition term for anaerobic hydrolysis",
+                                                               "value":  0.5,
+                                                               "unit":  "g N/m^3"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (Hydrolysis)",
+                                                               "symbol":  "K_X",
+                                                               "excel_name":  "K_X",
+                                                               "description":  "Saturation coefficient for particulate COD",
+                                                               "value":  0.1,
+                                                               "unit":  "g X_S/g X_H"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (Heterotrophs)",
+                                                               "symbol":  "mu_H",
+                                                               "excel_name":  "mu_H",
+                                                               "description":  "Maximum growth rate on substrate",
+                                                               "value":  6,
+                                                               "unit":  "d^-1"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (Heterotrophs)",
+                                                               "symbol":  "q_Fe",
+                                                               "excel_name":  "q_Fe",
+                                                               "description":  "Maximum rate factor for fermentation",
+                                                               "value":  3,
+                                                               "unit":  "-"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (Heterotrophs)",
+                                                               "symbol":  "eta_H_NO3",
+                                                               "excel_name":  "eta_H_NO3",
+                                                               "description":  "Reduction factor for heterotrophic denitrification via nitrate",
+                                                               "value":  0.9,
+                                                               "unit":  "-"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (Heterotrophs)",
+                                                               "symbol":  "eta_H_NO2",
+                                                               "excel_name":  "eta_H_NO2",
+                                                               "description":  "Reduction factor for heterotrophic denitrification via nitrite",
+                                                               "value":  0.9,
+                                                               "unit":  "-"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (Heterotrophs)",
+                                                               "symbol":  "b_H",
+                                                               "excel_name":  "b_H",
+                                                               "description":  "Rate constant for lysis and decay",
+                                                               "value":  0.4,
+                                                               "unit":  "d^-1"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (Heterotrophs)",
+                                                               "symbol":  "K_O_H",
+                                                               "excel_name":  "K_O_H",
+                                                               "description":  "Oxygen saturation coefficient for heterotrophs",
+                                                               "value":  0.2,
+                                                               "unit":  "g O2/m^3"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (Heterotrophs)",
+                                                               "symbol":  "K_F",
+                                                               "excel_name":  "K_F",
+                                                               "description":  "Saturation coefficient for growth on S_F",
+                                                               "value":  4,
+                                                               "unit":  "g COD/m^3"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (Heterotrophs)",
+                                                               "symbol":  "K_fe",
+                                                               "excel_name":  "K_fe",
+                                                               "description":  "Saturation coefficient for fermentation of S_F",
+                                                               "value":  4,
+                                                               "unit":  "g COD/m^3"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (Heterotrophs)",
+                                                               "symbol":  "K_A",
+                                                               "excel_name":  "K_A",
+                                                               "description":  "Saturation coefficient for S_A",
+                                                               "value":  4,
+                                                               "unit":  "g COD/m^3"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (Heterotrophs)",
+                                                               "symbol":  "K_NO3_H",
+                                                               "excel_name":  "K_NO3_H",
+                                                               "description":  "Nitrate saturation coefficient for heterotrophs",
+                                                               "value":  0.5,
+                                                               "unit":  "g N/m^3"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (Heterotrophs)",
+                                                               "symbol":  "K_NO2_H",
+                                                               "excel_name":  "K_NO2_H",
+                                                               "description":  "Nitrite saturation coefficient for heterotrophs",
+                                                               "value":  0.5,
+                                                               "unit":  "g N/m^3"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (Heterotrophs)",
+                                                               "symbol":  "K_NOX_H",
+                                                               "excel_name":  "K_NOX_H",
+                                                               "description":  "Nitrogen oxide inhibition term for fermentation",
+                                                               "value":  0.5,
+                                                               "unit":  "g N/m^3"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (Heterotrophs)",
+                                                               "symbol":  "K_NH4_H",
+                                                               "excel_name":  "K_NH4_H",
+                                                               "description":  "Ammonium saturation coefficient for heterotrophs",
+                                                               "value":  0.05,
+                                                               "unit":  "g N/m^3"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (Heterotrophs)",
+                                                               "symbol":  "K_PO4_H",
+                                                               "excel_name":  "K_PO4_H",
+                                                               "description":  "Phosphate saturation coefficient for heterotrophs",
+                                                               "value":  0.01,
+                                                               "unit":  "g P/m^3"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (Heterotrophs)",
+                                                               "symbol":  "K_ALK_H",
+                                                               "excel_name":  "K_ALK_H",
+                                                               "description":  "Alkalinity saturation coefficient for heterotrophs",
+                                                               "value":  0.1,
+                                                               "unit":  "mol HCO3-/m^3"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (PAOs)",
+                                                               "symbol":  "q_PHA",
+                                                               "excel_name":  "q_PHA",
+                                                               "description":  "Rate constant for storage of X_PHA",
+                                                               "value":  5,
+                                                               "unit":  "d^-1"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (PAOs)",
+                                                               "symbol":  "q_PP",
+                                                               "excel_name":  "q_PP",
+                                                               "description":  "Rate constant for storage of X_PP",
+                                                               "value":  0.6,
+                                                               "unit":  "d^-1"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (PAOs)",
+                                                               "symbol":  "mu_PAO",
+                                                               "excel_name":  "mu_PAO",
+                                                               "description":  "Maximum growth rate of PAO",
+                                                               "value":  0.56,
+                                                               "unit":  "d^-1"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (PAOs)",
+                                                               "symbol":  "eta_PAO_NO3",
+                                                               "excel_name":  "eta_PAO_NO3",
+                                                               "description":  "Reduction factor for PAO denitrification via nitrate",
+                                                               "value":  0.07,
+                                                               "unit":  "-"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (PAOs)",
+                                                               "symbol":  "eta_PAO_NO2",
+                                                               "excel_name":  "eta_PAO_NO2",
+                                                               "description":  "Reduction factor for PAO denitrification via nitrite",
+                                                               "value":  0.9,
+                                                               "unit":  "-"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (PAOs)",
+                                                               "symbol":  "b_PAO",
+                                                               "excel_name":  "b_PAO",
+                                                               "description":  "Lysis rate of X_PAO",
+                                                               "value":  0.2,
+                                                               "unit":  "d^-1"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (PAOs)",
+                                                               "symbol":  "b_PP",
+                                                               "excel_name":  "b_PP",
+                                                               "description":  "Lysis rate of X_PP",
+                                                               "value":  0.2,
+                                                               "unit":  "d^-1"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (PAOs)",
+                                                               "symbol":  "b_PHA",
+                                                               "excel_name":  "b_PHA",
+                                                               "description":  "Lysis rate of X_PHA",
+                                                               "value":  0.2,
+                                                               "unit":  "d^-1"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (PAOs)",
+                                                               "symbol":  "K_O_PAO",
+                                                               "excel_name":  "K_O_PAO",
+                                                               "description":  "Oxygen saturation coefficient for PAO",
+                                                               "value":  0.2,
+                                                               "unit":  "g O2/m^3"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (PAOs)",
+                                                               "symbol":  "K_NO3_PAO",
+                                                               "excel_name":  "K_NO3_PAO",
+                                                               "description":  "Nitrate saturation coefficient for PAO",
+                                                               "value":  0.5,
+                                                               "unit":  "g N/m^3"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (PAOs)",
+                                                               "symbol":  "K_NO2_PAO",
+                                                               "excel_name":  "K_NO2_PAO",
+                                                               "description":  "Nitrite saturation coefficient for PAO",
+                                                               "value":  0.5,
+                                                               "unit":  "g N/m^3"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (PAOs)",
+                                                               "symbol":  "K_NOX_PAO",
+                                                               "excel_name":  "K_NOX_PAO",
+                                                               "description":  "Nitrogen oxide saturation coefficient reported for PAO",
+                                                               "value":  0.5,
+                                                               "unit":  "g N/m^3"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (PAOs)",
+                                                               "symbol":  "K_NH4_PAO",
+                                                               "excel_name":  "K_NH4_PAO",
+                                                               "description":  "Ammonium saturation coefficient for PAO growth",
+                                                               "value":  0.05,
+                                                               "unit":  "g N/m^3"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (PAOs)",
+                                                               "symbol":  "K_PS",
+                                                               "excel_name":  "K_PS",
+                                                               "description":  "Phosphorus saturation coefficient for PP storage",
+                                                               "value":  0.2,
+                                                               "unit":  "g P/m^3"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (PAOs)",
+                                                               "symbol":  "K_PO4_PAO",
+                                                               "excel_name":  "K_PO4_PAO",
+                                                               "description":  "Phosphate saturation coefficient for PAO growth",
+                                                               "value":  0.01,
+                                                               "unit":  "g P/m^3"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (PAOs)",
+                                                               "symbol":  "K_ALK_PAO",
+                                                               "excel_name":  "K_ALK_PAO",
+                                                               "description":  "Alkalinity saturation coefficient for PAO",
+                                                               "value":  0.1,
+                                                               "unit":  "mol HCO3-/m^3"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (PAOs)",
+                                                               "symbol":  "K_PP",
+                                                               "excel_name":  "K_PP",
+                                                               "description":  "Poly-phosphate saturation coefficient",
+                                                               "value":  0.01,
+                                                               "unit":  "g X_PP/g X_PAO"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (PAOs)",
+                                                               "symbol":  "K_MAX",
+                                                               "excel_name":  "K_MAX",
+                                                               "description":  "Maximum X_PP to X_PAO ratio",
+                                                               "value":  0.34,
+                                                               "unit":  "g X_PP/g X_PAO"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (PAOs)",
+                                                               "symbol":  "K_IPP",
+                                                               "excel_name":  "K_IPP",
+                                                               "description":  "Inhibition coefficient for PP storage",
+                                                               "value":  0.02,
+                                                               "unit":  "g X_PP/g X_PAO"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (PAOs)",
+                                                               "symbol":  "K_PHA",
+                                                               "excel_name":  "K_PHA",
+                                                               "description":  "PHA saturation coefficient",
+                                                               "value":  0.01,
+                                                               "unit":  "g X_PHA/g X_PAO"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (AOB and NOB)",
+                                                               "symbol":  "mu_AOB",
+                                                               "excel_name":  "mu_AOB",
+                                                               "description":  "Maximum growth rate of AOB",
+                                                               "value":  1.81,
+                                                               "unit":  "d^-1"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (AOB and NOB)",
+                                                               "symbol":  "mu_NOB",
+                                                               "excel_name":  "mu_NOB",
+                                                               "description":  "Maximum growth rate of NOB",
+                                                               "value":  1.52,
+                                                               "unit":  "d^-1"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (AOB and NOB)",
+                                                               "symbol":  "b_AOB",
+                                                               "excel_name":  "b_AOB",
+                                                               "description":  "Decay rate of AOB",
+                                                               "value":  0.2,
+                                                               "unit":  "d^-1"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (AOB and NOB)",
+                                                               "symbol":  "b_NOB",
+                                                               "excel_name":  "b_NOB",
+                                                               "description":  "Decay rate of NOB",
+                                                               "value":  0.17,
+                                                               "unit":  "d^-1"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (AOB and NOB)",
+                                                               "symbol":  "K_O_AOB",
+                                                               "excel_name":  "K_O_AOB",
+                                                               "description":  "Oxygen saturation coefficient for AOB",
+                                                               "value":  0.74,
+                                                               "unit":  "g O2/m^3"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (AOB and NOB)",
+                                                               "symbol":  "K_O_NOB",
+                                                               "excel_name":  "K_O_NOB",
+                                                               "description":  "Oxygen saturation coefficient for NOB",
+                                                               "value":  1.75,
+                                                               "unit":  "g O2/m^3"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (AOB and NOB)",
+                                                               "symbol":  "K_NH4_AOB",
+                                                               "excel_name":  "K_NH4_AOB",
+                                                               "description":  "Ammonium saturation coefficient for AOB",
+                                                               "value":  0.5,
+                                                               "unit":  "g N/m^3"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (AOB and NOB)",
+                                                               "symbol":  "K_NO2_NOB",
+                                                               "excel_name":  "K_NO2_NOB",
+                                                               "description":  "Nitrite saturation coefficient for NOB",
+                                                               "value":  0.5,
+                                                               "unit":  "g N/m^3"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (AOB and NOB)",
+                                                               "symbol":  "K_ALK_nit",
+                                                               "excel_name":  "K_ALK_nit",
+                                                               "description":  "Alkalinity saturation coefficient for nitrifiers",
+                                                               "value":  0.5,
+                                                               "unit":  "mol HCO3-/m^3"
+                                                           },
+                                                           {
+                                                               "category":  "Kinetic Parameters (AOB and NOB)",
+                                                               "symbol":  "K_PO4_nit",
+                                                               "excel_name":  "K_PO4_nit",
+                                                               "description":  "Phosphate saturation coefficient for nitrifiers",
+                                                               "value":  0.01,
+                                                               "unit":  "g P/m^3"
+                                                           },
+                                                           {
+                                                               "category":  "Precipitation Parameters",
+                                                               "symbol":  "k_PRE",
+                                                               "excel_name":  "k_PRE",
+                                                               "description":  "Rate constant for phosphorus precipitation",
+                                                               "value":  1,
+                                                               "unit":  "m^3/(g Fe(OH)3*d)"
+                                                           },
+                                                           {
+                                                               "category":  "Precipitation Parameters",
+                                                               "symbol":  "k_RED",
+                                                               "excel_name":  "k_RED",
+                                                               "description":  "Rate constant for redissolution",
+                                                               "value":  0.6,
+                                                               "unit":  "d^-1"
+                                                           },
+                                                           {
+                                                               "category":  "Precipitation Parameters",
+                                                               "symbol":  "K_ALK_chem",
+                                                               "excel_name":  "K_ALK_chem",
+                                                               "description":  "Alkalinity saturation coefficient for redissolution",
+                                                               "value":  0.5,
+                                                               "unit":  "mol HCO3-/m^3"
+                                                           }
+                                                       ]
+                                    }
+                   },
+    "icsor":  {
+                  "split_seed":  42,
+                  "test_fraction":  0.2,
+                  "include_bias_term":  true,
+                  "training_implementation":  "icsor-model/src/models/ml/icsor_coupled_qp.py::recursive_qp",
+                  "training_source_commit":  "4910e723cd33ac8154e56f3d04d0575b4ba1ad9b",
+                  "training_source_sha256":  "819447A51443427D390448460A5D0AD6F948979AE67EE15A28BC934F5C7FB0D5",
+                  "feature_source_sha256":  "AC3D2B0C873CE743B904333521A83BB019B21647B9F6FC4CDAD2585AD1D111F3",
+                  "lambda_inv":  0.008683486803600385,
+                  "lambda_sys":  0.0012668014667081356,
+                  "lambda_B":  0.00006088498416548708,
+                  "lambda_gamma":  0.000655385962439312,
+                  "gamma_abs_bound":  0.3680342084965297,
+                  "conditioning_max":  100000000.0,
+                  "max_outer_iterations":  60,
+                  "n_restarts":  1,
+                  "objective_regression_window":  12,
+                  "objective_regression_slope_tolerance":  2.8496918219250988E-07,
+                  "osqp_eps_abs":  1E-06,
+                  "osqp_eps_rel":  1E-06,
+                  "osqp_max_iter":  10000,
+                  "osqp_polish":  false,
+                  "osqp_verbose":  false,
+                  "enable_training_warm_start":  true,
+                  "enable_gamma_warm_start":  true,
+                  "enable_c_hat_warm_start":  true,
+                  "warm_start_clip_tolerance":  1E-10,
+                  "nonnegativity_tolerance":  1E-10,
+                  "constraint_tolerance":  1E-08,
+                  "symmetry_tolerance":  1E-12,
+                  "objective_replay_rtol":  1E-10,
+                  "objective_replay_atol":  1E-08
               },
-              "severe": {
-                "n_samples": 6
-              }
-            }
-          }
-        },
-        "evaluation": {
-          "nested_cv": {
-            "sample_sizes": [
-              40,
-              80
-            ],
-            "outer_folds": 2,
-            "inner_folds": 2,
-            "n_trials": 1
-          },
-          "timing": {
-            "batch_size": 16,
-            "warmup_runs": 0,
-            "measured_runs": 1
-          }
-        }
-      }
-    }
-  },
-  "simulation": {
-    "schema_version": "4.0",
-    "sampling": {
-      "id_samples": 10000,
-      "seed": 42,
-      "n_chains": 12,
-      "max_sample_attempts": 25,
-      "parallel_workers": 12,
-      "parallel_chunk_size": 64
-    },
-    "operational_columns": [
-      "HRT",
-      "Aeration"
-    ],
-    "operational_ranges": {
-      "HRT": [
-        6,
-        36
-      ],
-      "Aeration": [
-        0.5,
-        2.5
-      ]
-    },
-    "ood": {
-      "candidate_mix": {
-        "one_variable": 0.7,
-        "two_variables": 0.3
-      },
-      "other_variables": "id_ranges",
-      "regimes": {
-        "mild": {
-          "n_samples": 600,
-          "ranges": {
-            "HRT": [
-              39,
-              43.5
-            ],
-            "Aeration": [
-              2.7,
-              3
-            ],
-            "S_NH4": [
-              59.3,
-              65.8
-            ],
-            "X_S": [
-              302,
-              335
-            ]
-          }
-        },
-        "severe": {
-          "n_samples": 600,
-          "ranges": {
-            "HRT": [
-              46.5,
-              54
-            ],
-            "Aeration": [
-              3.2,
-              3.7
-            ],
-            "S_NH4": [
-              70.1,
-              80.8
-            ],
-            "X_S": [
-              357,
-              412
-            ]
-          }
-        }
-      }
-    },
-    "solver": {
-      "lower_bound": 1e-08,
-      "upper_bound": 1500,
-      "initial_guess_floor": 1e-06,
-      "warm_start_previous_weight": 0.55,
-      "warm_start_influent_weight": 0.45,
-      "initial_s_a_fraction": 0.7,
-      "initial_s_f_fraction": 0.7,
-      "initial_heterotroph_to_xs_ratio": 0.25,
-      "initial_pao_to_pp_ratio": 1.2,
-      "initial_aob_to_nh4_ratio": 0.03,
-      "initial_nob_to_no2_ratio": 0.1,
-      "multistart_s_a_fraction": 0.35,
-      "multistart_s_f_fraction": 0.35,
-      "multistart_heterotroph_to_xs_ratio": 0.45,
-      "multistart_pao_to_pp_ratio": 1.8,
-      "multistart_aob_to_nh4_ratio": 0.08,
-      "multistart_nob_to_no2_ratio": 0.25,
-      "dynamic_relaxation_days": 20,
-      "dynamic_absolute_tolerance": 1e-08,
-      "dynamic_relative_tolerance": 1e-06,
-      "dynamic_max_step": 0.25,
-      "residual_tolerance": 1e-09,
-      "variable_tolerance": 1e-09,
-      "gradient_tolerance": 1e-09,
-      "acceptance_residual_max": 1e-09,
-      "max_nfev": 1200
-    },
-    "influent_state_ranges": {
-      "S_O": [
-        0,
-        0.5
-      ],
-      "S_F": [
-        20,
-        180
-      ],
-      "S_A": [
-        5,
-        80
-      ],
-      "S_NH4": [
-        12,
-        55
-      ],
-      "S_NO2": [
-        0,
-        3
-      ],
-      "S_NO3": [
-        0,
-        8
-      ],
-      "S_N2": [
-        0,
-        2
-      ],
-      "S_PO4": [
-        2,
-        18
-      ],
-      "S_I": [
-        10,
-        90
-      ],
-      "S_ALK": [
-        80,
-        260
-      ],
-      "X_I": [
-        20,
-        120
-      ],
-      "X_S": [
-        60,
-        280
-      ],
-      "X_H": [
-        15,
-        100
-      ],
-      "X_PAO": [
-        5,
-        60
-      ],
-      "X_PP": [
-        2,
-        20
-      ],
-      "X_PHA": [
-        1,
-        30
-      ],
-      "X_AOB": [
-        0.5,
-        8
-      ],
-      "X_NOB": [
-        0.5,
-        8
-      ],
-      "X_MeP": [
-        0,
-        12
-      ],
-      "X_MeOH": [
-        0,
-        12
-      ]
-    },
-    "aeration_model": {
-      "do_saturation": 8.5,
-      "kla_base": 2,
-      "kla_per_aeration": 18
-    },
-    "process_types": [
-      "biochemical",
-      "biochemical",
-      "biochemical",
-      "biochemical",
-      "biochemical",
-      "biochemical",
-      "biochemical",
-      "biochemical",
-      "biochemical",
-      "biochemical",
-      "biochemical",
-      "biochemical",
-      "biochemical",
-      "biochemical",
-      "biochemical",
-      "biochemical",
-      "biochemical",
-      "biochemical",
-      "biochemical",
-      "biochemical",
-      "biochemical",
-      "biochemical",
-      "biochemical",
-      "biochemical",
-      "biochemical",
-      "biochemical",
-      "chemical",
-      "chemical"
-    ],
-    "workbook": {
-      "sheets": [
-        "stoichiometric_matrix",
-        "composition_matrix",
-        "parameter_table"
-      ],
-      "dissolved_state_columns": [
-        "S_O",
-        "S_F",
-        "S_A",
-        "S_NH4",
-        "S_NO2",
-        "S_NO3",
-        "S_N2",
-        "S_PO4",
-        "S_I",
-        "S_ALK"
-      ],
-      "particulate_state_columns": [
-        "X_I",
-        "X_S",
-        "X_H",
-        "X_PAO",
-        "X_PP",
-        "X_PHA",
-        "X_AOB",
-        "X_NOB",
-        "X_MeP",
-        "X_MeOH"
-      ],
-      "state_columns": [
-        "S_O",
-        "S_F",
-        "S_A",
-        "S_NH4",
-        "S_NO2",
-        "S_NO3",
-        "S_N2",
-        "S_PO4",
-        "S_I",
-        "S_ALK",
-        "X_I",
-        "X_S",
-        "X_H",
-        "X_PAO",
-        "X_PP",
-        "X_PHA",
-        "X_AOB",
-        "X_NOB",
-        "X_MeP",
-        "X_MeOH"
-      ],
-      "state_units": {
-        "S_O": "g O2/m^3",
-        "S_F": "g COD/m^3",
-        "S_A": "g COD/m^3",
-        "S_NH4": "g N/m^3",
-        "S_NO2": "g N/m^3",
-        "S_NO3": "g N/m^3",
-        "S_N2": "g N/m^3",
-        "S_PO4": "g P/m^3",
-        "S_I": "g COD/m^3",
-        "S_ALK": "mol/m^3",
-        "X_I": "g COD/m^3",
-        "X_S": "g COD/m^3",
-        "X_H": "g COD/m^3",
-        "X_PAO": "g COD/m^3",
-        "X_PP": "g P/m^3",
-        "X_PHA": "g COD/m^3",
-        "X_AOB": "g COD/m^3",
-        "X_NOB": "g COD/m^3",
-        "X_MeP": "g TSS/m^3",
-        "X_MeOH": "g TSS/m^3"
-      },
-      "processes": [
-        {
-          "index": 1,
-          "name": "Aerobic hydrolysis"
-        },
-        {
-          "index": 2,
-          "name": "Anoxic hydrolysis (NO2)"
-        },
-        {
-          "index": 3,
-          "name": "Anoxic hydrolysis (NO3)"
-        },
-        {
-          "index": 4,
-          "name": "Anaerobic hydrolysis"
-        },
-        {
-          "index": 5,
-          "name": "Aerobic growth on S_F"
-        },
-        {
-          "index": 6,
-          "name": "Aerobic growth on S_A"
-        },
-        {
-          "index": 7,
-          "name": "Anoxic growth on S_F (NO3 -> NO2)"
-        },
-        {
-          "index": 8,
-          "name": "Anoxic growth on S_F (NO2 -> N2)"
-        },
-        {
-          "index": 9,
-          "name": "Anoxic growth on S_A (NO3 -> NO2)"
-        },
-        {
-          "index": 10,
-          "name": "Anoxic growth on S_A (NO2 -> N2)"
-        },
-        {
-          "index": 11,
-          "name": "Fermentation"
-        },
-        {
-          "index": 12,
-          "name": "Lysis of X_H"
-        },
-        {
-          "index": 13,
-          "name": "Storage of X_PHA"
-        },
-        {
-          "index": 14,
-          "name": "Aerobic storage of X_PP"
-        },
-        {
-          "index": 15,
-          "name": "Anoxic storage of X_PP (NO3 -> NO2)"
-        },
-        {
-          "index": 16,
-          "name": "Anoxic storage of X_PP (NO2 -> N2)"
-        },
-        {
-          "index": 17,
-          "name": "Aerobic growth (PAO)"
-        },
-        {
-          "index": 18,
-          "name": "Anoxic growth (PAO, NO3 -> NO2)"
-        },
-        {
-          "index": 19,
-          "name": "Anoxic growth (PAO, NO2 -> N2)"
-        },
-        {
-          "index": 20,
-          "name": "Lysis of X_PAO"
-        },
-        {
-          "index": 21,
-          "name": "Lysis of X_PP"
-        },
-        {
-          "index": 22,
-          "name": "Lysis of X_PHA"
-        },
-        {
-          "index": 23,
-          "name": "Aerobic growth of X_AOB"
-        },
-        {
-          "index": 24,
-          "name": "Aerobic growth of X_NOB"
-        },
-        {
-          "index": 25,
-          "name": "Lysis of X_AOB"
-        },
-        {
-          "index": 26,
-          "name": "Lysis of X_NOB"
-        },
-        {
-          "index": 27,
-          "name": "Precipitation"
-        },
-        {
-          "index": 28,
-          "name": "Redissolution"
-        }
-      ],
-      "parameters": [
-        {
-          "category": "Stoichiometric Parameters",
-          "symbol": "Y_H",
-          "excel_name": "Y_H",
-          "description": "Yield coefficient for heterotrophic biomass",
-          "value": 0.625,
-          "unit": "g COD/g COD"
-        },
-        {
-          "category": "Stoichiometric Parameters",
-          "symbol": "Y_PAO",
-          "excel_name": "Y_PAO",
-          "description": "Yield coefficient for PAO biomass",
-          "value": 0.625,
-          "unit": "g COD/g COD"
-        },
-        {
-          "category": "Stoichiometric Parameters",
-          "symbol": "Y_PHA",
-          "excel_name": "Y_PHA",
-          "description": "PHA requirement for PP storage",
-          "value": 0.2,
-          "unit": "g COD/g P"
-        },
-        {
-          "category": "Stoichiometric Parameters",
-          "symbol": "Y_PO4",
-          "excel_name": "Y_PO4",
-          "description": "PO4 release per PHA stored",
-          "value": 0.4,
-          "unit": "g P/g COD"
-        },
-        {
-          "category": "Stoichiometric Parameters",
-          "symbol": "Y_AOB",
-          "excel_name": "Y_AOB",
-          "description": "Yield coefficient for AOB biomass",
-          "value": 0.18,
-          "unit": "g COD/g N"
-        },
-        {
-          "category": "Stoichiometric Parameters",
-          "symbol": "Y_NOB",
-          "excel_name": "Y_NOB",
-          "description": "Yield coefficient for NOB biomass",
-          "value": 0.08,
-          "unit": "g COD/g N"
-        },
-        {
-          "category": "Stoichiometric Parameters",
-          "symbol": "f_SI",
-          "excel_name": "f_SI",
-          "description": "Production of S_I in hydrolysis",
-          "value": 0,
-          "unit": "g COD/g COD"
-        },
-        {
-          "category": "Stoichiometric Parameters",
-          "symbol": "f_XI",
-          "excel_name": "f_XI",
-          "description": "Fraction of inert COD generated in biomass lysis",
-          "value": 0.1,
-          "unit": "g COD/g COD"
-        },
-        {
-          "category": "Composition Parameters",
-          "symbol": "i_NSI",
-          "excel_name": "i_NSI",
-          "description": "Nitrogen content of S_I",
-          "value": 0.01,
-          "unit": "g N/g COD"
-        },
-        {
-          "category": "Composition Parameters",
-          "symbol": "i_NSF",
-          "excel_name": "i_NSF",
-          "description": "Nitrogen content of S_F",
-          "value": 0,
-          "unit": "g N/g COD"
-        },
-        {
-          "category": "Composition Parameters",
-          "symbol": "i_NXI",
-          "excel_name": "i_NXI",
-          "description": "Nitrogen content of X_I",
-          "value": 0.02,
-          "unit": "g N/g COD"
-        },
-        {
-          "category": "Composition Parameters",
-          "symbol": "i_NXS",
-          "excel_name": "i_NXS",
-          "description": "Nitrogen content of X_S",
-          "value": 0,
-          "unit": "g N/g COD"
-        },
-        {
-          "category": "Composition Parameters",
-          "symbol": "i_NBM",
-          "excel_name": "i_NBM",
-          "description": "Nitrogen content of biomass",
-          "value": 0.07,
-          "unit": "g N/g COD"
-        },
-        {
-          "category": "Composition Parameters",
-          "symbol": "i_PSI",
-          "excel_name": "i_PSI",
-          "description": "Phosphorus content of S_I",
-          "value": 0,
-          "unit": "g P/g COD"
-        },
-        {
-          "category": "Composition Parameters",
-          "symbol": "i_PSF",
-          "excel_name": "i_PSF",
-          "description": "Phosphorus content of S_F",
-          "value": 0,
-          "unit": "g P/g COD"
-        },
-        {
-          "category": "Composition Parameters",
-          "symbol": "i_PXI",
-          "excel_name": "i_PXI",
-          "description": "Phosphorus content of X_I",
-          "value": 0.01,
-          "unit": "g P/g COD"
-        },
-        {
-          "category": "Composition Parameters",
-          "symbol": "i_PXS",
-          "excel_name": "i_PXS",
-          "description": "Phosphorus content of X_S",
-          "value": 0,
-          "unit": "g P/g COD"
-        },
-        {
-          "category": "Composition Parameters",
-          "symbol": "i_PBM",
-          "excel_name": "i_PBM",
-          "description": "Phosphorus content of biomass",
-          "value": 0.02,
-          "unit": "g P/g COD"
-        },
-        {
-          "category": "Composition Parameters",
-          "symbol": "i_TSS_XI",
-          "excel_name": "i_TSS_XI",
-          "description": "TSS to COD ratio for X_I",
-          "value": 0.75,
-          "unit": "g TSS/g COD"
-        },
-        {
-          "category": "Composition Parameters",
-          "symbol": "i_TSS_XS",
-          "excel_name": "i_TSS_XS",
-          "description": "TSS to COD ratio for X_S",
-          "value": 0.75,
-          "unit": "g TSS/g COD"
-        },
-        {
-          "category": "Composition Parameters",
-          "symbol": "i_TSS_BM",
-          "excel_name": "i_TSS_BM",
-          "description": "TSS to COD ratio for biomass",
-          "value": 0.9,
-          "unit": "g TSS/g COD"
-        },
-        {
-          "category": "Composition Parameters",
-          "symbol": "i_TSS_PHA",
-          "excel_name": "i_TSS_PHA",
-          "description": "TSS to COD ratio for X_PHA used in the TSS composite definition",
-          "value": 0.6,
-          "unit": "g TSS/g COD"
-        },
-        {
-          "category": "Composition Parameters",
-          "symbol": "i_TSS_PP",
-          "excel_name": "i_TSS_PP",
-          "description": "TSS to P ratio for X_PP used in the TSS composite definition",
-          "value": 3.23,
-          "unit": "g TSS/g P"
-        },
-        {
-          "category": "Composition Parameters",
-          "symbol": "i_PMeP",
-          "excel_name": "i_PMeP",
-          "description": "Phosphorus content of X_MeP derived from the precipitation stoichiometry",
-          "value": 0.205,
-          "unit": "g P/g TSS"
-        },
-        {
-          "category": "Kinetic Parameters (Hydrolysis)",
-          "symbol": "K_H",
-          "excel_name": "K_H",
-          "description": "Hydrolysis rate constant",
-          "value": 3,
-          "unit": "d^-1"
-        },
-        {
-          "category": "Kinetic Parameters (Hydrolysis)",
-          "symbol": "eta_hyd_NO3",
-          "excel_name": "eta_hyd_NO3",
-          "description": "Anoxic hydrolysis reduction factor via nitrate",
-          "value": 0.6,
-          "unit": "-"
-        },
-        {
-          "category": "Kinetic Parameters (Hydrolysis)",
-          "symbol": "eta_hyd_NO2",
-          "excel_name": "eta_hyd_NO2",
-          "description": "Anoxic hydrolysis reduction factor via nitrite",
-          "value": 0.6,
-          "unit": "-"
-        },
-        {
-          "category": "Kinetic Parameters (Hydrolysis)",
-          "symbol": "eta_hyd_fe",
-          "excel_name": "eta_hyd_fe",
-          "description": "Anaerobic hydrolysis reduction factor",
-          "value": 0.4,
-          "unit": "-"
-        },
-        {
-          "category": "Kinetic Parameters (Hydrolysis)",
-          "symbol": "K_O_hyd",
-          "excel_name": "K_O_hyd",
-          "description": "Oxygen saturation coefficient for hydrolysis",
-          "value": 0.2,
-          "unit": "g O2/m^3"
-        },
-        {
-          "category": "Kinetic Parameters (Hydrolysis)",
-          "symbol": "K_NO3_hyd",
-          "excel_name": "K_NO3_hyd",
-          "description": "Nitrate saturation coefficient for hydrolysis",
-          "value": 0.5,
-          "unit": "g N/m^3"
-        },
-        {
-          "category": "Kinetic Parameters (Hydrolysis)",
-          "symbol": "K_NO2_hyd",
-          "excel_name": "K_NO2_hyd",
-          "description": "Nitrite saturation coefficient for hydrolysis",
-          "value": 0.5,
-          "unit": "g N/m^3"
-        },
-        {
-          "category": "Kinetic Parameters (Hydrolysis)",
-          "symbol": "K_NOX_hyd",
-          "excel_name": "K_NOX_hyd",
-          "description": "Nitrogen oxide inhibition term for anaerobic hydrolysis",
-          "value": 0.5,
-          "unit": "g N/m^3"
-        },
-        {
-          "category": "Kinetic Parameters (Hydrolysis)",
-          "symbol": "K_X",
-          "excel_name": "K_X",
-          "description": "Saturation coefficient for particulate COD",
-          "value": 0.1,
-          "unit": "g X_S/g X_H"
-        },
-        {
-          "category": "Kinetic Parameters (Heterotrophs)",
-          "symbol": "mu_H",
-          "excel_name": "mu_H",
-          "description": "Maximum growth rate on substrate",
-          "value": 6,
-          "unit": "d^-1"
-        },
-        {
-          "category": "Kinetic Parameters (Heterotrophs)",
-          "symbol": "q_Fe",
-          "excel_name": "q_Fe",
-          "description": "Maximum rate factor for fermentation",
-          "value": 3,
-          "unit": "-"
-        },
-        {
-          "category": "Kinetic Parameters (Heterotrophs)",
-          "symbol": "eta_H_NO3",
-          "excel_name": "eta_H_NO3",
-          "description": "Reduction factor for heterotrophic denitrification via nitrate",
-          "value": 0.9,
-          "unit": "-"
-        },
-        {
-          "category": "Kinetic Parameters (Heterotrophs)",
-          "symbol": "eta_H_NO2",
-          "excel_name": "eta_H_NO2",
-          "description": "Reduction factor for heterotrophic denitrification via nitrite",
-          "value": 0.9,
-          "unit": "-"
-        },
-        {
-          "category": "Kinetic Parameters (Heterotrophs)",
-          "symbol": "b_H",
-          "excel_name": "b_H",
-          "description": "Rate constant for lysis and decay",
-          "value": 0.4,
-          "unit": "d^-1"
-        },
-        {
-          "category": "Kinetic Parameters (Heterotrophs)",
-          "symbol": "K_O_H",
-          "excel_name": "K_O_H",
-          "description": "Oxygen saturation coefficient for heterotrophs",
-          "value": 0.2,
-          "unit": "g O2/m^3"
-        },
-        {
-          "category": "Kinetic Parameters (Heterotrophs)",
-          "symbol": "K_F",
-          "excel_name": "K_F",
-          "description": "Saturation coefficient for growth on S_F",
-          "value": 4,
-          "unit": "g COD/m^3"
-        },
-        {
-          "category": "Kinetic Parameters (Heterotrophs)",
-          "symbol": "K_fe",
-          "excel_name": "K_fe",
-          "description": "Saturation coefficient for fermentation of S_F",
-          "value": 4,
-          "unit": "g COD/m^3"
-        },
-        {
-          "category": "Kinetic Parameters (Heterotrophs)",
-          "symbol": "K_A",
-          "excel_name": "K_A",
-          "description": "Saturation coefficient for S_A",
-          "value": 4,
-          "unit": "g COD/m^3"
-        },
-        {
-          "category": "Kinetic Parameters (Heterotrophs)",
-          "symbol": "K_NO3_H",
-          "excel_name": "K_NO3_H",
-          "description": "Nitrate saturation coefficient for heterotrophs",
-          "value": 0.5,
-          "unit": "g N/m^3"
-        },
-        {
-          "category": "Kinetic Parameters (Heterotrophs)",
-          "symbol": "K_NO2_H",
-          "excel_name": "K_NO2_H",
-          "description": "Nitrite saturation coefficient for heterotrophs",
-          "value": 0.5,
-          "unit": "g N/m^3"
-        },
-        {
-          "category": "Kinetic Parameters (Heterotrophs)",
-          "symbol": "K_NOX_H",
-          "excel_name": "K_NOX_H",
-          "description": "Nitrogen oxide inhibition term for fermentation",
-          "value": 0.5,
-          "unit": "g N/m^3"
-        },
-        {
-          "category": "Kinetic Parameters (Heterotrophs)",
-          "symbol": "K_NH4_H",
-          "excel_name": "K_NH4_H",
-          "description": "Ammonium saturation coefficient for heterotrophs",
-          "value": 0.05,
-          "unit": "g N/m^3"
-        },
-        {
-          "category": "Kinetic Parameters (Heterotrophs)",
-          "symbol": "K_PO4_H",
-          "excel_name": "K_PO4_H",
-          "description": "Phosphate saturation coefficient for heterotrophs",
-          "value": 0.01,
-          "unit": "g P/m^3"
-        },
-        {
-          "category": "Kinetic Parameters (Heterotrophs)",
-          "symbol": "K_ALK_H",
-          "excel_name": "K_ALK_H",
-          "description": "Alkalinity saturation coefficient for heterotrophs",
-          "value": 0.1,
-          "unit": "mol HCO3-/m^3"
-        },
-        {
-          "category": "Kinetic Parameters (PAOs)",
-          "symbol": "q_PHA",
-          "excel_name": "q_PHA",
-          "description": "Rate constant for storage of X_PHA",
-          "value": 5,
-          "unit": "d^-1"
-        },
-        {
-          "category": "Kinetic Parameters (PAOs)",
-          "symbol": "q_PP",
-          "excel_name": "q_PP",
-          "description": "Rate constant for storage of X_PP",
-          "value": 0.6,
-          "unit": "d^-1"
-        },
-        {
-          "category": "Kinetic Parameters (PAOs)",
-          "symbol": "mu_PAO",
-          "excel_name": "mu_PAO",
-          "description": "Maximum growth rate of PAO",
-          "value": 0.56,
-          "unit": "d^-1"
-        },
-        {
-          "category": "Kinetic Parameters (PAOs)",
-          "symbol": "eta_PAO_NO3",
-          "excel_name": "eta_PAO_NO3",
-          "description": "Reduction factor for PAO denitrification via nitrate",
-          "value": 0.07,
-          "unit": "-"
-        },
-        {
-          "category": "Kinetic Parameters (PAOs)",
-          "symbol": "eta_PAO_NO2",
-          "excel_name": "eta_PAO_NO2",
-          "description": "Reduction factor for PAO denitrification via nitrite",
-          "value": 0.9,
-          "unit": "-"
-        },
-        {
-          "category": "Kinetic Parameters (PAOs)",
-          "symbol": "b_PAO",
-          "excel_name": "b_PAO",
-          "description": "Lysis rate of X_PAO",
-          "value": 0.2,
-          "unit": "d^-1"
-        },
-        {
-          "category": "Kinetic Parameters (PAOs)",
-          "symbol": "b_PP",
-          "excel_name": "b_PP",
-          "description": "Lysis rate of X_PP",
-          "value": 0.2,
-          "unit": "d^-1"
-        },
-        {
-          "category": "Kinetic Parameters (PAOs)",
-          "symbol": "b_PHA",
-          "excel_name": "b_PHA",
-          "description": "Lysis rate of X_PHA",
-          "value": 0.2,
-          "unit": "d^-1"
-        },
-        {
-          "category": "Kinetic Parameters (PAOs)",
-          "symbol": "K_O_PAO",
-          "excel_name": "K_O_PAO",
-          "description": "Oxygen saturation coefficient for PAO",
-          "value": 0.2,
-          "unit": "g O2/m^3"
-        },
-        {
-          "category": "Kinetic Parameters (PAOs)",
-          "symbol": "K_NO3_PAO",
-          "excel_name": "K_NO3_PAO",
-          "description": "Nitrate saturation coefficient for PAO",
-          "value": 0.5,
-          "unit": "g N/m^3"
-        },
-        {
-          "category": "Kinetic Parameters (PAOs)",
-          "symbol": "K_NO2_PAO",
-          "excel_name": "K_NO2_PAO",
-          "description": "Nitrite saturation coefficient for PAO",
-          "value": 0.5,
-          "unit": "g N/m^3"
-        },
-        {
-          "category": "Kinetic Parameters (PAOs)",
-          "symbol": "K_NOX_PAO",
-          "excel_name": "K_NOX_PAO",
-          "description": "Nitrogen oxide saturation coefficient reported for PAO",
-          "value": 0.5,
-          "unit": "g N/m^3"
-        },
-        {
-          "category": "Kinetic Parameters (PAOs)",
-          "symbol": "K_NH4_PAO",
-          "excel_name": "K_NH4_PAO",
-          "description": "Ammonium saturation coefficient for PAO growth",
-          "value": 0.05,
-          "unit": "g N/m^3"
-        },
-        {
-          "category": "Kinetic Parameters (PAOs)",
-          "symbol": "K_PS",
-          "excel_name": "K_PS",
-          "description": "Phosphorus saturation coefficient for PP storage",
-          "value": 0.2,
-          "unit": "g P/m^3"
-        },
-        {
-          "category": "Kinetic Parameters (PAOs)",
-          "symbol": "K_PO4_PAO",
-          "excel_name": "K_PO4_PAO",
-          "description": "Phosphate saturation coefficient for PAO growth",
-          "value": 0.01,
-          "unit": "g P/m^3"
-        },
-        {
-          "category": "Kinetic Parameters (PAOs)",
-          "symbol": "K_ALK_PAO",
-          "excel_name": "K_ALK_PAO",
-          "description": "Alkalinity saturation coefficient for PAO",
-          "value": 0.1,
-          "unit": "mol HCO3-/m^3"
-        },
-        {
-          "category": "Kinetic Parameters (PAOs)",
-          "symbol": "K_PP",
-          "excel_name": "K_PP",
-          "description": "Poly-phosphate saturation coefficient",
-          "value": 0.01,
-          "unit": "g X_PP/g X_PAO"
-        },
-        {
-          "category": "Kinetic Parameters (PAOs)",
-          "symbol": "K_MAX",
-          "excel_name": "K_MAX",
-          "description": "Maximum X_PP to X_PAO ratio",
-          "value": 0.34,
-          "unit": "g X_PP/g X_PAO"
-        },
-        {
-          "category": "Kinetic Parameters (PAOs)",
-          "symbol": "K_IPP",
-          "excel_name": "K_IPP",
-          "description": "Inhibition coefficient for PP storage",
-          "value": 0.02,
-          "unit": "g X_PP/g X_PAO"
-        },
-        {
-          "category": "Kinetic Parameters (PAOs)",
-          "symbol": "K_PHA",
-          "excel_name": "K_PHA",
-          "description": "PHA saturation coefficient",
-          "value": 0.01,
-          "unit": "g X_PHA/g X_PAO"
-        },
-        {
-          "category": "Kinetic Parameters (AOB and NOB)",
-          "symbol": "mu_AOB",
-          "excel_name": "mu_AOB",
-          "description": "Maximum growth rate of AOB",
-          "value": 1.81,
-          "unit": "d^-1"
-        },
-        {
-          "category": "Kinetic Parameters (AOB and NOB)",
-          "symbol": "mu_NOB",
-          "excel_name": "mu_NOB",
-          "description": "Maximum growth rate of NOB",
-          "value": 1.52,
-          "unit": "d^-1"
-        },
-        {
-          "category": "Kinetic Parameters (AOB and NOB)",
-          "symbol": "b_AOB",
-          "excel_name": "b_AOB",
-          "description": "Decay rate of AOB",
-          "value": 0.2,
-          "unit": "d^-1"
-        },
-        {
-          "category": "Kinetic Parameters (AOB and NOB)",
-          "symbol": "b_NOB",
-          "excel_name": "b_NOB",
-          "description": "Decay rate of NOB",
-          "value": 0.17,
-          "unit": "d^-1"
-        },
-        {
-          "category": "Kinetic Parameters (AOB and NOB)",
-          "symbol": "K_O_AOB",
-          "excel_name": "K_O_AOB",
-          "description": "Oxygen saturation coefficient for AOB",
-          "value": 0.74,
-          "unit": "g O2/m^3"
-        },
-        {
-          "category": "Kinetic Parameters (AOB and NOB)",
-          "symbol": "K_O_NOB",
-          "excel_name": "K_O_NOB",
-          "description": "Oxygen saturation coefficient for NOB",
-          "value": 1.75,
-          "unit": "g O2/m^3"
-        },
-        {
-          "category": "Kinetic Parameters (AOB and NOB)",
-          "symbol": "K_NH4_AOB",
-          "excel_name": "K_NH4_AOB",
-          "description": "Ammonium saturation coefficient for AOB",
-          "value": 0.5,
-          "unit": "g N/m^3"
-        },
-        {
-          "category": "Kinetic Parameters (AOB and NOB)",
-          "symbol": "K_NO2_NOB",
-          "excel_name": "K_NO2_NOB",
-          "description": "Nitrite saturation coefficient for NOB",
-          "value": 0.5,
-          "unit": "g N/m^3"
-        },
-        {
-          "category": "Kinetic Parameters (AOB and NOB)",
-          "symbol": "K_ALK_nit",
-          "excel_name": "K_ALK_nit",
-          "description": "Alkalinity saturation coefficient for nitrifiers",
-          "value": 0.5,
-          "unit": "mol HCO3-/m^3"
-        },
-        {
-          "category": "Kinetic Parameters (AOB and NOB)",
-          "symbol": "K_PO4_nit",
-          "excel_name": "K_PO4_nit",
-          "description": "Phosphate saturation coefficient for nitrifiers",
-          "value": 0.01,
-          "unit": "g P/m^3"
-        },
-        {
-          "category": "Precipitation Parameters",
-          "symbol": "k_PRE",
-          "excel_name": "k_PRE",
-          "description": "Rate constant for phosphorus precipitation",
-          "value": 1,
-          "unit": "m^3/(g Fe(OH)3*d)"
-        },
-        {
-          "category": "Precipitation Parameters",
-          "symbol": "k_RED",
-          "excel_name": "k_RED",
-          "description": "Rate constant for redissolution",
-          "value": 0.6,
-          "unit": "d^-1"
-        },
-        {
-          "category": "Precipitation Parameters",
-          "symbol": "K_ALK_chem",
-          "excel_name": "K_ALK_chem",
-          "description": "Alkalinity saturation coefficient for redissolution",
-          "value": 0.5,
-          "unit": "mol HCO3-/m^3"
-        }
-      ]
-    }
-  },
-  "projection": {
-    "method": "kircher_votsmeier",
-    "rank_tolerance_policy": "max_dimension_times_machine_epsilon_times_sigma_max",
-    "primary_solver": "qr",
-    "fallback_solver": "svd",
-    "normal_equations": false,
-    "eps": 1e-08,
-    "eta": 1e-12,
-    "tau": 1e-10,
-    "svd_tolerance": 1e-12
-  },
-  "evaluation": {
-    "seed": 42,
-    "nested_cv": {
-      "sample_sizes": [
-        500,
-        1450,
-        2400,
-        3350,
-        4300,
-        5250,
-        6200,
-        7150,
-        8100,
-        9050,
-        10000
-      ],
-      "outer_folds": 5,
-      "inner_folds": 4,
-      "n_trials": 100,
-      "shuffle": true,
-      "optimization_metric": "nMSE",
-      "direction": "minimize"
-    },
-    "timing": {
-      "batch_size": 512,
-      "warmup_runs": 5,
-      "measured_runs": 30
-    },
-    "scaling_policies": {
-      "xgboost_regressor": {
-        "features": false,
-        "targets": false
-      },
-      "lightgbm_regressor": {
-        "features": false,
-        "targets": false
-      },
-      "catboost_regressor": {
-        "features": false,
-        "targets": false
-      },
-      "adaboost_regressor": {
-        "features": false,
-        "targets": true
-      },
-      "random_forest_regressor": {
-        "features": false,
-        "targets": false
-      },
-      "extra_trees_regressor": {
-        "features": false,
-        "targets": true
-      },
-      "svr_regressor": {
-        "features": true,
-        "targets": true
-      },
-      "knn_regressor": {
-        "features": true,
-        "targets": true
-      },
-      "pls_regressor": {
-        "features": true,
-        "targets": true
-      },
-      "multitask_elastic_net_regressor": {
-        "features": true,
-        "targets": true
-      },
-      "multitask_lasso_regressor": {
-        "features": true,
-        "targets": true
-      },
-      "ann_deep_regressor": {
-        "features": true,
-        "targets": true
-      },
-      "tabnet_regressor": {
-        "features": true,
-        "targets": true
-      }
-    },
-    "reporting": {
-      "fold_summary": "mean_and_sample_standard_deviation",
-      "interpretation": "descriptive_fold_variability_only",
-      "confidence_intervals": false,
-      "zero_variance_policy": "fail",
-      "ood_normalization": "full_id_training_population_standard_deviation",
-      "metrics": [
-        "nMSE",
-        "nRMSE",
-        "nMAE",
-        "macro_R2"
-      ]
-    },
-    "models": {
-      "xgboost_regressor": {
-        "hyperparameters": {
-          "random_seed": 42,
-          "scale_features": false,
-          "scale_targets": false
-        },
-        "training_defaults": {
-          "objective": "reg:squarederror",
-          "n_estimators": 309,
-          "learning_rate": 0.12503078806936252,
-          "max_depth": 3,
-          "min_child_weight": 6.836105617748016,
-          "subsample": 0.9145963131920342,
-          "colsample_bytree": 0.8283826855157987,
-          "reg_alpha": 0.0011847272846708492,
-          "reg_lambda": 0.3824955996304794,
-          "tree_method": "hist",
-          "random_state": 42,
-          "n_jobs": 1,
-          "verbosity": 0
-        },
-        "search_space": {
-          "n_estimators": {
-            "type": "int",
-            "low": 80,
-            "high": 320,
-            "log": false
-          },
-          "learning_rate": {
-            "type": "float",
-            "low": 0.01,
-            "high": 0.2,
-            "log": true
-          },
-          "max_depth": {
-            "type": "int",
-            "low": 3,
-            "high": 8,
-            "log": false
-          },
-          "min_child_weight": {
-            "type": "float",
-            "low": 0.5,
-            "high": 8,
-            "log": true
-          },
-          "subsample": {
-            "type": "float",
-            "low": 0.6,
-            "high": 1,
-            "log": false
-          },
-          "colsample_bytree": {
-            "type": "float",
-            "low": 0.6,
-            "high": 1,
-            "log": false
-          },
-          "reg_alpha": {
-            "type": "float",
-            "low": 1e-06,
-            "high": 1,
-            "log": true
-          },
-          "reg_lambda": {
-            "type": "float",
-            "low": 0.001,
-            "high": 10,
-            "log": true
-          },
-          "tree_method": {
-            "type": "categorical",
-            "choices": [
-              "hist",
-              "approx"
-            ]
-          }
-        },
-        "artifact_options": {
-          "persist_model": true,
-          "persist_metrics": true,
-          "persist_optuna": true
-        }
-      },
-      "lightgbm_regressor": {
-        "hyperparameters": {
-          "random_seed": 42,
-          "scale_features": false,
-          "scale_targets": false
-        },
-        "training_defaults": {
-          "objective": "regression",
-          "n_estimators": 302,
-          "learning_rate": 0.08085712594146381,
-          "num_leaves": 16,
-          "max_depth": 8,
-          "min_child_samples": 14,
-          "subsample": 0.8449899824869802,
-          "colsample_bytree": 0.8692727696781667,
-          "reg_alpha": 0.00316673023474545,
-          "reg_lambda": 0.0003364912981932193,
-          "random_state": 42,
-          "verbosity": -1,
-          "n_jobs": 1
-        },
-        "search_space": {
-          "n_estimators": {
-            "type": "int",
-            "low": 80,
-            "high": 320,
-            "log": false
-          },
-          "learning_rate": {
-            "type": "float",
-            "low": 0.01,
-            "high": 0.2,
-            "log": true
-          },
-          "num_leaves": {
-            "type": "int",
-            "low": 15,
-            "high": 63,
-            "log": false
-          },
-          "max_depth": {
-            "type": "categorical",
-            "choices": [
-              -1,
-              4,
-              6,
-              8,
-              10
-            ]
-          },
-          "min_child_samples": {
-            "type": "int",
-            "low": 5,
-            "high": 40,
-            "log": false
-          },
-          "subsample": {
-            "type": "float",
-            "low": 0.6,
-            "high": 1,
-            "log": false
-          },
-          "colsample_bytree": {
-            "type": "float",
-            "low": 0.6,
-            "high": 1,
-            "log": false
-          },
-          "reg_alpha": {
-            "type": "float",
-            "low": 1e-06,
-            "high": 1,
-            "log": true
-          },
-          "reg_lambda": {
-            "type": "float",
-            "low": 1e-06,
-            "high": 10,
-            "log": true
-          }
-        },
-        "artifact_options": {
-          "persist_model": true,
-          "persist_metrics": true,
-          "persist_optuna": true
-        }
-      },
-      "catboost_regressor": {
-        "hyperparameters": {
-          "random_seed": 42,
-          "scale_features": false,
-          "scale_targets": false
-        },
-        "training_defaults": {
-          "loss_function": "RMSE",
-          "iterations": 236,
-          "learning_rate": 0.17229502473365607,
-          "depth": 4,
-          "l2_leaf_reg": 0.026571756254346886,
-          "bootstrap_type": "Bayesian",
-          "bagging_temperature": 0.027692837457008075,
-          "random_strength": 0.06566220490245384,
-          "random_seed": 42,
-          "verbose": false,
-          "allow_writing_files": false
-        },
-        "search_space": {
-          "iterations": {
-            "type": "int",
-            "low": 80,
-            "high": 320,
-            "log": false
-          },
-          "learning_rate": {
-            "type": "float",
-            "low": 0.01,
-            "high": 0.2,
-            "log": true
-          },
-          "depth": {
-            "type": "int",
-            "low": 4,
-            "high": 8,
-            "log": false
-          },
-          "l2_leaf_reg": {
-            "type": "float",
-            "low": 0.01,
-            "high": 20,
-            "log": true
-          },
-          "bagging_temperature": {
-            "type": "float",
-            "low": 0,
-            "high": 5,
-            "log": false
-          },
-          "random_strength": {
-            "type": "float",
-            "low": 0.001,
-            "high": 5,
-            "log": true
-          }
-        },
-        "artifact_options": {
-          "persist_model": true,
-          "persist_metrics": true,
-          "persist_optuna": true
-        }
-      },
-      "adaboost_regressor": {
-        "hyperparameters": {
-          "random_seed": 42,
-          "scale_features": false,
-          "scale_targets": true
-        },
-        "training_defaults": {
-          "n_estimators": 236,
-          "learning_rate": 0.9988598603218025,
-          "loss": "square",
-          "random_state": 42
-        },
-        "search_space": {
-          "n_estimators": {
-            "type": "int",
-            "low": 50,
-            "high": 250,
-            "log": false
-          },
-          "learning_rate": {
-            "type": "float",
-            "low": 0.01,
-            "high": 1,
-            "log": true
-          },
-          "loss": {
-            "type": "categorical",
-            "choices": [
-              "linear",
-              "square",
-              "exponential"
-            ]
-          }
-        },
-        "artifact_options": {
-          "persist_model": true,
-          "persist_metrics": true,
-          "persist_optuna": true
-        }
-      },
-      "random_forest_regressor": {
-        "hyperparameters": {
-          "random_seed": 42,
-          "scale_features": false,
-          "scale_targets": false
-        },
-        "training_defaults": {
-          "n_estimators": 390,
-          "max_depth": 14,
-          "min_samples_split": 3,
-          "min_samples_leaf": 1,
-          "max_features": 0.500441009314039,
-          "bootstrap": false,
-          "random_state": 42,
-          "n_jobs": 1
-        },
-        "search_space": {
-          "n_estimators": {
-            "type": "int",
-            "low": 100,
-            "high": 400,
-            "log": false
-          },
-          "max_depth": {
-            "type": "categorical",
-            "choices": [
-              null,
-              6,
-              10,
-              14,
-              18
-            ]
-          },
-          "min_samples_split": {
-            "type": "int",
-            "low": 2,
-            "high": 10,
-            "log": false
-          },
-          "min_samples_leaf": {
-            "type": "int",
-            "low": 1,
-            "high": 4,
-            "log": false
-          },
-          "max_features": {
-            "type": "float",
-            "low": 0.5,
-            "high": 1,
-            "log": false
-          },
-          "bootstrap": {
-            "type": "categorical",
-            "choices": [
-              true,
-              false
-            ]
-          }
-        },
-        "artifact_options": {
-          "persist_model": true,
-          "persist_metrics": true,
-          "persist_optuna": true
-        }
-      },
-      "extra_trees_regressor": {
-        "hyperparameters": {
-          "random_seed": 42,
-          "scale_features": false,
-          "scale_targets": true
-        },
-        "training_defaults": {
-          "n_estimators": 300,
-          "max_depth": null,
-          "min_samples_split": 2,
-          "min_samples_leaf": 1,
-          "max_features": 1.0,
-          "bootstrap": false,
-          "random_state": 42,
-          "n_jobs": 1
-        },
-        "search_space": {
-          "n_estimators": {
-            "type": "int",
-            "low": 100,
-            "high": 400,
-            "log": false
-          },
-          "max_depth": {
-            "type": "categorical",
-            "choices": [
-              null,
-              6,
-              10,
-              14,
-              18
-            ]
-          },
-          "min_samples_split": {
-            "type": "int",
-            "low": 2,
-            "high": 10,
-            "log": false
-          },
-          "min_samples_leaf": {
-            "type": "int",
-            "low": 1,
-            "high": 4,
-            "log": false
-          },
-          "max_features": {
-            "type": "float",
-            "low": 0.5,
-            "high": 1,
-            "log": false
-          },
-          "bootstrap": {
-            "type": "categorical",
-            "choices": [
-              true,
-              false
-            ]
-          }
-        },
-        "artifact_options": {
-          "persist_model": true,
-          "persist_metrics": true,
-          "persist_optuna": true
-        }
-      },
-      "svr_regressor": {
-        "hyperparameters": {
-          "random_seed": 42,
-          "scale_features": true,
-          "scale_targets": true
-        },
-        "training_defaults": {
-          "C": 1.0,
-          "epsilon": 0.1,
-          "kernel": "rbf",
-          "gamma": "scale",
-          "tol": 0.001,
-          "shrinking": true,
-          "max_iter": 20000,
-          "cache_size": 256
-        },
-        "search_space": {
-          "C": {
-            "type": "float",
-            "low": 0.1,
-            "high": 10,
-            "log": true
-          },
-          "epsilon": {
-            "type": "float",
-            "low": 0.01,
-            "high": 0.5,
-            "log": true
-          },
-          "kernel": {
-            "type": "categorical",
-            "choices": [
-              "rbf",
-              "linear"
-            ]
-          },
-          "gamma": {
-            "type": "categorical",
-            "choices": [
-              "scale",
-              "auto"
-            ]
-          },
-          "tol": {
-            "type": "float",
-            "low": 0.001,
-            "high": 0.01,
-            "log": true
-          }
-        },
-        "artifact_options": {
-          "persist_model": true,
-          "persist_metrics": true,
-          "persist_optuna": true
-        }
-      },
-      "knn_regressor": {
-        "hyperparameters": {
-          "random_seed": 42,
-          "scale_features": true,
-          "scale_targets": true
-        },
-        "training_defaults": {
-          "n_neighbors": 15,
-          "weights": "distance",
-          "algorithm": "kd_tree",
-          "leaf_size": 40,
-          "p": 2,
-          "metric": "manhattan",
-          "n_jobs": 1
-        },
-        "search_space": {
-          "n_neighbors": {
-            "type": "int",
-            "low": 1,
-            "high": 15,
-            "log": false
-          },
-          "weights": {
-            "type": "categorical",
-            "choices": [
-              "uniform",
-              "distance"
-            ]
-          },
-          "algorithm": {
-            "type": "categorical",
-            "choices": [
-              "auto",
-              "ball_tree",
-              "kd_tree",
-              "brute"
-            ]
-          },
-          "leaf_size": {
-            "type": "int",
-            "low": 15,
-            "high": 60,
-            "log": false
-          },
-          "p": {
-            "type": "categorical",
-            "choices": [
-              1,
-              2,
-              3
-            ]
-          },
-          "metric": {
-            "type": "categorical",
-            "choices": [
-              "minkowski",
-              "euclidean",
-              "manhattan"
-            ]
-          }
-        },
-        "artifact_options": {
-          "persist_model": true,
-          "persist_metrics": true,
-          "persist_optuna": true
-        }
-      },
-      "pls_regressor": {
-        "hyperparameters": {
-          "random_seed": 42,
-          "scale_features": true,
-          "scale_targets": true
-        },
-        "training_defaults": {
-          "n_components": 6,
-          "scale": false,
-          "max_iter": 887,
-          "tol": 9.908557607069363e-05,
-          "copy": true
-        },
-        "search_space": {
-          "n_components": {
-            "type": "int",
-            "low": 1,
-            "high": 6,
-            "log": false
-          },
-          "max_iter": {
-            "type": "int",
-            "low": 200,
-            "high": 1000,
-            "log": false
-          },
-          "tol": {
-            "type": "float",
-            "low": 1e-08,
-            "high": 0.0001,
-            "log": true
-          }
-        },
-        "artifact_options": {
-          "persist_model": true,
-          "persist_metrics": true,
-          "persist_optuna": true
-        }
-      },
-      "multitask_elastic_net_regressor": {
-        "hyperparameters": {
-          "random_seed": 42,
-          "scale_features": true,
-          "scale_targets": true
-        },
-        "training_defaults": {
-          "alpha": 0.01,
-          "l1_ratio": 0.5,
-          "fit_intercept": true,
-          "max_iter": 20000,
-          "tol": 1e-06,
-          "selection": "cyclic",
-          "random_state": 42
-        },
-        "search_space": {
-          "alpha": {
-            "type": "float",
-            "low": 1e-06,
-            "high": 10,
-            "log": true
-          },
-          "l1_ratio": {
-            "type": "float",
-            "low": 0.05,
-            "high": 0.95,
-            "log": false
-          }
-        },
-        "artifact_options": {
-          "persist_model": true,
-          "persist_metrics": true,
-          "persist_optuna": true
-        }
-      },
-      "multitask_lasso_regressor": {
-        "hyperparameters": {
-          "random_seed": 42,
-          "scale_features": true,
-          "scale_targets": true
-        },
-        "training_defaults": {
-          "alpha": 0.01,
-          "fit_intercept": true,
-          "max_iter": 20000,
-          "tol": 1e-06,
-          "selection": "cyclic",
-          "random_state": 42
-        },
-        "search_space": {
-          "alpha": {
-            "type": "float",
-            "low": 1e-06,
-            "high": 10,
-            "log": true
-          }
-        },
-        "artifact_options": {
-          "persist_model": true,
-          "persist_metrics": true,
-          "persist_optuna": true
-        }
-      },
-      "ann_deep_regressor": {
-        "hyperparameters": {
-          "random_seed": 42,
-          "scale_features": true,
-          "scale_targets": true
-        },
-        "training_defaults": {
-          "hidden_layer_sizes": [
-            128,
-            64,
-            32
-          ],
-          "activation": "relu",
-          "solver": "adam",
-          "alpha": 0.0001,
-          "batch_size": 128,
-          "learning_rate_init": 0.001,
-          "max_iter": 250,
-          "tol": 0.0001,
-          "shuffle": true,
-          "early_stopping": false,
-          "n_iter_no_change": 15,
-          "random_state": 42,
-          "verbose": false
-        },
-        "search_space": {
-          "activation": {
-            "type": "categorical",
-            "choices": [
-              "relu",
-              "tanh",
-              "logistic"
-            ]
-          },
-          "alpha": {
-            "type": "float",
-            "low": 1e-06,
-            "high": 0.01,
-            "log": true
-          },
-          "batch_size": {
-            "type": "categorical",
-            "choices": [
-              64,
-              128,
-              256
-            ]
-          },
-          "learning_rate_init": {
-            "type": "float",
-            "low": 0.0005,
-            "high": 0.01,
-            "log": true
-          },
-          "tol": {
-            "type": "float",
-            "low": 0.0001,
-            "high": 0.001,
-            "log": true
-          }
-        },
-        "artifact_options": {
-          "persist_model": true,
-          "persist_metrics": true,
-          "persist_optuna": true
-        }
-      },
-      "tabnet_regressor": {
-        "hyperparameters": {
-          "random_seed": 42,
-          "scale_features": true,
-          "scale_targets": true
-        },
-        "training_defaults": {
-          "width": 16,
-          "n_steps": 4,
-          "gamma": 1.3,
-          "lambda_sparse": 0.001,
-          "learning_rate": 0.01,
-          "mask_type": "sparsemax",
-          "max_epochs": 35,
-          "batch_size": 1024,
-          "virtual_batch_size": 128,
-          "seed": 42,
-          "device_name": "cpu",
-          "verbose": 0
-        },
-        "search_space": {
-          "width": {
-            "type": "categorical",
-            "choices": [
-              8,
-              16,
-              24
-            ]
-          },
-          "n_steps": {
-            "type": "int",
-            "low": 3,
-            "high": 4,
-            "log": false
-          },
-          "gamma": {
-            "type": "float",
-            "low": 1,
-            "high": 2,
-            "log": false
-          },
-          "lambda_sparse": {
-            "type": "float",
-            "low": 1e-06,
-            "high": 0.01,
-            "log": true
-          },
-          "learning_rate": {
-            "type": "float",
-            "low": 0.003,
-            "high": 0.03,
-            "log": true
-          },
-          "mask_type": {
-            "type": "categorical",
-            "choices": [
-              "sparsemax",
-              "entmax"
-            ]
-          },
-          "max_epochs": {
-            "type": "int",
-            "low": 20,
-            "high": 50,
-            "log": false
-          },
-          "batch_size": {
-            "type": "categorical",
-            "choices": [
-              512,
-              1024
-            ]
-          }
-        },
-        "artifact_options": {
-          "persist_model": true,
-          "persist_metrics": true,
-          "persist_optuna": true
-        }
-      }
-    }
-  }
+    "deployment":  {
+                       "metric":  "scaled_squared_l2",
+                       "scale_ddof":  0,
+                       "osqp_eps_abs":  1E-08,
+                       "osqp_eps_rel":  1E-08,
+                       "osqp_max_iter":  100000,
+                       "osqp_polish":  true,
+                       "cold_retry":  true,
+                       "invariant_tolerance":  1E-08,
+                       "nonnegativity_tolerance":  1E-10,
+                       "stationarity_tolerance":  1E-08,
+                       "dual_tolerance":  1E-10,
+                       "complementarity_tolerance":  1E-08,
+                       "active_component_tolerance":  1E-08
+                   },
+    "optimization":  {
+                         "bounds":  {
+                                        "HRT":  [
+                                                    6.0,
+                                                    36.0
+                                                ],
+                                        "Aeration":  [
+                                                         0.5,
+                                                         2.5
+                                                     ]
+                                    },
+                         "baseline":  [
+                                          21.0,
+                                          1.5
+                                      ],
+                         "nominal_influent":  [
+                                                  0.25,
+                                                  100.0,
+                                                  42.5,
+                                                  33.5,
+                                                  1.5,
+                                                  4.0,
+                                                  1.0,
+                                                  10.0,
+                                                  50.0,
+                                                  170.0,
+                                                  70.0,
+                                                  170.0,
+                                                  57.5,
+                                                  32.5,
+                                                  11.0,
+                                                  15.5,
+                                                  4.25,
+                                                  4.25,
+                                                  6.0,
+                                                  6.0
+                                              ],
+                         "target_map":  "I_comp",
+                         "target_weights":  [
+                                                0.25,
+                                                0.25,
+                                                0.25,
+                                                0.25
+                                            ],
+                         "operating_penalties":  [
+                                                     0.25,
+                                                     0.25
+                                                 ],
+                         "additional_discharge_constraints":  [
+
+                                                              ],
+                         "surrogate_search":  {
+                                                  "total_verified_budget":  10000,
+                                                  "interior_direct_maxfun":  6000,
+                                                  "edge_direct_maxfun":  400,
+                                                  "independent_grid_points":  [
+                                                                                  41,
+                                                                                  21
+                                                                              ],
+                                                  "direct_len_tol":  0.00025,
+                                                  "direct_vol_tol":  1E-16,
+                                                  "objective_relative_tolerance":  1E-08,
+                                                  "mesh_initial_step":  [
+                                                                            0.32,
+                                                                            0.032
+                                                                        ],
+                                                  "mesh_min_step":  [
+                                                                        0.01,
+                                                                        0.001
+                                                                    ],
+                                                  "boundary_tolerance":  [
+                                                                             0.01,
+                                                                             0.001
+                                                                         ],
+                                                  "locally_biased":  false
+                                              },
+                         "mechanistic_search":  {
+                                                    "total_verified_budget":  2000,
+                                                    "interior_direct_maxfun":  900,
+                                                    "edge_direct_maxfun":  100,
+                                                    "independent_grid_points":  [
+                                                                                    21,
+                                                                                    11
+                                                                                ],
+                                                    "direct_len_tol":  0.0005,
+                                                    "direct_vol_tol":  1E-14,
+                                                    "objective_relative_tolerance":  1E-08,
+                                                    "mesh_initial_step":  [
+                                                                              0.32,
+                                                                              0.032
+                                                                          ],
+                                                    "mesh_min_step":  [
+                                                                          0.01,
+                                                                          0.001
+                                                                      ],
+                                                    "boundary_tolerance":  [
+                                                                               0.01,
+                                                                               0.001
+                                                                           ],
+                                                    "locally_biased":  false
+                                                }
+                     },
+    "robustness":  {
+                       "n_cases":  100,
+                       "seed":  314159,
+                       "scenario_workers":  1
+                   },
+    "validation":  {
+                       "mechanistic_reference_for_every_case":  true,
+                       "fixed_solver_initialization":  true,
+                       "surrogate_neighborhood_step":  [
+                                                           0.25,
+                                                           0.025
+                                                       ],
+                       "regret_tolerance":  1E-08
+                   },
+    "timing":  {
+                   "batch_size":  512,
+                   "warmup_runs":  5,
+                   "measured_runs":  30,
+                   "single_prediction_repeats":  100
+               },
+    "reporting":  {
+                      "figure_formats":  [
+                                             "png",
+                                             "pdf"
+                                         ],
+                      "figure_dpi":  300,
+                      "quantiles":  [
+                                        0.25,
+                                        0.5,
+                                        0.75,
+                                        0.95
+                                    ],
+                      "write_tex_tables":  true,
+                      "article_source_directory":  "article/wip"
+                  }
 }

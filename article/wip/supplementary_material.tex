@@ -1,0 +1,307 @@
+%% Supplementary methods for the physically constrained bilevel optimization article.
+\documentclass[a4paper,fleqn]{cas-sc}
+
+\usepackage[authoryear,longnamesfirst]{natbib}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{array}
+\usepackage{booktabs}
+\usepackage{float}
+\usepackage{microtype}
+
+\DeclareMathOperator*{\argminop}{arg\,min}
+\newcommand{\R}{\mathbb{R}}
+
+\def\tsc#1{\csdef{#1}{\textsc{\lowercase{#1}}\xspace}}
+\tsc{WGM}
+\tsc{QE}
+
+\ExplSyntaxOn
+\keys_set:nn { stm / mktitle } { nologo }
+\cs_set:Npn \__first_footerline:
+{
+    \group_begin:
+    \small
+    \sffamily
+    \ifnum\theblind>0\relax
+    \else
+        \__short_authors:
+    \fi
+    \group_end:
+}
+\ExplSyntaxOff
+
+\begin{document}
+\let\WriteBookmarks\relax
+
+\shorttitle{Supplementary Material: Bilevel Activated Sludge Optimization}
+\shortauthors{Egberto F. Selerio Jr.}
+
+\title[mode=title]{Supplementary Material for ``Bilevel Optimization of Activated Sludge Operation Using a Physically Constrained Machine Learning Surrogate''}
+
+\author[1]{Egberto F. Selerio Jr.}
+\cormark[1]
+\ead{egbertoselerio@gmail.com}
+
+\affiliation[1]{
+  organization={Engineering Research and Development for Technology},
+  addressline={School of Engineering, University of San Carlos},
+  country={Philippines}}
+
+\cortext[cor1]{Corresponding author}
+
+\begin{abstract}
+This supplement gives the complete coefficient-estimation, coefficient-freezing, and scaled-$L_2$ deployment protocol for the Invariant-Constrained Second-Order Regression head used by the accompanying physically constrained machine learning surrogate. It defines the feature matrix, coupled training objective, deterministic recursive block-coordinate estimator, admissibility conditions, fixed hyperparameters, convergence tests, physical-projection QP, and artifact checks required before the fitted surrogate may enter the bilevel program.
+\end{abstract}
+
+\begin{keywords}
+supplementary methods \sep ICSOR \sep second-order regression \sep constrained surrogate \sep activated sludge
+\end{keywords}
+
+\maketitle
+
+\section{Complete ICSOR Coefficient-Estimation Protocol}
+
+\subsection{Training Data and Coordinate Contract}
+
+The training input for sample $i$ is the ordered pair $(u_i,x_i)$, where $u_i\in\R^2$ contains hydraulic retention time and aeration and $x_i\in\R_+^{F}$ contains the $F=20$ influent ASM2d-TSN components. The target $c_{\mathrm{out},i}\in\R_+^F$ is the mechanistic steady-state effluent in the identical component order. All training calculations use physical component coordinates. Feature and target z-score transformations are disabled so that the stored invariant operator, component coupling, and deployment correction refer to the same units.
+
+Let $N$ denote the number of rows supplied to one fit. The matrices
+\begin{equation}
+X=\begin{bmatrix}x_1^\top\\ \vdots\\x_N^\top\end{bmatrix},
+\qquad
+C_{\mathrm{out}}=\begin{bmatrix}c_{\mathrm{out},1}^\top\\ \vdots\\c_{\mathrm{out},N}^\top\end{bmatrix}
+\end{equation}
+belong to $\R^{N\times F}$. The invariant matrix $A\in\R^{K\times F}$ is constructed once from the same full-precision stoichiometric matrix used by the simulator and satisfies $A\nu^\top=0$. Component labels, ordering, native units, and the exact array bytes of $A$ are checked before fitting.
+
+\subsection{Partitioned Second-Order Feature Matrix}
+
+For each sample, the ordered feature vector is
+\begin{equation}
+\label{eq:supp_feature_map}
+\phi(u_i,x_i)=
+\begin{bmatrix}
+1\\u_i\\x_i\\u_i\otimes u_i\\x_i\otimes x_i\\u_i\otimes x_i
+\end{bmatrix}\in\R^D.
+\end{equation}
+With two operating variables and 20 components,
+\begin{equation}
+D=1+2+20+2^2+20^2+2(20)=467.
+\end{equation}
+The feature matrix $\Phi\in\R^{N\times D}$ stores $\phi(u_i,x_i)^\top$ by row. No term is selected using the optimization-validation data. The coefficient matrix
+\begin{equation}
+B=\begin{bmatrix}b&W_u&W_x&\Theta_{uu}&\Theta_{xx}&\Theta_{ux}\end{bmatrix}
+\in\R^{F\times D}
+\end{equation}
+maps the feature vector to the latent driver $r=B\phi$.
+
+Equation~\eqref{eq:supp_feature_map} uses a concept-first order that begins with the intercept. The executable artifact retains the tested published-code storage order $[u_i^\top,x_i^\top,1,(u_i\otimes u_i)^\top,(x_i\otimes x_i)^\top,(u_i\otimes x_i)^\top]^\top$. This is only an exact column permutation: the columns of $B$ are permuted with the features, so $B\phi$ and every fitted prediction are unchanged. The stored feature-contract table gives every label, block, and column index.
+
+The ordered Kronecker blocks retain both $u_ru_s$ and $u_su_r$, and likewise both $x_rx_s$ and $x_sx_r$. For output component $j$, reshape the corresponding rows of $\Theta_{uu}$ and $\Theta_{xx}$ into square matrices $Q_{uu}^{(j)}$ and $Q_{xx}^{(j)}$. After every $B$ update, replace
+\begin{equation}
+\label{eq:supp_symmetry}
+Q\leftarrow\frac{Q+Q^\top}{2},
+\qquad
+Q\in\left\{Q_{uu}^{(j)},Q_{xx}^{(j)}\right\}_{j=1}^{F}.
+\end{equation}
+For any vector $z$, $z^\top Qz=z^\top[(Q+Q^\top)/2]z$, so this operation does not change fitted values. With a positive ridge penalty it removes the prediction-invariant skew component and selects the minimum-norm representative of every duplicated quadratic pair.
+
+\subsection{Coupled Training Objective}
+
+ICSOR introduces the component-coupling matrix $\Gamma\in\R^{F\times F}$ and the fitted non-negative state matrix $\widehat C\in\R_+^{N\times F}$. The coupled relation is
+\begin{equation}
+\widehat C(I_F-\Gamma)^\top\approx\Phi B^\top.
+\end{equation}
+The admissible coupling set is
+\begin{equation}
+\label{eq:supp_gamma_set}
+\mathcal G=\left\{\Gamma:\operatorname{diag}(\Gamma)=0,
+\ |\Gamma_{jk}|\leq\gamma_{\max}\ (j\neq k),
+\ \kappa(I_F-\Gamma)\leq\kappa_{\max}\right\}.
+\end{equation}
+The zero diagonal prevents self-coupling from duplicating the direct driver, the box bound limits individual cross-component effects, and the condition-number test protects the deployment solve.
+
+The complete training criterion is
+\begin{equation}
+\label{eq:supp_training_objective}
+\begin{aligned}
+\min_{B,\,\Gamma\in\mathcal G,\,\widehat C\geq0}
+J(B,\Gamma,\widehat C)
+={}&\|C_{\mathrm{out}}-\widehat C\|_F^2\\
+&+\lambda_{\mathrm{inv}}\|(\widehat C-X)A^\top\|_F^2\\
+&+\lambda_{\mathrm{sys}}\|\widehat C(I_F-\Gamma)^\top-\Phi B^\top\|_F^2\\
+&+\lambda_B\|B\|_F^2+\lambda_\Gamma\|\Gamma\|_F^2.
+\end{aligned}
+\end{equation}
+The first term fits the mechanistic effluent components. The second is a soft invariant residual and does not provide a deployment guarantee. The third couples the fitted non-negative states to the second-order driver. The last two terms stabilize the coefficient blocks. Exact conservation and non-negativity of a returned prediction are imposed later by the deployment problem, not by Equation~\eqref{eq:supp_training_objective}.
+
+The joint problem is non-convex because $\widehat C\Gamma^\top$ couples two unknown blocks. Each block subproblem is convex when the other two blocks are fixed, which motivates deterministic Gauss--Seidel block-coordinate updates.
+
+\subsection{The $B$ Update}
+
+For fixed $(\Gamma,\widehat C)$, define $R=I_F-\Gamma$. Terms independent of $B$ are discarded and solve
+\begin{equation}
+\label{eq:supp_b_update}
+B^+=\argminop_B
+\lambda_{\mathrm{sys}}\|\widehat C R^\top-\Phi B^\top\|_F^2
++\lambda_B\|B\|_F^2.
+\end{equation}
+This is a multi-output ridge problem. It is solved in double precision through a regularized linear least-squares system rather than by explicitly inverting a normal matrix. Equation~\eqref{eq:supp_symmetry} is applied immediately afterward. Finite coefficients and unchanged predictions before and after symmetrization are asserted.
+
+\subsection{The $\Gamma$ Update}
+
+For fixed $(B,\widehat C)$, let $M=\Phi B^\top$. The coupling update is
+\begin{equation}
+\label{eq:supp_gamma_update}
+\Gamma^+=\argminop_{\Gamma}
+\lambda_{\mathrm{sys}}\|\widehat C(I_F-\Gamma)^\top-M\|_F^2
++\lambda_\Gamma\|\Gamma\|_F^2
+\end{equation}
+subject initially to zero diagonal and the entrywise box constraints in Equation~\eqref{eq:supp_gamma_set}. This convex quadratic program is solved with OSQP at the published $10^{-6}$ absolute and relative tolerances. Warm starting uses the preceding $\Gamma$ after the tested implementation's finite-value check and projection into the current box. The statuses \texttt{solved} and \texttt{solved inaccurate} are accepted. If a component-row solve does not return either status and a solution vector, that row is set to zero; an accepted row is clipped to the declared box and its diagonal entry is reset to zero. Status, iterations, residuals, warm-start use, and any zero-row fallback are archived for every row and sweep.
+
+The QP candidate is then checked against $\kappa_{\max}$. If it exceeds the threshold, the off-diagonal matrix is contracted toward zero by the deterministic factors $2^{-k}$, $k=0,\ldots,24$, until $I_F-\Gamma$ passes the condition test. If no contracted candidate passes, the tested estimator uses $\Gamma=0$, for which the coupled matrix is the identity. The accepted condition number and contraction factor are stored for every outer iteration. This training safeguard belongs to coefficient estimation; deployment remains fail-closed, so a failed physical-projection QP is never scored by the optimizer.
+
+\subsection{The $\widehat C$ Update}
+
+For fixed $(B,\Gamma)$, let $R=I_F-\Gamma$ and $M=\Phi B^\top$. The fitted-state update is
+\begin{equation}
+\label{eq:supp_chat_update}
+\begin{aligned}
+\widehat C^+=\argminop_{C\geq0}\quad
+&\|C_{\mathrm{out}}-C\|_F^2
++\lambda_{\mathrm{inv}}\|(C-X)A^\top\|_F^2\\
+&+\lambda_{\mathrm{sys}}\|CR^\top-M\|_F^2.
+\end{aligned}
+\end{equation}
+This is a convex non-negative quadratic program. It uses OSQP in double precision at the published $10^{-6}$ tolerances and is warm-started from the preceding $\widehat C$ after the same finite-value check and bound projection. The statuses \texttt{solved} and \texttt{solved inaccurate} are accepted, and a returned solution is projected componentwise onto the non-negative orthant. If neither accepted status and a solution vector are returned, the tested estimator uses the corresponding non-negative mechanistic target row for that block update. Solver status, residuals, iteration count, warm-start use, fallback use, and the minimum stored component are retained for every sample and sweep.
+
+\subsection{Initialization, Update Order, and Stopping Rule}
+
+The retained reference protocol uses one deterministic restart. It initializes
+\begin{equation}
+\Gamma^{(0)}=0,\qquad
+\widehat C^{(0)}=\max(C_{\mathrm{out}},0),
+\end{equation}
+where the maximum is componentwise, and obtains $B^{(0)}$ from Equation~\eqref{eq:supp_b_update}. At outer iteration $t$, the Gauss--Seidel order is
+\begin{align}
+B^{(t+1)}&\leftarrow\argminop_B
+J(B,\Gamma^{(t)},\widehat C^{(t)}),\nonumber\\
+\Gamma^{(t+1)}&\leftarrow\argminop_{\Gamma\in\mathcal G}
+J(B^{(t+1)},\Gamma,\widehat C^{(t)}),\nonumber\\
+\widehat C^{(t+1)}&\leftarrow\argminop_{C\geq0}
+J(B^{(t+1)},\Gamma^{(t+1)},C).
+\label{eq:supp_update_order}
+\end{align}
+The complete objective is recomputed from the returned blocks after every sweep. No rounded or displayed coefficient is used in this calculation.
+
+Let $J_{\mathrm{best}}^{(t)}=\min_{0\leq r\leq t}J^{(r)}$. Once at least $W$ running-best observations exist, ordinary least squares fits a line to the most recent $W$ values after division by $1+|J_{\mathrm{best}}^{(t)}|$. Convergence is declared when the absolute fitted slope is no greater than $\tau_{\mathrm{slope}}$. The procedure otherwise stops at $T_{\max}$ sweeps. Consistent with the tested implementation, the block values returned by the final completed sweep are frozen; the lowest observed objective and its iteration are retained as convergence diagnostics rather than used to substitute an earlier tuple. The stored artifact identifies the stopping reason, total sweeps, full objective history, best observed objective and iteration, final objective, and selected block values.
+
+\begin{table}[H]
+\centering
+\caption{Fixed ICSOR training settings and the deployment metric used in the operational study. Full-precision values are used in computation.}
+\label{tab:supp_icsor_settings}
+\scriptsize
+\begin{tabular}{ll}
+\toprule
+Setting & Value \\
+\midrule
+Training method & Deterministic recursive coupled QP \\
+Bias term & Included \\
+$\lambda_{\mathrm{inv}}$ & $8.683486803600385\times10^{-3}$ \\
+$\lambda_{\mathrm{sys}}$ & $1.2668014667081356\times10^{-3}$ \\
+$\lambda_B$ & $6.088498416548708\times10^{-5}$ \\
+$\lambda_\Gamma$ & $6.55385962439312\times10^{-4}$ \\
+$\gamma_{\max}$ & $0.3680342084965297$ \\
+$\kappa_{\max}$ & $10^8$ \\
+Maximum outer sweeps $T_{\max}$ & 60 \\
+Restarts & 1; zero-$\Gamma$ deterministic initialization \\
+Regression window $W$ & 12 running-best objectives \\
+Slope tolerance $\tau_{\mathrm{slope}}$ & $2.849691821925099\times10^{-7}$ \\
+OSQP absolute and relative tolerances & $10^{-6}$ \\
+OSQP maximum iterations & 10,000 \\
+OSQP polishing & Disabled for training block updates \\
+Training warm starts & Enabled for $\Gamma$ and $\widehat C$ \\
+Warm-start clipping tolerance & $10^{-10}$ \\
+Non-negativity diagnostic tolerance & $10^{-10}$ \\
+Constraint diagnostic tolerance & $10^{-8}$ \\
+Operational deployment metric & Scaled squared $L_2$ (present study) \\
+Operational OSQP absolute/relative tolerances & $10^{-8}$ \\
+Operational OSQP maximum iterations & 100,000 \\
+Operational OSQP polishing & Enabled \\
+Operational cold retry & One newly constructed solver \\
+Operational active-component tolerance & $10^{-8}$ \\
+Random seed & 42 \\
+Feature and target scaling & Disabled \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The coefficient-estimation settings and recursive-QP execution semantics in Table~\ref{tab:supp_icsor_settings} are adopted from the tested implementation accompanying the published ICSOR study (Selerio Jr., 2026), specifically \texttt{icsor-model/src/models/ml/icsor\_coupled\_qp.py} at commit \texttt{4910e723cd33ac8154e56f3d04d0575b4ba1ad9b}; the source-file SHA-256 is stored with the executable artifact. They are transferred rather than retuned on the operational study, preventing the optimization scenarios from becoming a second model-selection set. The original selection used 100 seeded tree-structured Parzen estimator trials without pruning or a wall-clock timeout, minimizing validation mean squared error in the 20-component physical prediction space (Akiba et al., 2019; Bergstra et al., 2011). The scaled squared-$L_2$ deployment metric is the sole deliberate algorithmic replacement: it is introduced by the present operational study in place of the published weighted-$L_1$ correction and does not change coefficient estimation.
+
+\subsection{Predictive Deployment Used During Model Assessment}
+
+For an input $(u,x)$, form $\phi$ in Equation~\eqref{eq:supp_feature_map} and solve
+\begin{equation}
+(I_F-\widehat\Gamma)c_{\mathrm{raw}}=\widehat B\phi.
+\end{equation}
+The raw state is projected to the invariant affine space,
+\begin{equation}
+c_{\mathrm{aff}}=c_{\mathrm{raw}}
+-A^\top(AA^\top)^{-1}A(c_{\mathrm{raw}}-x).
+\end{equation}
+
+For each fitted artifact, let $\sigma_j^{(\mathrm{fit})}>0$ be the population standard deviation of target component $j$ among the rows used to estimate that artifact, and define
+\begin{equation}
+D_c=\operatorname{Diag}
+\left(\sigma_1^{(\mathrm{fit})},\ldots,\sigma_F^{(\mathrm{fit})}\right).
+\end{equation}
+During 80--20 assessment, these scales are calculated only from the 8,000 training rows; the 2,000 test targets are excluded. After assessment is closed, the production artifact is refitted on all 10,000 in-distribution rows and its production $D_c$ is calculated from those same rows before any nominal-case or robustness response is generated.
+
+The final physically constrained state is the unique solution of
+\begin{equation}
+\label{eq:supp_deployment_qp}
+\begin{aligned}
+\widehat c={}&
+\argminop_{c\in\R^F}\ \frac12
+\left\|D_c^{-1}(c-c_{\mathrm{aff}})\right\|_2^2\\
+\text{subject to}\quad&Ac=Ax,\\
+&c\geq0.
+\end{aligned}
+\end{equation}
+Because $D_c$ is diagonal and strictly positive, the objective Hessian $D_c^{-\top}D_c^{-1}$ is positive definite and the returned component vector is unique. Equation~\eqref{eq:supp_deployment_qp} is solved with OSQP and independently checked for invariant residual, non-negativity, stationarity, dual feasibility, and complementarity (Stellato et al., 2018). Within a prediction batch, one solver object is reused and the last accepted primal state warm-starts the next state. Only status \texttt{solved} and a response passing every independent check are retained; one newly constructed cold retry is allowed before failure. The model-assessment prediction is always this final state. Raw and affine states are retained as diagnostics and are never relabeled as physically constrained predictions.
+
+\subsection{Coefficient Freezing and Acceptance Checks}
+
+After the 80--20 predictive assessment has been completed without changing the settings, the production ICSOR is refitted on all 10,000 accepted in-distribution rows. The production artifact is eligible for optimization only if all of the following checks pass:
+\begin{enumerate}
+\item the stored input and target labels exactly match the declared 2-operating-variable and 20-component orders;
+\item $B$ has shape $F\times467$ and contains only finite values;
+\item $\Gamma$ has shape $F\times F$, has zero diagonal to tolerance, respects $\gamma_{\max}$, and contains only finite values;
+\item $R=I_F-\Gamma$ is nonsingular and $\kappa(R)\leq\kappa_{\max}$;
+\item every reshaped $\Theta_{uu}$ and $\Theta_{xx}$ slice is symmetric to the stored tolerance;
+\item $A$ has the expected shape and numerical rank and passes $A\nu^\top\approx0$ and $AA^\top\approx I_K$;
+\item the training objective recomputed from the stored blocks agrees with the archived final objective;
+\item the final fitted-state matrix respects its non-negativity tolerance;
+\item every stored component scale is finite and strictly positive;
+\item a deterministic prediction replay reproduces archived raw, affine, and unique deployed check cases; and
+\item the configuration, input tables, coefficients, diagnostics, software environment, and replay outputs are covered by an immutable manifest and cryptographic hashes.
+\end{enumerate}
+Failure of any item prevents the artifact from entering the outer optimization. Coefficients are never re-estimated, recalibrated, or selected after a mechanistic response from an optimization-validation scenario has been observed.
+
+\subsection{Computational Timing and Executable Profiles}
+
+Wall-clock measurements use a monotonic high-resolution performance counter. Assessment and production fitting are each measured once from feature construction through the recursive block updates and per-sweep diagnostic writes. Inference measurements use five warm-up executions followed by 30 recorded repetitions for a deterministic batch of 512 states; single-state end-to-end deployment uses 100 recorded repetitions. Raw coupled-system prediction, affine projection, lower-QP solution, and complete deployment are measured separately and retained in row-level timing files. The standalone lower-QP batch timing constructs a new projector for every state, whereas the end-to-end batch timing reuses one projector sequentially. Hardware, thread count, Python version, and numerical-library versions are included in the sealed run manifest.
+
+Only the full executable profile is eligible to generate article results. It requests 10,000 mechanistic training states, 100 robustness cases, and the complete surrogate and mechanistic search budgets declared in the main article. The smoke profile requests 160 states, three robustness cases, reduced budgets, and coarser meshes solely to test orchestration, checkpointing, solver acceptance, reporting, and artifact sealing. Smoke-profile numerical results are never promoted to the manuscript. A completed run is immutable: its manifest and inventory are cryptographically sealed, and rerunning the same identifier is refused after all inventory hashes have been verified.
+
+\section*{Supplementary References}
+
+\noindent Akiba, T., Sano, S., Yanase, T., Ohta, T., \& Koyama, M. (2019). Optuna: A next-generation hyperparameter optimization framework. In \textit{Proceedings of the 25th ACM SIGKDD International Conference on Knowledge Discovery \& Data Mining} (pp. 2623--2631). doi: 10.1145/3292500.3330701.
+
+\noindent Bergstra, J., Bardenet, R., Bengio, Y., \& K\'egl, B. (2011). Algorithms for hyper-parameter optimization. In \textit{Advances in Neural Information Processing Systems} (Vol. 24).
+
+\noindent Selerio Jr., E. F. (2026). An interpretable statistical surrogate of activated sludge systems that preserves mass conservation and component non-negativity. \textit{Digital Chemical Engineering, 20}, 100329. doi: 10.1016/j.dche.2026.100329.
+
+\noindent Stellato, B., Banjac, G., Goulart, P., Bemporad, A., \& Boyd, S. (2018). OSQP: An operator splitting solver for quadratic programs. In \textit{2018 UKACC 12th International Conference on Control (CONTROL)} (p. 339). IEEE. doi: 10.1109/control.2018.8516834.
+
+\end{document}

@@ -1,0 +1,40 @@
+\documentclass[11pt]{letter}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[margin=1in]{geometry}
+\usepackage{microtype}
+\usepackage{parskip}
+\setlength{\emergencystretch}{2em}
+
+\signature{Egberto F. Selerio Jr.\\
+Engineering Research and Development for Technology\\
+University of San Carlos, Philippines\\
+\texttt{egbertoselerio@gmail.com}}
+
+\date{\today}
+
+\begin{document}
+
+\begin{letter}{Prof. Jin Xuan and Prof. Jinfeng Liu\\
+Editors-in-Chief\\
+\textit{Digital Chemical Engineering}\\
+Elsevier}
+
+\opening{Dear Professors Xuan and Liu,}
+
+Please consider my original research article, ``Bilevel Optimization of Activated Sludge Operation Using a Physically Constrained Machine Learning Surrogate,'' for publication in \textit{Digital Chemical Engineering}.
+
+The manuscript develops an operational framework for selecting hydraulic retention time and aeration in a steady-state activated sludge process. With influent fixed, the trained Invariant-Constrained Second-Order Regression head reduces exactly to a two-variable vector quadratic. Its upper level balances normalized effluent quality and declared operating intensity, while a strictly convex lower-level quadratic program returns one unique component state satisfying the adopted stoichiometric invariants and componentwise non-negativity.
+
+Bounded deterministic search remains inside the surrogate training domain and includes explicit boundary and local refinement. A fully specified representative-influent case study demonstrates the calculation, and a 100-influent robustness cohort tests the method more broadly. Independent ASM2d-TSN simulations evaluate the selected points. The study distinguishes prediction error from decision quality, measured against a separately searched mechanistic reference through operating displacement and decision regret.
+
+This article builds on the published ICSOR study by Selerio Jr., E. F. (2026), \emph{An interpretable statistical surrogate of activated sludge systems that preserves mass conservation and component non-negativity}, \textit{Digital Chemical Engineering}, \textit{20}, 100329. It does not repeat that model-development contribution. The present study introduces a scaled-$L_2$ physical-deployment QP to obtain a unique lower response, then asks whether those responses support reproducible HRT--aeration optimization and mechanistic decision validation. The Supplementary Material retains complete coefficient-estimation and deployment details.
+
+The work is aligned with the journal's scope in digital process engineering, mathematical programming, interpretable surrogate modeling, and computationally supported wastewater-process operation. The manuscript is original, has not been published previously, and is not under consideration elsewhere. I have approved its submission and declare no competing interests. Thank you for your consideration.
+
+\closing{Sincerely,}
+
+\end{letter}
+\end{document}

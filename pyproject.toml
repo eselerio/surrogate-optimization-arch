@@ -1,7 +1,22 @@
 [project]
 name = "surrogate-optimization-arch"
 version = "0.1.0"
-description = "Add your description here"
+description = "Reproducible ASM2d-TSN, ICSOR, and bilevel activated-sludge optimization study."
 readme = "README.md"
-requires-python = ">=3.12"
-dependencies = []
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "ipykernel>=7.2.0",
+    "jupyterlab>=4.5.4",
+    "matplotlib>=3.10.8",
+    "nbconvert>=7.16.6",
+    "numpy>=2.4.3",
+    "openpyxl>=3.1.5",
+    "osqp>=1.0.4",
+    "pandas>=3.0.1",
+    "psutil>=7.2.2",
+    "pyarrow>=23.0.1",
+    "scikit-learn>=1.8.0",
+    "scipy>=1.17.1",
+    "threadpoolctl>=3.6.0",
+    "tqdm>=4.67.1",
+]

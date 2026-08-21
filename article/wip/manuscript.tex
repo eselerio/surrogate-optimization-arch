@@ -1,0 +1,759 @@
+%% Elsevier single-column submission format for Digital Chemical Engineering.
+\documentclass[a4paper,fleqn]{cas-sc}
+
+\usepackage[authoryear,longnamesfirst]{natbib}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{array}
+\usepackage{booktabs}
+\usepackage{float}
+\usepackage{graphicx}
+\usepackage{microtype}
+\usepackage{placeins}
+\usepackage{xcolor}
+
+\DeclareMathOperator*{\argminop}{arg\,min}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\diag}{\operatorname{Diag}}
+
+%%% Author macros required by cas-sc
+\def\tsc#1{\csdef{#1}{\textsc{\lowercase{#1}}\xspace}}
+\tsc{WGM}
+\tsc{QE}
+
+\ExplSyntaxOn
+\keys_set:nn { stm / mktitle } { nologo }
+\cs_set:Npn \__first_footerline:
+{
+    \group_begin:
+    \small
+    \sffamily
+    \ifnum\theblind>0\relax
+    \else
+        \__short_authors:
+    \fi
+    \group_end:
+}
+\ExplSyntaxOff
+
+\begin{document}
+\let\WriteBookmarks\relax
+\def\floatpagepagefraction{1}
+\def\textpagefraction{.001}
+
+\shorttitle{Bilevel Activated Sludge Optimization with a Constrained Surrogate}
+\shortauthors{Egberto F. Selerio Jr.}
+
+\title[mode=title]{Bilevel Optimization of Activated Sludge Operation Using a Physically Constrained Machine Learning Surrogate}
+
+\author[1]{Egberto F. Selerio Jr.}
+\cormark[1]
+\ead{egbertoselerio@gmail.com}
+
+\affiliation[1]{
+  organization={Engineering Research and Development for Technology},
+  addressline={School of Engineering, University of San Carlos},
+  country={Philippines}}
+
+\cortext[cor1]{Corresponding author}
+
+\begin{abstract}
+Repeated mechanistic simulation can make activated sludge operational optimization expensive even when only a small number of operating variables is manipulated. This study develops a bilevel optimization framework around a physically constrained machine learning surrogate constructed from a trained Invariant-Constrained Second-Order Regression (ICSOR) head. For a fixed influent state, the regression response reduces exactly to a vector-valued quadratic function of hydraulic retention time and aeration. An upper-level problem minimizes a dimensionless effluent-quality objective over the surrogate training domain, while a strictly convex lower-level quadratic program returns the unique scaled-Euclidean projection satisfying the adopted stoichiometric invariants and componentwise non-negativity. The bilevel problem is solved through bounded deterministic global search, numerically verified lower-level optimization, explicit boundary searches, and local mesh refinement. A fully specified representative-influent case study demonstrates the calculation, and independent ASM2d-TSN simulations assess both prediction fidelity and decision quality; the latter is quantified by comparison with a separately searched mechanistic reference and its associated decision regret. The formulation separates surrogate fitting, physical deployment, operational search, and mechanistic validation.
+\end{abstract}
+
+\begin{highlights}
+\item Fixed influent reduces ICSOR to a quadratic map in HRT and aeration.
+\item A bilevel program couples operational search to a unique physical projection QP.
+\item Every accepted lower-level solution is conservative and non-negative.
+\item Deterministic bounded search remains within the surrogate training domain.
+\item Mechanistic simulations assess prediction error and operational regret.
+\end{highlights}
+
+\begin{keywords}
+activated sludge \sep bilevel optimization \sep machine learning surrogate \sep hydraulic retention time \sep aeration \sep mass conservation \sep non-negativity
+\end{keywords}
+
+\maketitle
+
+\section*{Nomenclature}
+\noindent Only nonstandard mathematical variables, sets, and operators are listed; process abbreviations and component names are defined in the text.
+\begin{tabbing}
+\hspace{4.2cm} \= \kill
+$A\in\R^{K\times F}$ \> Full-row-rank matrix of independent stoichiometric invariants \\
+$a$ \> Dimensionless aeration setting \\
+$\widehat B$ \> Frozen fitted second-order ICSOR driver-coefficient matrix \\
+$c,c_{\mathrm{raw}},c_{\mathrm{aff}}\in\R^F$ \> Generic, raw, and affine-projected effluent component vectors \\
+$\widehat c(u;x)$ \> Unique lower-QP deployment state \\
+$c_{\mathrm{ASM}}(u;x)$ \> Mechanistic steady-state effluent at operating point $u$ and influent $x$ \\
+$D$ \> Hydraulic dilution rate, d$^{-1}$ \\
+$D_c,D_T,D_u$ \> Positive diagonal scaling matrices for component correction, targets, and operations \\
+$F,K,P$ \> Numbers of components, independent invariants, and reaction processes \\
+$G,d$ \> Optional matrix and right-hand side for upper-level target constraints \\
+$h$ \> Hydraulic retention time (HRT), h \\
+$I_{\mathrm{comp}}\in\R^{4\times F}$ \> Map from ASM components to COD, TN, TP, and TSS \\
+$J(u,c)$ \> Scalar upper-level objective \\
+$L_r(x)$ \> Fixed-influent first-order operating coefficient matrix for the driver \\
+$N,N_{\mathrm{val}}$ \> Numbers of training-benchmark and optimization-validation cases \\
+$p\in\R_+^{M_T}$ \> Non-negative normalized effluent-objective weight vector \\
+$P_A,Q_A$ \> Null-space and row-space orthogonal projectors associated with $A$ \\
+$\alpha,\beta_h,\beta_a,\beta_{hh},\beta_{ha},\beta_{aa}$ \> Fixed-influent quadratic effluent coefficient vectors \\
+$r(u,x)$ \> ICSOR latent component-space driver \\
+$\widehat R=I_F-\widehat\Gamma$ \> Frozen fitted coupled-system matrix \\
+$T$ \> Linear map selecting component or composite optimization targets \\
+$M_T$ \> Number of scalar quantities selected by $T$ \\
+$u=(h,a)^\top$ \> Manipulated operating-variable vector \\
+$\mathcal U$ \> Closed HRT--aeration optimization domain \\
+$x=c_{\mathrm{in}}\in\R_+^F$ \> Fixed influent component vector for one optimization instance \\
+$y=I_{\mathrm{comp}}c$ \> Reported COD, TN, TP, and TSS vector \\
+$z\in[0,1]^2$ \> Normalized operating vector used by the outer search \\
+$e_{S_O}$ \> Unit vector selecting the dissolved-oxygen component \\
+$\widehat\Gamma$ \> Frozen fitted inter-component coupling matrix \\
+$\gamma\in\R_+^2$ \> Optional non-negative operating-penalty weight vector \\
+$\nu\in\R^{P\times F}$ \> ASM2d-TSN stoichiometric matrix \\
+$\phi(u,x)$ \> Partitioned second-order ICSOR feature map \\
+$\varrho\in\R^P$ \> Mechanistic biological and chemical process-rate vector \\
+$\omega$ \> Net oxygen-transfer rate \\
+$\mathcal R_s$ \> Mechanistic decision regret for validation scenario $s$ \\
+$\widehat\Theta_{uu},\widehat\Theta_{xx},\widehat\Theta_{ux}$ \> Frozen operating, influent, and cross-interaction coefficient blocks \\
+$\otimes$ \> Kronecker product \\
+\end{tabbing}
+
+\section{Introduction}
+
+\section{Theory and Calculation}
+
+\subsection{Activated-Sludge Control Volume and Operational Decision}
+
+Consider the decision faced by an operator after the influent entering an activated sludge reactor has been characterized. The incoming component concentrations are no longer decision variables for that operating interval; they are the loading condition to which the reactor must respond. The available levers are hydraulic retention time (HRT), denoted by $h$, and aeration, denoted by $a$. Increasing HRT gives the biological and chemical transformations more time to proceed but reduces hydraulic throughput or requires more volume. Increasing aeration improves oxygen transfer but increases operating effort. The optimization problem is therefore to locate the most favorable combination of these two levers for the observed influent.
+
+Let $F=20$ and collect the known influent component concentrations in $x=c_{\mathrm{in}}\in\R_+^F$. The two manipulated settings are collected in
+\begin{equation}
+\label{eq:operating_vector}
+u=\begin{bmatrix}h\\a\end{bmatrix},
+\qquad
+\mathcal U=\left\{u\in\R^2:u^L\leq u\leq u^U\right\}.
+\end{equation}
+The inequalities in Equation~\eqref{eq:operating_vector} are componentwise, and the numerical limits are specified with the case-study inputs in the Methodology. The set $\mathcal U$ gives the bounded two-dimensional domain over which the physically constrained surrogate is evaluated.
+
+The reactor model and ICSOR both work in the complete ASM component space because conservation and non-negativity are component-level properties. Plant performance, however, is commonly communicated through chemical oxygen demand (COD), total nitrogen (TN), total phosphorus (TP), and total suspended solids (TSS). For any component state $c\in\R^F$, these four reported quantities are obtained through the fixed linear composition map
+\begin{equation}
+\label{eq:reported_composites}
+y=I_{\mathrm{comp}}c
+=\begin{bmatrix}\mathrm{COD}&\mathrm{TN}&\mathrm{TP}&\mathrm{TSS}\end{bmatrix}^{\!\top}.
+\end{equation}
+Thus, the optimization never predicts only four aggregate measurements and attempts to reconstruct the components afterward. It predicts the complete effluent state first, checks that state physically, and only then collapses it to the quantities used for reporting or decision-making. For the deployed state, the corresponding reporting vector is denoted by $\widehat y=I_{\mathrm{comp}}\widehat c$.
+
+Before developing the equations, it is useful to picture the sequence followed for every proposed operating point:
+\begin{equation}
+\label{eq:optimization_chain}
+(u,x)
+\xrightarrow{\text{fitted ICSOR}}
+c_{\mathrm{raw}}
+\xrightarrow{\text{conservation projection}}
+c_{\mathrm{aff}}
+\xrightarrow{\text{non-negative correction}}
+\widehat c
+\xrightarrow{\ I_{\mathrm{comp}}\ }
+\widehat y
+\xrightarrow{\text{scalar objective}}
+J.
+\end{equation}
+Each arrow has a separate responsibility. The first supplies the fast surrogate response; the second restores the conserved inventories; the third excludes negative concentrations; and the last two translate a physically checked component state into one number that the outer search can compare. Keeping these stages distinct prevents predictive structure, physical correction, and operating preference from being conflated.
+
+\subsection{Identifying the Physically Admissible Effluent Region}
+
+Before a surrogate response can be trusted as an operating target, the control volume must establish what an admissible effluent means. An optimizer deliberately seeks extremes; if a small conservation error or negative concentration improves the objective, the search can repeatedly favor that numerical loophole. The derivation therefore begins with the steady-state reactor balance and removes quantities that are not available during surrogate deployment.
+
+Let $\nu\in\R^{P\times F}$ be the ASM2d-TSN stoichiometric matrix, with one row for each of the $P=28$ biological and chemical processes. At steady state, hydraulic transport must balance reaction-driven conversion and external oxygen transfer. With $D>0$ denoting hydraulic dilution, $\varrho\in\R^P$ the vector of process rates, $e_{S_O}$ the unit vector selecting dissolved oxygen, and $\omega$ the net oxygen-transfer rate, the balance is
+\begin{equation}
+\label{eq:steady_state_balance}
+D(c_{\mathrm{out}}-x)=\nu^\top\varrho+\omega e_{S_O}.
+\end{equation}
+The process-rate vector is nonlinear and generally unknown during surrogate deployment. Directly carrying all 28 rates into the operational problem would defeat the purpose of a rapid surrogate. What is needed instead is a way to retain the inventories that reactions cannot create or destroy while eliminating the individual rates.
+
+Let the columns of $V_0\in\R^{F\times K}$ form an orthonormal basis for the right null space of $\nu$, and define
+\begin{equation}
+\label{eq:invariant_operator}
+A=V_0^\top,
+\qquad
+\nu V_0=0,
+\qquad
+A\nu^\top=0,
+\qquad
+AA^\top=I_K.
+\end{equation}
+For the adopted $28$-process, $20$-component model, $K=5$. Each row of $A$ is an independent inventory ledger: reactions may move material among the 20 component accounts, but the row-weighted total cannot change through any reaction represented in $\nu$. Because oxygen transfer crosses the control-volume boundary, it too must be shown not to alter these five inventories. For the adopted reaction network, the dissolved-oxygen selector lies in $\operatorname{range}(\nu^\top)$, so there exists $\lambda_O\in\R^P$ such that
+\begin{equation}
+\label{eq:oxygen_invariant}
+e_{S_O}=\nu^\top\lambda_O
+\quad\Longrightarrow\quad
+Ae_{S_O}=A\nu^\top\lambda_O=0.
+\end{equation}
+The range-membership residual and the final value of $\|Ae_{S_O}\|_\infty$ are checked numerically from the full-precision stoichiometric matrix. Premultiplying Equation~\eqref{eq:steady_state_balance} by $A$ consequently eliminates both the unknown process rates and the represented oxygen-transfer contribution:
+\begin{equation}
+\label{eq:invariant_equality}
+Ac_{\mathrm{out}}=Ax.
+\end{equation}
+Equation~\eqref{eq:invariant_equality} states that the effluent must carry the same five modeled conserved inventories as the influent, although their distribution among individual components can change.
+
+Conservation is only one part of physical admissibility. Every ASM concentration must also remain non-negative. The physically admissible component region for the current influent is therefore
+\begin{equation}
+\label{eq:physical_feasible_set}
+\mathcal F(x)=\left\{c\in\R^F:Ac=Ax,\ c\geq0\right\}.
+\end{equation}
+A useful geometric picture is the intersection of a flat conservation plane with the non-negative concentration orthant. The plane $Ac=Ax$ contains every redistribution having the correct inventories. The orthant $c\geq0$ removes the parts of that plane lying behind any zero-concentration boundary. Because the physically admissible influent $x$ itself belongs to $\mathcal F(x)$, this intersection is nonempty for every optimization case.
+
+The invariant surface identifies which outlet states are admissible, but it does not identify where on that surface the reactor will operate. That predictive role is supplied by the frozen ICSOR surrogate.
+
+\subsection{Constructing the HRT--Aeration Response Surface from ICSOR}
+
+The first requirement in Equation~\eqref{eq:optimization_chain} is a rapid map from the two operating levers and the influent loading state to all effluent components. The trained ICSOR model developed by Selerio Jr. (2026) provides this map. Its coefficients are estimated before operational optimization begins and are therefore fixed quantities in the analysis below.
+
+ICSOR must represent three engineering effects: direct effects of changing an operating setting, curvature caused by diminishing or regime-dependent process response, and changes in operating effectiveness under different influent loads. It preserves these roles through the partitioned feature vector
+\begin{equation}
+\label{eq:icsor_feature_map}
+\phi(u,x)=
+\begin{bmatrix}
+1\\
+u\\
+x\\
+u\otimes u\\
+x\otimes x\\
+u\otimes x
+\end{bmatrix}.
+\end{equation}
+The first entry supplies a baseline. The vectors $u$ and $x$ describe first-order operating and loading effects. The products $u\otimes u$ and $x\otimes x$ describe curvature within the operating and influent subspaces. The final block $u\otimes x$ describes operation--loading interactions, such as aeration having a different effect at high ammonium loading than at low ammonium loading. The symbol $\otimes$ denotes the Kronecker product under the fixed feature ordering.
+
+The feature vector drives an $F$-component latent forcing vector,
+\begin{equation}
+\label{eq:icsor_driver}
+r(u,x)=\widehat B\phi(u,x),
+\end{equation}
+where $\widehat B$ is the fitted coefficient matrix. Expanding $\widehat B$ according to the six feature groups makes the contribution of each group explicit:
+\begin{equation}
+\label{eq:icsor_driver_blocks}
+\begin{split}
+r(u,x)={}&\widehat b
++\widehat W_u u
++\widehat W_x\,x
++\widehat\Theta_{uu}(u\otimes u)\\
+&+\widehat\Theta_{xx}(x\otimes x)
++\widehat\Theta_{ux}(u\otimes x).
+\end{split}
+\end{equation}
+Here, $\widehat b$ is the baseline forcing; $\widehat W_u$ and $\widehat W_x$ contain first-order operating and influent coefficients; $\widehat\Theta_{uu}$ and $\widehat\Theta_{xx}$ contain operating and influent curvature; and $\widehat\Theta_{ux}$ contains operation--influent interactions. These blocks describe how the reactor inputs generate forcing, but they do not yet describe how that forcing is redistributed among coupled effluent components.
+
+ICSOR represents the latter dependence through the fitted coupling matrix $\widehat\Gamma$. Defining $\widehat R=I_F-\widehat\Gamma$, the raw effluent state is obtained from
+\begin{equation}
+\label{eq:raw_coupled_prediction}
+\widehat R c_{\mathrm{raw}}(u;x)=r(u,x).
+\end{equation}
+Equation~\eqref{eq:raw_coupled_prediction} can be pictured as a component-balance network: $r$ is the forcing supplied to the 20 component channels, while $\widehat R$ redistributes that forcing through the learned component couplings. Because $\widehat R$ is fixed and nonsingular after training, evaluating a candidate requires one linear solve. The implementation solves this system directly rather than explicitly forming $\widehat R^{-1}$.
+
+The operational problem differs from model training in one decisive respect: $x$ is fixed. Every term involving only $x$ therefore becomes a constant for that optimization case, and every product $u\otimes x$ becomes linear in $u$. To expose this simplification, define the fixed-load contribution and the load-adjusted first-order operating contribution by
+\begin{align}
+r_0(x)&=\widehat b+\widehat W_x\,x
++\widehat\Theta_{xx}(x\otimes x),\nonumber\\
+L_r(x)&=\widehat W_u
++\widehat\Theta_{ux}(I_2\otimes x).
+\label{eq:fixed_influent_blocks}
+\end{align}
+The driver then reduces to
+\begin{equation}
+\label{eq:fixed_influent_driver}
+r(u;x)=r_0(x)+L_r(x)u+\widehat\Theta_{uu}(u\otimes u).
+\end{equation}
+The semicolon in $r(u;x)$ emphasizes that $u$ varies while $x$ is held fixed. Equation~\eqref{eq:fixed_influent_driver} shows that the 22-input regression has become a two-variable quadratic operating surface for the current influent.
+
+Solving the fixed linear system in Equation~\eqref{eq:raw_coupled_prediction} preserves this polynomial degree. To state exactly how the quadratic coefficients are obtained, partition the four columns of $\widehat\Theta_{uu}$ according to $u\otimes u=(h^2,ha,ah,a^2)^\top$ as $[\theta_{hh}\ \theta_{ha}\ \theta_{ah}\ \theta_{aa}]$. The coefficient vectors are the solutions of
+\begin{equation}
+\label{eq:quadratic_coefficient_systems}
+\begin{aligned}
+\widehat R\alpha(x)&=r_0(x),
+&\widehat R[\beta_h(x)\ \beta_a(x)]&=L_r(x),\\
+\widehat R\beta_{hh}&=\theta_{hh},
+&\widehat R\beta_{ha}&=\theta_{ha}+\theta_{ah},
+&\widehat R\beta_{aa}&=\theta_{aa}.
+\end{aligned}
+\end{equation}
+The two ordered cross-feature columns are added because $ha=ah$. The symmetry projection used when ICSOR is fitted makes them equal to numerical tolerance, but writing their sum avoids any factor-of-two ambiguity. In implementation, Equation~\eqref{eq:quadratic_coefficient_systems} is evaluated by linear solves with $\widehat R$, not by forming an explicit inverse. The complete raw effluent vector can therefore be collected as
+\begin{equation}
+\label{eq:component_quadratic}
+\begin{split}
+c_{\mathrm{raw}}(h,a;x)={}&\alpha(x)
++\beta_h(x)h+\beta_a(x)a
++\beta_{hh}h^2\\
+&+\beta_{ha}ha+\beta_{aa}a^2,
+\end{split}
+\end{equation}
+where every displayed coefficient is an $F$-component vector. The offset $\alpha$ and slopes $\beta_h$ and $\beta_a$ depend on the fixed influent, whereas the three operating-curvature vectors are fixed by the trained model. For any one effluent component, Equation~\eqref{eq:component_quadratic} is a curved surface suspended above the HRT--aeration rectangle. The vectors $\beta_h$ and $\beta_a$ set its local slopes, $\beta_{hh}$ and $\beta_{aa}$ bend it along the individual operating axes, and $\beta_{ha}$ twists it because the effect of changing one lever depends on the setting of the other.
+
+This form also identifies the exact source of optimization nonlinearity. The terms $h^2$ and $a^2$ are quadratic self-effects, while $ha$ is bilinear. Terms involving only influent concentrations are constants, and the operation--influent terms are first-order operating effects once the influent is fixed. The learned coupling matrix adds no further optimization nonlinearity because it is fixed before the search. Accordingly, the operational response is quadratic in two variables rather than bilinear in all 22 original inputs. This surface is rapid to evaluate, but its unconstrained regression point need not lie in $\mathcal F(x)$. The deployed response therefore passes through the two physical corrections developed next.
+
+\subsection{First Correction: Moving the Prediction onto the Conservation Plane}
+
+The first correction addresses the equality part of $\mathcal F(x)$. Among all states carrying the correct inventories, the natural conservative reference is the one requiring the smallest Euclidean movement from the raw prediction. This gives the affine projection
+\begin{equation}
+\label{eq:affine_projection_program}
+\begin{aligned}
+c_{\mathrm{aff}}(u;x)={}&
+\argminop_{c\in\R^F}\ \|c-c_{\mathrm{raw}}(u;x)\|_2^2\\
+\text{subject to}\quad {}&Ac=Ax.
+\end{aligned}
+\end{equation}
+Equation~\eqref{eq:affine_projection_program} can be visualized as dropping a perpendicular from the raw point to the conservation plane. It changes only the part of the prediction that conflicts with the conserved inventories and leaves all directions parallel to the plane untouched.
+
+Because $A$ has full row rank, the Lagrange conditions give the closed-form solution
+\begin{equation}
+\label{eq:affine_closed_form}
+c_{\mathrm{aff}}(u;x)
+=c_{\mathrm{raw}}(u;x)
+-A^\top(AA^\top)^{-1}A[c_{\mathrm{raw}}(u;x)-x].
+\end{equation}
+To make the two parts of this movement explicit, define the row-space and null-space projectors
+\begin{equation}
+\label{eq:projectors}
+Q_A=A^\top(AA^\top)^{-1}A,
+\qquad
+P_A=I_F-Q_A.
+\end{equation}
+The same correction can then be written as
+\begin{equation}
+\label{eq:affine_prediction}
+c_{\mathrm{aff}}(u;x)=P_Ac_{\mathrm{raw}}(u;x)+Q_Ax.
+\end{equation}
+The first term retains the conservation-neutral part of the surrogate prediction; the second supplies the row-space part required by the influent inventories. Since $AP_A=0$ and $AQ_A=A$, Equation~\eqref{eq:affine_prediction} gives $Ac_{\mathrm{aff}}=Ax$ in exact arithmetic. Because this transformation is affine in $c_{\mathrm{raw}}$, the HRT--aeration dependence remains quadratic.
+
+The perpendicular landing point can nevertheless lie outside the non-negative orthant. In physical terms, the total inventories may be correct while one or more individual component accounts are negative. A second correction is therefore required whenever $c_{\mathrm{aff}}\not\geq0$.
+
+\subsection{Second Correction: Entering the Conservative Non-Negative Region}
+
+The affine projection has the correct inventories, but it can still assign a negative value to an individual ASM component. The final deployment step must therefore move the reference point into $\mathcal F(x)$ while retaining a clear meaning for the size of that movement. Because the 20 components have different units and characteristic magnitudes, let
+\begin{equation*}
+D_c=\operatorname{Diag}(s_{c,1},\ldots,s_{c,F}),
+\qquad
+s_{c,j}>0,
+\end{equation*}
+contain fixed component scales. The numerical construction of these scales from the training targets is specified in the Methodology. Dividing each correction by its scale makes a one-unit movement comparable across component coordinates.
+
+The deployed effluent is defined by the scaled squared-$L_2$ projection
+\begin{equation}
+\label{eq:lower_qp}
+\begin{aligned}
+\widehat c(u;x)={}&
+\argminop_{c\in\R^F}\ \frac{1}{2}
+\left\|D_c^{-1}[c-c_{\mathrm{aff}}(u;x)]\right\|_2^2\\
+\text{subject to}\quad {}&Ac=Ax,\\
+&c\geq0.
+\end{aligned}
+\end{equation}
+The equality restricts the search to the conservation plane, and the inequality restricts it to the non-negative orthant. The objective then selects the feasible state requiring the smallest standardized Euclidean displacement from $c_{\mathrm{aff}}$. Geometrically, expanding ellipsoids centered at the affine point first touch the conservative non-negative region at $\widehat c$.
+
+Equation~\eqref{eq:lower_qp} is a strictly convex quadratic program because its Hessian,
+\begin{equation}
+\label{eq:lower_qp_hessian}
+H_c=D_c^{-\top}D_c^{-1},
+\end{equation}
+is positive definite. Its feasible set is nonempty because the known non-negative influent $x$ satisfies $Ax=Ax$. A minimizer therefore exists, and strict convexity makes the deployed component vector unique.
+
+If $c_{\mathrm{aff}}\geq0$, the affine point is already feasible and Equation~\eqref{eq:lower_qp} returns it with zero displacement. If the raw prediction is both invariant-consistent and non-negative, the affine projection leaves it unchanged and the same program returns the raw state. Otherwise, the QP performs the smallest scaled-$L_2$ correction needed to enter $\mathcal F(x)$.
+
+The fitted ICSOR regression head and its conservation projection are inherited from Selerio Jr. (2026). The present operational formulation changes the published deployment distance from weighted $L_1$ to scaled squared $L_2$. This deliberate modification preserves the invariant and non-negativity constraints while supplying one unique lower-level response for every proposed HRT--aeration pair.
+
+\subsection{Translating Effluent Quality into an Operating Objective}
+
+The lower problem now returns one physically checked effluent vector for every HRT--aeration pair. The outer problem still requires a scalar objective, because ``minimize all effluent concentrations'' is a multiobjective instruction rather than a unique operating rule. Reducing every component simultaneously is generally impossible: the conserved inventories require material to be redistributed, and an operating change that improves one reported quantity can worsen another.
+
+Let $T\in\R^{M_T\times F}$ select the quantities to be optimized. Choosing $T=I_F$ permits component-specific objectives, whereas choosing $T=I_{\mathrm{comp}}$ gives COD, TN, TP, and TSS. These quantities have different units and numerical scales, so an unscaled sum would allow the largest-magnitude quantity to dominate for arithmetic rather than engineering reasons. Let
+\begin{equation}
+\label{eq:objective_scaling}
+D_T=\operatorname{Diag}(s_1,\ldots,s_{M_T}),
+\qquad s_q>0,
+\end{equation}
+contain fixed reference scales from the training targets, and let the preference weights satisfy
+\begin{equation}
+\label{eq:objective_weights}
+p\in\R_+^{M_T},
+\qquad
+\mathbf1^\top p=1.
+\end{equation}
+The dimensionless effluent-quality contribution is then $p^\top D_T^{-1}T\widehat c$. A unit vector $p$ represents one selected target; equal weights represent equal preference after scaling; and other weights represent a declared engineering priority.
+
+Effluent quality is not always the only consideration. Long HRT can impose capacity or throughput costs, and aeration consumes energy. When such information is available, define the operating-range matrix $D_u=\operatorname{Diag}(u^U-u^L)$ and the non-negative penalty
+\begin{equation}
+\label{eq:operating_penalty}
+g(u)=\gamma^\top D_u^{-1}(u-u^L),
+\qquad
+\gamma\in\R_+^2.
+\end{equation}
+The normalization makes the two operating movements comparable over their permitted ranges. The coefficients in $\gamma$ must come from an independently declared engineering or economic basis (de Araujo et al., 2013). Setting $\gamma=0$ gives a quality-only problem; in that case an upper-bound solution can be physically reasonable and must not be hidden.
+
+These two contributions define the scalar engineering score
+\begin{equation}
+\label{eq:scalar_objective}
+J(u,c)=p^\top D_T^{-1}Tc+g(u).
+\end{equation}
+If discharge or process limits are part of the study, let $m_g$ be their number and let $G\in\R^{m_g\times M_T}$ and $d\in\R^{m_g}$ specify them as $G(Tc)\leq d$. Combining the declared score with the deterministic deployed response then produces the upper-level program
+\begin{equation}
+\label{eq:complete_bilevel_program}
+\begin{aligned}
+u^*={}&
+\argminop_{u\in\R^2}\ J(u,\widehat c(u;x))\\
+\text{subject to}\quad {}&u^L\leq u\leq u^U,\\
+&G[T\widehat c(u;x)]\leq d.
+\end{aligned}
+\end{equation}
+Together, the upper program in Equation~\eqref{eq:complete_bilevel_program} and the unique lower response in Equation~\eqref{eq:lower_qp} form the complete bilevel model (Colson et al., 2007). The upper level chooses the reactor settings; the lower level determines what physically checked effluent the surrogate assigns to those settings. The optional target inequalities belong at the upper level because placing them inside the physical-projection QP would alter the surrogate prediction merely to satisfy a desired standard. When no such limits are studied, that constraint row is omitted.
+
+\subsection{Mathematical Character and Scope of the Guarantee}
+
+Before choosing a numerical method, it is important to identify what kind of optimization problem Equation~\eqref{eq:complete_bilevel_program} represents. For fixed $(h,a)$, Equation~\eqref{eq:lower_qp} is a strictly convex QP with a unique component response. Across the bounded operating domain, however, its reference state contains $h^2$, $ha$, and $a^2$. The complete model is therefore a quadratic-parameterized bilevel problem with a lower physical-projection QP.
+
+Within one fixed set of active lower-level constraints, the deployed state changes smoothly with the quadratic reference surface. When a component reaches zero or leaves zero, the active set changes and the response can develop a kink. The upper objective is consequently piecewise quadratic, generally nonsmooth, and potentially nonconvex. This is why a single gradient calculation is not sufficient to establish the best operating point.
+
+The central physical guarantee follows directly from the lower constraints:
+\begin{equation}
+\label{eq:physical_guarantee}
+A\widehat c(u;x)=Ax,
+\qquad
+\widehat c(u;x)\geq0.
+\end{equation}
+Every completed and accepted lower response therefore lies in $\mathcal F(x)$, subject to the declared numerical tolerances. The raw point need not satisfy either condition, and the affine point is conservative but can remain negative. Solver algorithms may also pass through infeasible internal iterates. Only the verified state $\widehat c$ is admitted to the upper objective or recorded as an operating candidate.
+
+\subsection{Searching the Bounded Operating Domain}
+
+The outer search compares two coordinates having different units and numerical ranges. To place them on a common search scale, the operating variables are mapped to the unit square:
+\begin{equation}
+\label{eq:operating_normalization}
+z=D_u^{-1}(u-u^L)\in[0,1]^2,
+\qquad
+u=u^L+D_uz.
+\end{equation}
+Each point in this square corresponds to one point in the bounded HRT--aeration domain. For a proposed $z$, the evaluator reconstructs $(h,a)$, forms the fixed-influent ICSOR driver, solves for $c_{\mathrm{raw}}$, projects it to $c_{\mathrm{aff}}$, solves the unique lower QP, verifies Equation~\eqref{eq:physical_guarantee}, and only then calculates $J$. A failed or unverifiable lower solve is treated as a diagnostic failure rather than replaced with a favorable fallback state.
+
+The dividing-rectangles (DIRECT) method is used because it explores a bounded surface without requiring derivatives or a known Lipschitz constant (Jones et al., 1993). One may picture DIRECT as laying progressively smaller tiles over the unit HRT--aeration square. It samples the center of each promising tile, retains tiles that combine a low objective with unresolved spatial extent, and subdivides them. Since center sampling does not guarantee evaluation of the box boundary, the four corners and four edges are searched explicitly, followed by a fine local mesh around the best candidate.
+
+If $\mathcal C_t$ contains all completed and physically verified candidates after search iteration $t$, the current incumbent is
+\begin{equation}
+\label{eq:incumbent_selection}
+u_t^*\in
+\argminop_{u\in\mathcal C_t}
+J(u,\widehat c(u;x)).
+\end{equation}
+The final reported HRT and aeration pair is the incumbent after its lower problem has been re-solved at strict tolerances. When the declared global-search and local-mesh resolution criteria are reached, it is described as the best surrogate operating point found to those reported spatial and objective resolutions. If the evaluation limit is reached first, it is instead identified as a budget-limited incumbent together with the achieved spatial resolution. A finite DIRECT budget does not by itself provide a mathematical certificate of global optimality.
+
+\section{Methodology}
+
+\subsection{End-to-End Study Design}
+
+The study is organized so that surrogate prediction, optimization, and validation use disjoint information. First, a steady-state ASM2d-TSN simulation design supplies component-space training and held-out prediction data. Second, ICSOR settings are fixed using training information only, its predictive behavior under the scaled-$L_2$ deployment rule is checked on untouched rows, and one production model and its scale matrices are frozen before optimization validation. Third, a fully specified nominal influent demonstrates the bilevel calculation, after which 100 independently generated influents test robustness. Fourth, ASM2d-TSN is solved at each surrogate-selected point to assess prediction fidelity. Finally, a separate mechanistic search over the same operating domain supplies a resolution-qualified reference for assessing decision quality. This sequence follows the general separation of surrogate construction and optimization validation recommended in surrogate-based process studies (Bhosekar \& Ierapetritou, 2018).
+
+\begin{table}[htbp]
+\centering
+\caption{End-to-end study workflow and information boundaries.}
+\label{tab:study_workflow}
+\scriptsize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.7cm}>{\raggedright\arraybackslash}p{3.2cm}>{\raggedright\arraybackslash}p{3.2cm}>{\raggedright\arraybackslash}p{4.4cm}}
+\toprule
+Step & Operation & Data used & Leakage-control and interpretation rule \\
+\midrule
+1 & Generate accepted steady states & In-distribution ASM2d-TSN design & No optimization-validation scenario is included \\
+2 & Select and assess ICSOR & Training and untouched predictive-test partitions & Test targets do not select settings or coefficients \\
+3 & Freeze production coefficients & Complete in-distribution pool after settings are locked & No optimization-validation response is accessed \\
+4 & Optimize HRT and aeration & Nominal case, robustness influents, and frozen surrogate & Every search remains inside the training operating box \\
+5 & Validate the selected prediction & New ASM2d-TSN solve at the selected operating point & Measures prediction fidelity at a selected point \\
+6 & Search the mechanistic reference & Same influent, domain, and scalar objective & Measures decision quality and regret separately \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{ASM2d-TSN Process Model and Simulation Domain}
+
+The data-generating process is the same standalone steady-state continuous stirred tank reactor used in the published ICSOR study (Selerio Jr., 2026). Activated Sludge Model No. 2d with two-step nitrification (ASM2d-TSN) contains $P=28$ biological and chemical processes and $F=20$ components. The process structure and parameterization follow Guerrero et al. (2011), with the component basis and general ASM conventions of Henze et al. (2006).
+
+The dissolved components are dissolved oxygen ($S_O$), fermentable substrate ($S_F$), acetate ($S_A$), ammonium nitrogen ($S_{NH4}$), nitrite nitrogen ($S_{NO2}$), nitrate nitrogen ($S_{NO3}$), dinitrogen ($S_{N2}$), soluble phosphate ($S_{PO4}$), soluble inert organic matter ($S_I$), and alkalinity ($S_{ALK}$). The particulate components are particulate inert organic matter ($X_I$), slowly biodegradable substrate ($X_S$), heterotrophic biomass ($X_H$), phosphate-accumulating-organism biomass ($X_{PAO}$), stored polyphosphate ($X_{PP}$), stored polyhydroxyalkanoates ($X_{PHA}$), ammonia-oxidizing biomass ($X_{AOB}$), nitrite-oxidizing biomass ($X_{NOB}$), precipitated metal phosphate ($X_{MeP}$), and metal hydroxide ($X_{MeOH}$).
+
+One randomized scrambled strength-1 Latin hypercube with root seed 42 is linearly scaled over the 22-dimensional domain in Table~\ref{tab:simulation_domain} (McKay et al., 1979). It samples HRT, aeration, and all 20 influent concentrations jointly. Sampling continues until $N=10{,}000$ accepted steady states are available; the tabulated values are design bounds rather than observed extrema. The HRT interval $[6,36]$ h and aeration interval $[0.5,2.5]$ are used both to train the surrogate and to bound every operational search. A case whose fixed influent lies outside any tabulated influent range is rejected rather than optimized with this surrogate.
+
+\begin{table}[htbp]
+\centering
+\caption{Operating and influent sampling domain for the ASM2d-TSN training benchmark.}
+\label{tab:simulation_domain}
+\scriptsize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{lll|lll}
+\toprule
+Variable & Range & Unit & Variable & Range & Unit \\
+\midrule
+HRT & $[6.0,36.0]$ & h & $S_I$ & $[10.0,90.0]$ & g COD/m$^3$ \\
+Aeration & $[0.5,2.5]$ & -- & $S_{ALK}$ & $[80.0,260.0]$ & mol/m$^3$ \\
+$S_O$ & $[0.0,0.5]$ & g O$_2$/m$^3$ & $X_I$ & $[20.0,120.0]$ & g COD/m$^3$ \\
+$S_F$ & $[20.0,180.0]$ & g COD/m$^3$ & $X_S$ & $[60.0,280.0]$ & g COD/m$^3$ \\
+$S_A$ & $[5.0,80.0]$ & g COD/m$^3$ & $X_H$ & $[15.0,100.0]$ & g COD/m$^3$ \\
+$S_{NH4}$ & $[12.0,55.0]$ & g N/m$^3$ & $X_{PAO}$ & $[5.0,60.0]$ & g COD/m$^3$ \\
+$S_{NO2}$ & $[0.0,3.0]$ & g N/m$^3$ & $X_{PP}$ & $[2.0,20.0]$ & g P/m$^3$ \\
+$S_{NO3}$ & $[0.0,8.0]$ & g N/m$^3$ & $X_{PHA}$ & $[1.0,30.0]$ & g COD/m$^3$ \\
+$S_{N2}$ & $[0.0,2.0]$ & g N/m$^3$ & $X_{AOB}$ & $[0.5,8.0]$ & g COD/m$^3$ \\
+$S_{PO4}$ & $[2.0,18.0]$ & g P/m$^3$ & $X_{NOB}$ & $[0.5,8.0]$ & g COD/m$^3$ \\
+ & & & $X_{MeP}$ & $[0.0,12.0]$ & g TSS/m$^3$ \\
+ & & & $X_{MeOH}$ & $[0.0,12.0]$ & g TSS/m$^3$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+At each sampled point, nonlinear least squares solves the steady-state component balances under lower and upper state bounds of $10^{-8}$ and 1500 in each component's native coordinate. Variable, residual, and gradient tolerances are $10^{-9}$, with at most 1200 function evaluations and a global attempt cap equal to 25 times the requested retained count. Two physically informed initial states are tried first. If both fail, the system is dynamically relaxed for 20 days with a stiff backward differentiation formula integrator and the terminal state becomes a new steady-state initial guess (Curtiss \& Hirschfelder, 1952). Only states having maximum absolute balance residual no greater than $10^{-9}$ are accepted. Numerical state bounds and initialization clipping do not clip the 28 mechanistic process rates.
+
+Aeration is represented by
+\begin{equation}
+\label{eq:aeration_model}
+D=\frac{24}{h}\ {\rm d}^{-1},\qquad
+k_La=(2+18a)\ {\rm d}^{-1},\qquad
+\omega=k_La(S_{O,\mathrm{sat}}-S_O),
+\end{equation}
+with $S_{O,\mathrm{sat}}=8.5$ g O$_2$/m$^3$. The stoichiometric matrix, all kinetic and stoichiometric parameters, component units, and $I_{\mathrm{comp}}$ are versioned with the study inputs.
+
+\subsection{Invariant Construction, Data Partitioning, and ICSOR Freezing}
+
+The invariant basis is computed once from the full-precision stoichiometric matrix. Singular values greater than $\max(P,F)\epsilon_{\mathrm{mach}}\|\nu\|_2$ determine numerical rank. The retained orthonormal right-null vectors form $V_0$, and $A=V_0^\top$ is stored without coefficient rounding or row-wise renormalization. A minimum-norm linear solve obtains $\lambda_O$ in Equation~\eqref{eq:oxygen_invariant}. The checks $\|A\nu^\top\|_\infty$, $\|e_{S_O}-\nu^\top\lambda_O\|_\infty$, $\|Ae_{S_O}\|_\infty$, and $\|AA^\top-I_K\|_\infty$ must pass before either fitting or deployment.
+
+The accepted rows are permuted reproducibly with seed 42 and split 80--20 into 8,000 training and 2,000 untouched predictive-test states. ICSOR remains in physical component coordinates: neither the 22 inputs nor the 20 targets is standardized before fitting. Hyperparameters are fixed using training information only, after which $\widehat B$ and $\widehat\Gamma$ are estimated from the 8,000-row partition and assessed on the 2,000 untouched rows. For this assessment, $D_c$ is formed only from the 8,000 training-target standard deviations, so test-target information cannot affect a deployed test prediction. The recursive coupled-QP coefficient estimator, feature-column order, warm-start handling, accepted OSQP statuses, bounded $\Gamma$ handling, fitted-state handling, update order, and stopping rule are adopted from the tested implementation accompanying Selerio Jr. (2026). The self-contained notebook records the source commit and file hash and freezes the block values returned by the final completed sweep, while retaining the best observed objective and iteration as convergence diagnostics. The only deliberate algorithmic replacement is the present study's unique scaled-$L_2$ deployment QP; the published training objective and recursive estimator are unchanged. Once the predictive protocol and settings are locked, one production ICSOR model is refitted on all 10,000 in-distribution states. The production component scales are then set to $s_{c,j}=\sigma_j^{(\mathrm{ID})}>0$ from those 10,000 targets. Its coefficient matrices, component order, invariant operator, component scales, target scales, condition number of $I_F-\widehat\Gamma$, and software manifest are frozen before the nominal case or any optimization-validation effluent is generated.
+
+The main article treats these frozen quantities as inputs to the operational program. The complete coupled objective, recursive block-coordinate quadratic-programming estimator, symmetry projection, initialization, convergence rules, hyperparameters, and coefficient-acceptance checks are specified in the Supplementary Material. This placement avoids repeating the published ICSOR article while preserving a complete executable definition of the coefficients used here (Selerio Jr., 2026).
+
+Held-out predictive assessment is performed before production refitting. For test sample $i$ and component $j$, the standardized residual is
+\begin{equation}
+\label{eq:test_standardized_residual}
+e_{ij}=\frac{\widehat c_{ij}-c_{\mathrm{out},ij}}{\sigma_j^{(\mathrm{train})}},
+\end{equation}
+where $\sigma_j^{(\mathrm{train})}>0$ is the population standard deviation in the 8,000-row training partition. Aggregate nRMSE and nMAE average equally over components,
+\begin{equation}
+\label{eq:test_metrics}
+\mathrm{nRMSE}=\left(\frac{1}{Fn_{\mathrm{test}}}\sum_{i,j}e_{ij}^2\right)^{1/2},
+\qquad
+\mathrm{nMAE}=\frac{1}{Fn_{\mathrm{test}}}\sum_{i,j}|e_{ij}|.
+\end{equation}
+Component physical-unit errors, composite errors after Equation~\eqref{eq:reported_composites}, invariant residuals, and negative-component frequencies are retained separately.
+
+\subsection{Nominal Case-Study Problem Definition}
+
+The principal case study asks the following operational question: for one known influent entering the ASM2d-TSN reactor, which HRT and aeration setting gives the best declared compromise between effluent quality and operating intensity? The fixed influent, denoted by $x_{\mathrm{case}}$, is the componentwise midpoint of the training ranges and is listed in Table~\ref{tab:case_study_influent}. This is a designed nominal in-domain case previously used for ICSOR response-surface analysis, not a measurement from a particular treatment plant. In the component order defined above,
+\begin{equation}
+\label{eq:case_influent_vector}
+\begin{split}
+x_{\mathrm{case}}={}&(0.25,\ 100,\ 42.5,\ 33.5,\ 1.5,\ 4,\ 1,\ 10,\ 50,\ 170,\\
+&70,\ 170,\ 57.5,\ 32.5,\ 11,\ 15.5,\ 4.25,\ 4.25,\ 6,\ 6)^\top.
+\end{split}
+\end{equation}
+Its influent composite vector is
+\begin{equation}
+\label{eq:case_influent_composites}
+I_{\mathrm{comp}}x_{\mathrm{case}}
+=(546.500,\ 47.795,\ 24.900,\ 325.480)^\top,
+\end{equation}
+corresponding respectively to COD, TN, TP, and TSS.
+
+\begin{table}[htbp]
+\centering
+\caption{Fixed ASM2d-TSN influent for the nominal optimization case study.}
+\label{tab:case_study_influent}
+\scriptsize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{lll|lll}
+\toprule
+Component & Value & Unit & Component & Value & Unit \\
+\midrule
+$S_O$ & 0.25 & g O$_2$/m$^3$ & $S_I$ & 50.0 & g COD/m$^3$ \\
+$S_F$ & 100.0 & g COD/m$^3$ & $S_{ALK}$ & 170.0 & mol/m$^3$ \\
+$S_A$ & 42.5 & g COD/m$^3$ & $X_I$ & 70.0 & g COD/m$^3$ \\
+$S_{NH4}$ & 33.5 & g N/m$^3$ & $X_S$ & 170.0 & g COD/m$^3$ \\
+$S_{NO2}$ & 1.5 & g N/m$^3$ & $X_H$ & 57.5 & g COD/m$^3$ \\
+$S_{NO3}$ & 4.0 & g N/m$^3$ & $X_{PAO}$ & 32.5 & g COD/m$^3$ \\
+$S_{N2}$ & 1.0 & g N/m$^3$ & $X_{PP}$ & 11.0 & g P/m$^3$ \\
+$S_{PO4}$ & 10.0 & g P/m$^3$ & $X_{PHA}$ & 15.5 & g COD/m$^3$ \\
+$X_{AOB}$ & 4.25 & g COD/m$^3$ & $X_{NOB}$ & 4.25 & g COD/m$^3$ \\
+$X_{MeP}$ & 6.0 & g TSS/m$^3$ & $X_{MeOH}$ & 6.0 & g TSS/m$^3$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The given model quantities are the frozen $\widehat B$, $\widehat\Gamma$, $A$, $D_c$, $D_T$, and $I_{\mathrm{comp}}$, together with $x_{\mathrm{case}}$. The decisions are $h\in[6,36]$ h and $a\in[0.5,2.5]$; through Equation~\eqref{eq:aeration_model}, these ranges correspond to $D\in[0.667,4.000]$ d$^{-1}$ and $k_La\in[11,47]$ d$^{-1}$. The midpoint $(h_0,a_0)=(21\ {\rm h},1.5)$ is retained as an unoptimized comparison baseline, but it does not restrict the search.
+
+For this case, the target map is fixed as
+\[
+T=I_{\mathrm{comp}}\in\R^{4\times20},
+\qquad
+p=\tfrac14\mathbf1_4,
+\]
+and the production-pool target scales are
+\begin{equation}
+\label{eq:case_target_scales}
+D_T=\operatorname{Diag}(79.4252,\ 12.1549,\ 7.07121,\ 54.5020).
+\end{equation}
+These entries are the population standard deviations of effluent COD, TN, TP, and TSS, respectively, among the 10,000 accepted in-distribution states. The corresponding component-scale vector for the lower QP is
+\begin{equation}
+\label{eq:case_component_scales}
+\begin{split}
+\operatorname{diag}(D_c)={}&(1.37206,\ 3.52010,\ 19.57521,\ 12.41127,\ 4.21792,\\
+&11.92429,\ 5.90257,\ 6.37422,\ 23.09403,\ 51.98979,\\
+&29.14448,\ 42.47296,\ 45.60359,\ 17.42100,\ 5.27816,\\
+&14.90540,\ 2.58557,\ 2.25104,\ 5.59170,\ 2.36730)^\top,
+\end{split}
+\end{equation}
+in the component order of Equation~\eqref{eq:case_influent_vector}. These values are frozen production-target population standard deviations; full-precision values are used in computation. The operating-penalty vector is prescribed before the case is solved as
+\begin{equation}
+\label{eq:case_gamma}
+\gamma=(\gamma_h,\gamma_a)^\top=(0.25,0.25)^\top.
+\end{equation}
+Because the operating coordinates are range-normalized, moving either HRT or aeration from its lower to its upper bound contributes 0.25 to the objective. This equals the contribution from a one-standard-deviation deterioration in any one of the four equally weighted effluent quantities and provides a transparent dimensionless engineering preference without assigning a monetary cost.
+
+No additional discharge inequality is imposed in the nominal case. Substituting the declared quantities into Equation~\eqref{eq:scalar_objective} gives
+\begin{equation}
+\label{eq:case_objective}
+\begin{split}
+J_{\mathrm{case}}(h,a,c)={}&
+\frac14\left(
+\frac{\mathrm{COD}(c)}{79.4252}
++\frac{\mathrm{TN}(c)}{12.1549}
++\frac{\mathrm{TP}(c)}{7.07121}
++\frac{\mathrm{TSS}(c)}{54.5020}
+\right)\\
+&+0.25\frac{h-6}{30}
++0.25\frac{a-0.5}{2}.
+\end{split}
+\end{equation}
+The required outputs are the final operating pair $(h^*,a^*)$, its search-termination classification, the unique deployed component vector $\widehat c(u^*;x_{\mathrm{case}})$, and its predicted COD, TN, TP, and TSS. ASM2d-TSN is then solved independently at $(x_{\mathrm{case}},u^*)$ to validate the prediction and compare the selected decision with the mechanistic reference.
+
+\subsection{Independent Robustness Scenarios}
+
+After the nominal case has been defined and all objective quantities have been frozen, optimization validation uses $N_{\mathrm{val}}=100$ new influent vectors generated by a second scrambled Latin hypercube over the 20 influent ranges in Table~\ref{tab:simulation_domain}, with independent root seed 314159. Neither HRT nor aeration is attached to these profiles before optimization. No mechanistic effluent from this set is available during ICSOR fitting, coefficient freezing, scale calculation, objective selection, or surrogate search. Every robustness scenario uses the same operating bounds, $T=I_{\mathrm{comp}}$, $p=\tfrac14\mathbf1_4$, $D_T$, $\gamma=(0.25,0.25)^\top$, and absence of additional discharge constraints as the nominal case.
+
+\subsection{Lower-Level Solve and Feasibility Acceptance}
+
+At every proposed operating point, $\widehat R c_{\mathrm{raw}}=\widehat B\phi$ is solved by a backward-stable dense linear solve. A non-finite result or a condition number exceeding the frozen training contract invalidates the model artifact rather than only that candidate. The affine state is then calculated with the stored full-precision projector.
+
+For production deployment, $D_c=\operatorname{Diag}(\sigma_1^{(\mathrm{ID})},\ldots,\sigma_F^{(\mathrm{ID})})$, where every scale is the positive population standard deviation of one component target in the 10,000-state in-distribution pool. The matrix is calculated once after production fitting and is not changed by the nominal case, a robustness influent, or an operating candidate. This scaling gives every component equal status in units of its observed in-domain variation.
+
+Equation~\eqref{eq:lower_qp} is solved with OSQP under absolute and relative tolerances of $10^{-8}$, a limit of 100,000 iterations, and polishing enabled (Stellato et al., 2018). Only the solver status \texttt{solved} is accepted. Within one candidate sequence, the last accepted primal state warm-starts the next operating point. If that call fails any status or independent acceptance check, one newly constructed cold solver is permitted; failure of both calls stops the optimization case and is recorded. A component is classified as active when $\widehat c_j\leq10^{-8}$. In particular, the known influent is never substituted as a scored fallback because an optimizer could favor regions that trigger numerical failures.
+
+The terminal solution is checked independently of the solver status. Let $\widehat\lambda\in\R^K$ be the equality multiplier, let $\widehat\mu\in\R_+^F$ be the multiplier for $\widehat c\geq0$, and recall $H_c=D_c^{-\top}D_c^{-1}$. A completed lower response is accepted only when
+\begin{equation}
+\label{eq:lower_acceptance}
+\begin{aligned}
+\|A(\widehat c-x)\|_\infty&\leq10^{-8},
+&\min_j\widehat c_j&\geq-10^{-10},\\
+\left\|H_c(\widehat c-c_{\mathrm{aff}})
++A^\top\widehat\lambda-\widehat\mu\right\|_\infty&\leq10^{-8},
+&\min_j\widehat\mu_j&\geq-10^{-10},\\
+\|\widehat c\odot\widehat\mu\|_\infty&\leq10^{-8}.&&
+\end{aligned}
+\end{equation}
+The first row verifies primal physical feasibility, while the remaining rows verify stationarity, dual feasibility, and complementarity for the strictly convex QP. Values of $\widehat c$ between $-10^{-10}$ and zero are retained for diagnostics and are not silently clipped before the invariant check. Only accepted states are scored by the upper objective.
+
+\subsection{Outer Search, Boundary Evaluation, and Final Selection}
+
+The normalized objective evaluator defined by Equation~\eqref{eq:operating_normalization} is deterministic and memoized by the exact hexadecimal representation of each double-precision HRT--aeration pair. All phases share a cap of 10,000 distinct verified surrogate evaluations. The baseline $(21,1.5)$ is evaluated first. SciPy's unbiased DIRECT implementation then searches the normalized unit square with \texttt{maxfun}=6000, \texttt{maxiter}=6000, \texttt{len\_tol}=$2.5\times10^{-4}$, and \texttt{vol\_tol}=$10^{-16}$. The four corners are evaluated explicitly, after which each edge receives an independent one-dimensional DIRECT call with \texttt{maxfun}=400, \texttt{maxiter}=1000, and the same normalized length and volume tolerances. Cached duplicate points do not consume the distinct-evaluation budget.
+
+A $41\times21$ HRT--aeration grid is then evaluated and admitted to the common candidate archive. Local refinement begins with spacings of 0.32 h and 0.032 aeration and evaluates the eight axial and diagonal neighbors of the incumbent, with out-of-domain coordinates clipped to the operating box and duplicates removed by memoization. When no candidate improves the incumbent by more than $10^{-8}\max(1,|J_{\mathrm{inc}}|)$, both spacings are halved, subject to minima of 0.01 h and 0.001 aeration. Refinement terminates after a non-improving neighborhood at these minimum spacings or when the common budget is exhausted. The final incumbent is re-evaluated without cached solver state at the strict tolerances in Equation~\eqref{eq:lower_acceptance}. The archive retains its HRT, aeration, raw state, affine state, final component and composite states, scaled-$L_2$ displacement, lower-QP objective, KKT residuals, upper objective, active constraints, solver statuses, boundary flags, and evaluation count.
+
+A result is classified as a resolution-qualified incumbent only when the common budget is not exhausted, the complete grid is evaluated, and the local mesh terminates without a material improvement at its minimum spacings. Otherwise, it is reported as a budget-limited incumbent. Finite-budget DIRECT and mesh refinement do not certify global optimality; the calculation therefore reports its termination reason, achieved spatial resolution, evaluation count, and comparison with the separately searched mechanistic reference.
+
+\subsection{Mechanistic Validation of Prediction and Decision Quality}
+
+Index the nominal case by $s=0$ and the 100 robustness scenarios by $s=1,\ldots,N_{\mathrm{val}}$. For each case, let $\widehat u_s$ be the frozen-surrogate operating point and let $\widehat c_s=\widehat c(\widehat u_s;x_s)$. ASM2d-TSN is solved anew at exactly $(x_s,\widehat u_s)$ using the same initialization sequence and steady-state acceptance criterion as the training generator. Its output $c_{\mathrm{ASM}}(\widehat u_s;x_s)$ is not used to modify the fitted surrogate or rerun the reported optimization.
+
+Prediction validation compares $\widehat c_s$ with this mechanistic output. With $\sigma_j^{(\mathrm{ID})}$ fixed from all 10,000 in-distribution targets,
+\begin{equation}
+\label{eq:optimization_prediction_error}
+e_{sj}^{\mathrm{opt}}
+=\frac{\widehat c_{sj}-c_{\mathrm{ASM},j}(\widehat u_s;x_s)}
+{\sigma_j^{(\mathrm{ID})}},
+\qquad
+E_s^{\mathrm{comp}}
+=\left(\frac{1}{F}\sum_{j=1}^{F}(e_{sj}^{\mathrm{opt}})^2\right)^{1/2}.
+\end{equation}
+Physical-unit component errors, the four composite errors, and the difference between predicted and mechanistic objective values are also retained. Relative percentage error is not used as a primary component metric because several admissible ASM concentrations can approach zero.
+
+This single mechanistic evaluation tests prediction fidelity at a selected point but not whether $\widehat u_s$ is mechanistically optimal. Decision validation therefore performs an independent bounded search of
+\begin{equation}
+\label{eq:mechanistic_reference_problem}
+u_{\mathrm{ASM},s}^*\in
+\argminop_{u\in\mathcal U}
+J\bigl(u,c_{\mathrm{ASM}}(u;x_s)\bigr)
+\end{equation}
+using the same scalar objective and operating bounds as the surrogate search. The surrogate-selected point is attempted first. A clipped and deduplicated $3\times3$ neighborhood centered on that point, with perturbations of 0.25 h and 0.025 aeration, is then completed before the remaining search phases; these points consume the common budget and enter the mechanistic candidate archive. The interior mechanistic DIRECT call uses \texttt{maxfun}=900, \texttt{maxiter}=1000, \texttt{len\_tol}=$5\times10^{-4}$, and \texttt{vol\_tol}=$10^{-14}$. Each of the four one-dimensional edge calls uses \texttt{maxfun}=100 and \texttt{maxiter}=1000. A $21\times11$ grid is admitted to the same archive, and the local mesh is refined from spacings $(0.32,0.032)$ to $(0.01,0.001)$ using the same relative improvement rule as the surrogate search. At most 2,000 distinct attempted points are permitted per scenario. Every mechanistic call uses the fixed initialization protocol with no preceding candidate state supplied. A failed steady-state attempt is cached, consumes budget, and returns $+\infty$ to the search rather than a favorable value. The best accepted mechanistic point is re-evaluated without cached solver state.
+
+The decision regret is
+\begin{equation}
+\label{eq:decision_regret}
+\mathcal R_s=
+J\bigl(\widehat u_s,c_{\mathrm{ASM}}(\widehat u_s;x_s)\bigr)
+-J\bigl(u_{\mathrm{ASM},s}^*,c_{\mathrm{ASM}}(u_{\mathrm{ASM},s}^*;x_s)\bigr).
+\end{equation}
+The surrogate-selected point belongs to the mechanistic candidate archive, so the mechanistic reference cannot be worse than that point except through numerical inconsistency. Regret is interpreted relative to the best mechanistic point found under the declared finite budget rather than as an exact global gap. A value below $-10^{-8}$ therefore causes the run to fail and is never clipped to zero. The normalized operating displacement is
+\begin{equation}
+\label{eq:decision_displacement}
+d_{u,s}=\left\|D_u^{-1}(\widehat u_s-u_{\mathrm{ASM},s}^*)\right\|_2.
+\end{equation}
+The archived $3\times3$ neighborhood reveals whether the surrogate-selected point is locally stable and may itself improve the mechanistic reference because it is part of the common candidate set. All validation is model-based validation against ASM2d-TSN; it is not described as plant or empirical validation.
+
+\subsection{Computational Timing Protocol}
+
+Wall-clock durations are measured with a monotonic high-resolution performance counter. The 8,000-row assessment fit and 10,000-row production refit are each timed once; these durations include feature construction, recursive coefficient estimation, and per-sweep diagnostic writes, but exclude final article-table serialization. Inference timing uses five warm-up executions. Batch measurements use 512 deterministic rows and 30 recorded repetitions, whereas single-state end-to-end deployment uses 100 recorded repetitions. Raw coupled-system prediction, affine projection, lower-QP setup and solution, and complete deployment are timed separately. The standalone lower-QP batch measurement constructs a new projector for each state, whereas end-to-end batch deployment constructs one projector and reuses it sequentially with accepted primal warm starts. Medians, interquartile ranges, and microseconds per state are retained together with hardware, numerical-library versions, and thread settings.
+
+Surrogate search time begins after evaluator construction and includes its baseline, DIRECT, corner, edge, grid, mesh, and uncached final-verification phases. Mechanistic search time excludes the preceding surrogate-selected-point simulation and its reserved local neighborhood, while the complete per-case wall time includes evaluator construction, surrogate optimization, selected-point and neighborhood simulation, mechanistic search, and baseline evaluation but excludes final artifact serialization. All three durations are retained separately.
+
+\subsection{Summary Measures and Reproducibility Contract}
+
+The nominal case is reported individually, including its baseline comparison, selected operating variables, predicted and mechanistic effluents, objective decomposition, scaled-$L_2$ correction, and decision regret. Across the 100 independent robustness scenarios, component and composite prediction errors, objective error, regret, operating displacement, scaled-$L_2$ correction magnitude, search evaluations, surrogate-search time, mechanistic-search time, complete case time, solver failures, and bound activity are summarized by the mean, median, interquartile range, 95th percentile, and maximum. The fraction of cases in which each operating bound is active is reported. These are descriptive finite-sample summaries; they are not confidence intervals or evidence of plant-level performance.
+
+Physical diagnostics are calculated before composite aggregation:
+\begin{equation}
+\label{eq:physical_diagnostics}
+v_{mc}(c;x)=\|A(c-x)\|_\infty,
+\qquad
+v_{nn}(c)=\left\|\min(c,0)\right\|_1.
+\end{equation}
+Raw, affine, deployed, and mechanistic states are kept distinct. The affine invariant residual and final invariant residual are reported with the full-precision $A$; the minimum component and total negative magnitude are reported without pre-diagnostic clipping.
+
+All random streams derive reproducibly from their declared root seeds. Mechanistic states, invariant construction, ICSOR fitting, prediction, projection, optimization, and metrics use double precision. Every accepted run writes immutable configuration files, coefficient artifacts, scenario identifiers, candidate histories, solver versions and statuses, environment metadata, and cryptographic file hashes. Terminal validation fails closed if a coefficient, target scale, component label, candidate status, mechanistic response, or paired scenario is absent. No result is assembled by combining partial runs, and no optimization-validation response is admitted to model fitting or objective scaling. Only the full profile is article-eligible. A separate smoke profile uses 160 simulated states, three robustness cases, reduced search budgets, and coarser terminal meshes solely to test the complete workflow; its numerical outputs are excluded from article results.
+
+\section{Results and Discussion}
+
+\section{Conclusion}
+
+\section*{CRediT authorship contribution statement}
+
+The sole author, Egberto F. Selerio Jr., contributed to conceptualization, methodology, software, validation, formal analysis, investigation, resources, data curation, writing---original draft, writing---review \& editing, visualization, supervision, project administration, and funding acquisition.
+
+\section*{Acknowledgments \& disclosure of funding}
+
+This work is funded by the Department of Science and Technology of the Philippines through the Engineering Research and Development for Technology scholarship awarded to Egberto F. Selerio Jr. at the University of San Carlos.
+
+\section*{Data availability}
+
+The complete codebase developed to reproduce this study is maintained at \url{https://github.com/egbertoselerio1997/surrogate-optimization-arch}. The immutable article-eligible result bundle and its manifest will be archived with the final manuscript.
+
+\section*{References}
+
+\noindent Bhosekar, A., \& Ierapetritou, M. (2018). Advances in surrogate based modeling, feasibility analysis, and optimization: A review. \textit{Computers \& Chemical Engineering, 108}, 250--267. doi: 10.1016/j.compchemeng.2017.09.017.
+
+\noindent Colson, B., Marcotte, P., \& Savard, G. (2007). An overview of bilevel optimization. \textit{Annals of Operations Research, 153}, 235--256. doi: 10.1007/s10479-007-0176-2.
+
+\noindent Curtiss, C. F., \& Hirschfelder, J. O. (1952). Integration of stiff equations. \textit{Proceedings of the National Academy of Sciences, 38}(3), 235--243. doi: 10.1073/pnas.38.3.235.
+
+\noindent de Araujo, A. C. B., Gallani, S., Mulas, M., \& Skogestad, S. (2013). Sensitivity analysis of optimal operation of an activated sludge process model for economic controlled variable selection. \textit{Industrial \& Engineering Chemistry Research, 52}(29), 9908--9921. doi: 10.1021/ie4006673.
+
+\noindent Guerrero, J., Guisasola, A., \& Baeza, J. A. (2011). The nature of the carbon source rules the competition between PAO and denitrifiers in systems for simultaneous biological nitrogen and phosphorus removal. \textit{Water Research, 45}(16), 4793--4802. doi: 10.1016/j.watres.2011.06.019.
+
+\noindent Henze, M., Gujer, W., Mino, T., \& van Loosdrecht, M. (2006). Activated Sludge Models ASM1, ASM2, ASM2d and ASM3. \textit{Water Intelligence Online, 5}(0). doi: 10.2166/9781780402369.
+
+\noindent Jones, D. R., Perttunen, C. D., \& Stuckman, B. E. (1993). Lipschitzian optimization without the Lipschitz constant. \textit{Journal of Optimization Theory and Applications, 79}(1), 157--181. doi: 10.1007/BF00941892.
+
+\noindent McKay, M. D., Beckman, R. J., \& Conover, W. J. (1979). Comparison of three methods for selecting values of input variables in the analysis of output from a computer code. \textit{Technometrics, 21}(2), 239--245. doi: \url{10.1080/00401706.1979.10489755}.
+
+\noindent Selerio Jr., E. F. (2026). An interpretable statistical surrogate of activated sludge systems that preserves mass conservation and component non-negativity. \textit{Digital Chemical Engineering, 20}, 100329. doi: 10.1016/j.dche.2026.100329.
+
+\noindent Stellato, B., Banjac, G., Goulart, P., Bemporad, A., \& Boyd, S. (2018). OSQP: An operator splitting solver for quadratic programs. In \textit{2018 UKACC 12th International Conference on Control (CONTROL)} (p. 339). IEEE. doi: 10.1109/control.2018.8516834.
+
+\end{document}
