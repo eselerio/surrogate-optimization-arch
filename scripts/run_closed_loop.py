@@ -18,7 +18,10 @@ from closed_loop.workflow import ClosedLoopWorkflow, STAGES, WorkflowError  # no
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Run or resume the physically constrained closed-loop study."
+        description=(
+            "Run or resume the development/calibration/assessment workflow and "
+            "the single combined physics-constrained statistical NLP study."
+        )
     )
     parser.add_argument(
         "--config",
@@ -29,7 +32,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--profile",
         default=os.environ.get("CLOSED_LOOP_PROFILE"),
-        help="Execution profile (unit, test_2000, or full).",
+        help="Independent-block execution profile (unit, test_2000, or full).",
     )
     parser.add_argument(
         "--run-id",
@@ -40,7 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--through",
         choices=STAGES,
         default="complete",
-        help="Stop after this independently checkpointed stage.",
+        help="Stop after this immutable, independently verified stage.",
     )
     parser.add_argument(
         "--results-root",
@@ -86,4 +89,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -1,4 +1,4 @@
-"""Deterministic Latin-hypercube designs for the closed-loop study.
+"""Deterministic design blocks for the closed-loop study.
 
 The generator in this module is a direct implementation of the random-design
 contract stated in ``article/wip_v2/manuscript.tex``.  It intentionally does
@@ -6,9 +6,12 @@ not use NumPy's or SciPy's random-number APIs: the SplitMix64 state transition,
 unbiased Fisher--Yates shuffles, jitter conversion, dimension order, and draw
 consumption are all explicit and therefore reproducible across platforms.
 
-For the mechanistic design, dimensions are generated in the fixed order
-``(H, a, r_I, r_R, w, x_1, ..., x_20)``.  The robustness design restarts an
-independent SplitMix64 stream and contains the 20 influent dimensions only.
+The development block is a Latin hypercube.  Calibration and assessment are
+independent row-major open-unit iid blocks, which preserves the exchangeable
+split-conformal sampling contract.  Every profile restarts three distinct
+streams and stores blocks in development/calibration/assessment order.  The
+robustness design restarts a fourth stream and contains the 20 influent
+dimensions only.
 """
 
 from __future__ import annotations
@@ -30,6 +33,7 @@ SPLITMIX64_INCREMENT = 0x9E3779B97F4A7C15
 SPLITMIX64_MULTIPLIER_1 = 0xBF58476D1CE4E5B9
 SPLITMIX64_MULTIPLIER_2 = 0x94D049BB133111EB
 FLOAT53_DENOMINATOR = 1 << 53
+FLOAT52_DENOMINATOR = 1 << 52
 
 DECISION_COLUMNS: tuple[str, ...] = ("H", "a", "r_I", "r_R", "w")
 INFLUENT_COLUMNS: tuple[str, ...] = tuple(COMPONENTS)
@@ -123,6 +127,11 @@ class SplitMix64:
 
         return float(self.next_uint64() >> 11) / float(FLOAT53_DENOMINATOR)
 
+    def random_open_float52(self) -> float:
+        """Return the exact binary64 midpoint ``((U >> 12)+1/2)/2^52``."""
+
+        return (float(self.next_uint64() >> 12) + 0.5) / float(FLOAT52_DENOMINATOR)
+
     def randbelow(self, upper: int) -> int:
         """Draw uniformly from ``range(upper)`` without modulo bias."""
 
@@ -140,7 +149,12 @@ class SplitMix64:
 
 @dataclass(frozen=True)
 class LatinHypercubeDesign:
-    """A labeled unit design and its affine physical realization."""
+    """A labeled unit design and its affine physical realization.
+
+    The historical class name is retained for artifact compatibility; an
+    instance may hold either an LHS block or an iid block, as determined by
+    the generator that constructed it.
+    """
 
     columns: tuple[str, ...]
     unit: FloatArray
@@ -173,6 +187,48 @@ class LatinHypercubeDesign:
         import pandas as pd
 
         return pd.DataFrame(self.physical.copy(), columns=self.columns)
+
+
+@dataclass(frozen=True)
+class StudyDesignBlocks:
+    """Independent development, calibration, and assessment design blocks."""
+
+    development: LatinHypercubeDesign
+    calibration: LatinHypercubeDesign
+    assessment: LatinHypercubeDesign
+
+    def __post_init__(self) -> None:
+        columns = self.development.columns
+        if self.calibration.columns != columns or self.assessment.columns != columns:
+            raise ValueError("All study-design blocks must use the same ordered columns.")
+
+    @property
+    def columns(self) -> tuple[str, ...]:
+        return self.development.columns
+
+    @property
+    def unit(self) -> FloatArray:
+        return np.vstack(
+            (self.development.unit, self.calibration.unit, self.assessment.unit)
+        )
+
+    @property
+    def physical(self) -> FloatArray:
+        return np.vstack(
+            (
+                self.development.physical,
+                self.calibration.physical,
+                self.assessment.physical,
+            )
+        )
+
+    @property
+    def counts(self) -> tuple[int, int, int]:
+        return (
+            self.development.n_points,
+            self.calibration.n_points,
+            self.assessment.n_points,
+        )
 
 
 def _validate_size(n_points: int, n_dimensions: int) -> tuple[int, int]:
@@ -221,6 +277,24 @@ def unit_latin_hypercube(
     return coordinates, stream.state, stream.draw_count
 
 
+def unit_iid_uniform(
+    n_points: int,
+    n_dimensions: int,
+    *,
+    seed: int,
+) -> tuple[FloatArray, int, int]:
+    """Generate the manuscript's row-major open-unit iid block."""
+
+    rows, dimensions = _validate_size(n_points, n_dimensions)
+    stream = SplitMix64(seed)
+    coordinates = np.empty((rows, dimensions), dtype=np.float64)
+    for row in range(rows):
+        for dimension in range(dimensions):
+            coordinates[row, dimension] = stream.random_open_float52()
+    validate_unit_box(coordinates, open_interval=True)
+    return coordinates, stream.state, stream.draw_count
+
+
 def _ordered_bound_arrays(
     columns: Sequence[str],
     bounds: Mapping[str, Sequence[float]],
@@ -261,6 +335,10 @@ def affine_map(
     if np.any(coordinates < 0.0) or np.any(coordinates >= 1.0):
         raise ValueError("unit coordinates must lie in [0, 1).")
     physical = lower + coordinates * (upper - lower)
+    # The largest open-unit midpoint can round to the physical upper bound
+    # after the multiply-add (for example 6 + 30*(1-2^-53) in binary64).
+    # Preserve the half-open sampling contract under that final rounding.
+    physical = np.minimum(physical, np.nextafter(upper, lower))
     return physical, lower, upper
 
 
@@ -292,6 +370,34 @@ def generate_design(
     return design
 
 
+def generate_iid_design(
+    n_points: int,
+    columns: Sequence[str],
+    bounds: Mapping[str, Sequence[float]],
+    *,
+    seed: int,
+) -> LatinHypercubeDesign:
+    """Generate and map an independent row-major open-unit design block."""
+
+    names, _, _ = _ordered_bound_arrays(columns, bounds)
+    unit, final_state, draw_count = unit_iid_uniform(
+        n_points, len(names), seed=seed,
+    )
+    physical, lower, upper = affine_map(unit, names, bounds)
+    design = LatinHypercubeDesign(
+        columns=names,
+        unit=unit,
+        physical=physical,
+        lower=lower,
+        upper=upper,
+        seed=_unsigned_64(seed, label="seed"),
+        final_state=final_state,
+        draw_count=draw_count,
+    )
+    validate_design(design, require_latin_hypercube=False, require_open_unit=True)
+    return design
+
+
 def generate_training_design(
     n_points: int,
     *,
@@ -311,6 +417,50 @@ def generate_training_design(
     }
     return generate_design(
         n_points, TRAINING_COLUMNS, ordered_bounds, seed=seed,
+    )
+
+
+def generate_study_design_blocks(
+    development_count: int,
+    calibration_count: int,
+    assessment_count: int,
+    *,
+    development_seed: int,
+    calibration_seed: int,
+    assessment_seed: int,
+    decision_bounds: Mapping[str, Sequence[float]] = DECISION_BOUNDS,
+    influent_bounds: Mapping[str, Sequence[float]] = INFLUENT_BOUNDS,
+) -> StudyDesignBlocks:
+    """Generate the independent LHS/iid/iid blocks in immutable study order."""
+
+    seeds = tuple(
+        _unsigned_64(value, label=label)
+        for value, label in (
+            (development_seed, "development_seed"),
+            (calibration_seed, "calibration_seed"),
+            (assessment_seed, "assessment_seed"),
+        )
+    )
+    if len(set(seeds)) != 3:
+        raise ValueError("Development, calibration, and assessment seeds must be distinct.")
+    if set(decision_bounds) != set(DECISION_COLUMNS):
+        raise ValueError("decision_bounds must define exactly H, a, r_I, r_R, and w.")
+    if set(influent_bounds) != set(INFLUENT_COLUMNS):
+        raise ValueError("influent_bounds must define exactly the 20 ASM components.")
+    ordered_bounds = {
+        **{name: decision_bounds[name] for name in DECISION_COLUMNS},
+        **{name: influent_bounds[name] for name in INFLUENT_COLUMNS},
+    }
+    return StudyDesignBlocks(
+        development=generate_design(
+            development_count, TRAINING_COLUMNS, ordered_bounds, seed=seeds[0],
+        ),
+        calibration=generate_iid_design(
+            calibration_count, TRAINING_COLUMNS, ordered_bounds, seed=seeds[1],
+        ),
+        assessment=generate_iid_design(
+            assessment_count, TRAINING_COLUMNS, ordered_bounds, seed=seeds[2],
+        ),
     )
 
 
@@ -351,10 +501,32 @@ def validate_unit_latin_hypercube(unit: FloatArray) -> None:
             )
 
 
-def validate_design(design: LatinHypercubeDesign) -> None:
+def validate_unit_box(unit: FloatArray, *, open_interval: bool = False) -> None:
+    """Validate a finite unit-box matrix, optionally excluding both faces."""
+
+    coordinates = np.asarray(unit, dtype=np.float64)
+    if coordinates.ndim != 2 or coordinates.shape[0] <= 0 or coordinates.shape[1] <= 0:
+        raise ValueError("A unit design must be a nonempty two-dimensional array.")
+    if not np.all(np.isfinite(coordinates)):
+        raise ValueError("A unit design must contain only finite values.")
+    lower_invalid = coordinates <= 0.0 if open_interval else coordinates < 0.0
+    if np.any(lower_invalid) or np.any(coordinates >= 1.0):
+        interval = "(0, 1)" if open_interval else "[0, 1)"
+        raise ValueError(f"Unit coordinates must lie in {interval}.")
+
+
+def validate_design(
+    design: LatinHypercubeDesign,
+    *,
+    require_latin_hypercube: bool = True,
+    require_open_unit: bool = False,
+) -> None:
     """Replay the complete unit, labeling, affine-map, and bound contract."""
 
-    validate_unit_latin_hypercube(design.unit)
+    if require_latin_hypercube:
+        validate_unit_latin_hypercube(design.unit)
+    else:
+        validate_unit_box(design.unit, open_interval=require_open_unit)
     if design.physical.shape != design.unit.shape:
         raise ValueError("Physical and unit design shapes differ.")
     if design.unit.shape[1] != len(design.columns):
@@ -366,6 +538,7 @@ def validate_design(design: LatinHypercubeDesign) -> None:
     if np.any(design.physical < design.lower) or np.any(design.physical >= design.upper):
         raise ValueError("The physical design lies outside its half-open bounds.")
     replay = design.lower + design.unit * (design.upper - design.lower)
+    replay = np.minimum(replay, np.nextafter(design.upper, design.lower))
     if not np.array_equal(replay, design.physical):
         raise ValueError("The physical design does not replay from its unit coordinates.")
     expected_state = (
@@ -381,15 +554,20 @@ __all__ = [
     "INFLUENT_BOUNDS",
     "INFLUENT_COLUMNS",
     "LatinHypercubeDesign",
+    "StudyDesignBlocks",
     "ROBUSTNESS_COLUMNS",
     "SplitMix64",
     "TRAINING_BOUNDS",
     "TRAINING_COLUMNS",
     "affine_map",
     "generate_design",
+    "generate_iid_design",
     "generate_robustness_design",
+    "generate_study_design_blocks",
     "generate_training_design",
     "unit_latin_hypercube",
+    "unit_iid_uniform",
     "validate_design",
+    "validate_unit_box",
     "validate_unit_latin_hypercube",
 ]

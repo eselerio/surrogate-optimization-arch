@@ -888,7 +888,7 @@ def solve_steady_state(
     acceptance_tolerance: float = 1e-8,
     starts: tuple[int, ...] = (1, 2),
     minimum_relaxation_days: float = 400.0,
-    solids_turnovers: float = 40.0,
+    solids_turnovers: float = 50.0,
     integration_rtol: float = 1e-7,
     integration_atol: float = 1e-9,
 ) -> SteadyStateResult:

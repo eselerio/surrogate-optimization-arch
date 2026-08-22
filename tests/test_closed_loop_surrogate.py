@@ -4,20 +4,36 @@ import unittest
 
 import numpy as np
 
+import closed_loop.surrogate as surrogate_module
 from closed_loop.surrogate import (
     NetworkLayout,
-    PhysicalProjector,
     QuadraticFeatureMap,
     QuadraticSurrogate,
-    SearchSettings,
     SurrogateValidationError,
-    affine_projection,
-    build_network_operators,
-    deterministic_bounded_search,
-    feasibility_first_merit,
-    fit_network_row_scales,
-    no_conversion_feasible_state,
+    assess_raw_predictions,
+    assess_raw_surrogate,
+    calibrate_split_conformal,
+    standardized_squared_error_scores,
 )
+
+
+class RetiredOptimizationPathTests(unittest.TestCase):
+    def test_projection_qp_and_direct_search_are_not_public_or_present(self) -> None:
+        retired = (
+            "PhysicalProjector",
+            "ProjectionResult",
+            "SearchSettings",
+            "NetworkOperators",
+            "NetworkRowScales",
+            "affine_projection",
+            "build_network_operators",
+            "deterministic_bounded_search",
+            "fit_network_row_scales",
+            "no_conversion_feasible_state",
+        )
+        for name in retired:
+            self.assertNotIn(name, surrogate_module.__all__)
+            self.assertFalse(hasattr(surrogate_module, name))
 
 
 class QuadraticFeatureTests(unittest.TestCase):
@@ -38,7 +54,7 @@ class QuadraticFeatureTests(unittest.TestCase):
         self.assertLess(names.index("standardized[H*x0]"), names.index("standardized[H*x1]"))
         self.assertLess(names.index("standardized[H*x19]"), names.index("standardized[a*x0]"))
 
-    def test_fixed_ols_recovers_an_exact_quadratic_response(self) -> None:
+    def test_fixed_ols_recovers_exact_response_and_persists_pivoted_qr(self) -> None:
         rng = np.random.default_rng(910)
         decisions = rng.uniform(-2.0, 3.0, size=(430, 5))
         influent = rng.uniform(0.2, 5.0, size=(430, 20))
@@ -51,8 +67,32 @@ class QuadraticFeatureTests(unittest.TestCase):
         fitted = model.predict(decisions, influent)
 
         self.assertEqual(model.coefficients.shape, (4, 351))
+        self.assertEqual(model.feature_qr_upper.shape, (351, 351))
+        np.testing.assert_array_equal(
+            np.sort(model.feature_qr_pivots), np.arange(351, dtype=np.int64)
+        )
         self.assertLess(model.diagnostics.condition_number, 1.0e8)
         self.assertLess(np.max(np.abs(fitted - responses)), 2.0e-11)
+
+    def test_pivoted_qr_leverage_matches_definition_and_trace(self) -> None:
+        rng = np.random.default_rng(72)
+        decisions = rng.normal(size=(80, 2))
+        influent = rng.normal(size=(80, 2))
+        responses = rng.normal(size=(80, 3))
+        model = QuadraticSurrogate.fit(decisions, influent, responses)
+        design = model.feature_map.transform(decisions, influent)
+
+        leverage = model.leverage(decisions, influent)
+        gram_inverse_design_t = np.linalg.solve(design.T @ design, design.T)
+        expected = np.sum(design.T * gram_inverse_design_t, axis=0)
+        np.testing.assert_allclose(leverage, expected, rtol=2.0e-11, atol=2.0e-12)
+        self.assertAlmostEqual(float(np.sum(leverage)), model.feature_map.feature_count, places=10)
+        self.assertAlmostEqual(
+            model.leverage(decisions[7], influent[7]), float(expected[7]), places=11
+        )
+        self.assertEqual(
+            model.maximum_training_leverage(decisions, influent), float(np.max(leverage))
+        )
 
     def test_zero_variance_is_rejected_instead_of_silently_rescaled(self) -> None:
         rng = np.random.default_rng(8)
@@ -63,174 +103,115 @@ class QuadraticFeatureTests(unittest.TestCase):
             QuadraticFeatureMap.fit(decisions, influent)
 
 
-class PhysicalProjectionTests(unittest.TestCase):
-    @staticmethod
-    def network_fixture() -> tuple[NetworkLayout, np.ndarray, np.ndarray, np.ndarray]:
-        layout = NetworkLayout()
-        invariant = np.zeros((5, 20), dtype=np.float64)
-        invariant[0, 0] = 1.0
-        invariant[1, 1] = 1.0
-        invariant[2, 2] = 1.0
-        invariant[3, 3] = 1.0
-        invariant[4, 4] = 1.0
-        tss = np.zeros(20, dtype=np.float64)
-        tss[10:] = 1.0
-        influent = np.linspace(1.0, 20.0, 20)
-        return layout, invariant, tss, influent
-
-    def test_network_operator_order_and_analytical_feasible_point(self) -> None:
-        layout, invariant, tss, influent = self.network_fixture()
-        operators = build_network_operators(
-            influent,
-            internal_recycle=2.0,
-            return_recycle=0.75,
-            waste_fraction=0.02,
-            invariant_operator=invariant,
-            tss_weights=tss,
-            layout=layout,
+class CalibrationAndAssessmentTests(unittest.TestCase):
+    def test_conformal_quantile_uses_finite_sample_one_based_rule(self) -> None:
+        scores = np.linspace(0.001, 0.2, 2000)
+        observed = np.repeat(np.sqrt(scores)[:, None], 2, axis=1)
+        predicted = np.zeros_like(observed)
+        calibration = calibrate_split_conformal(
+            observed, predicted, np.ones(2), alpha=0.05
         )
-        state = no_conversion_feasible_state(influent, operators=operators, tss_weights=tss)
+
+        self.assertEqual(calibration.n, 2000)
+        self.assertEqual(calibration.k_one_based, 1901)
+        self.assertEqual(calibration.index_zero_based, 1900)
+        self.assertEqual(calibration.delta, float(np.sort(scores)[1900]))
+        np.testing.assert_allclose(calibration.scores, scores, rtol=2.0e-15, atol=2.0e-16)
+        self.assertEqual(len(calibration.scores_sha256), 64)
+        self.assertEqual(
+            calibration.scores_sha256,
+            calibrate_split_conformal(observed, predicted, np.ones(2)).scores_sha256,
+        )
+
+    def test_calibration_rejects_zero_large_and_nonfinite_thresholds(self) -> None:
+        zeros = np.zeros((20, 2))
+        with self.assertRaisesRegex(SurrogateValidationError, "must lie"):
+            calibrate_split_conformal(zeros, zeros, np.ones(2))
+        with self.assertRaisesRegex(SurrogateValidationError, "must lie"):
+            calibrate_split_conformal(
+                np.full((20, 2), 2.0), zeros, np.ones(2)
+            )
+        nonfinite = zeros.copy()
+        nonfinite[0, 0] = np.nan
+        with self.assertRaisesRegex(SurrogateValidationError, "observed"):
+            calibrate_split_conformal(nonfinite, zeros, np.ones(2))
+
+    def test_raw_assessment_reports_coordinate_block_and_gate_metrics(self) -> None:
+        truth = np.asarray(
+            [[1.0, 3.0], [2.0, 5.0], [3.0, 7.0], [4.0, 9.0]], dtype=float
+        )
+        prediction = truth + np.asarray(
+            [[0.2, -0.4], [-0.2, 0.4], [0.2, -0.4], [-0.2, 0.4]]
+        )
+        scale = np.asarray([2.0, 4.0])
+        metrics = assess_raw_predictions(
+            truth,
+            prediction,
+            scale,
+            delta=0.011,
+            blocks={"first": [0], "all": slice(0, 2)},
+        )
+
+        expected_scores = standardized_squared_error_scores(truth, prediction, scale)
+        np.testing.assert_allclose(metrics.scores, expected_scores)
+        np.testing.assert_allclose(metrics.coordinate_metrics.rmse, [0.2, 0.4])
+        np.testing.assert_allclose(metrics.coordinate_metrics.nrmse, [0.1, 0.1])
+        self.assertAlmostEqual(metrics.complete_state_standardized_rmse, 0.1)
+        self.assertAlmostEqual(metrics.block_metric("all").standardized_rmse, 0.1)
+        self.assertEqual(metrics.empirical_coverage, 1.0)
+        self.assertTrue(metrics.predictions_finite)
+        self.assertTrue(metrics.complete_state_rmse_passed)
+        self.assertTrue(metrics.coverage_passed)
+        self.assertTrue(metrics.passed)
+
+    def test_nonfinite_prediction_is_a_failed_gate_not_a_refit(self) -> None:
+        truth = np.arange(12, dtype=float).reshape(4, 3)
+        prediction = truth.copy()
+        prediction[0, 0] = np.inf
+        metrics = assess_raw_predictions(
+            truth, prediction, np.ones(3), delta=0.5
+        )
+        self.assertFalse(metrics.predictions_finite)
+        self.assertFalse(metrics.complete_state_rmse_passed)
+        self.assertFalse(metrics.coverage_passed)
+        self.assertFalse(metrics.passed)
+
+    def test_assess_raw_surrogate_uses_the_frozen_model_response_scale(self) -> None:
+        rng = np.random.default_rng(97)
+        decisions = rng.normal(size=(60, 2))
+        influent = rng.normal(size=(60, 2))
+        base_map = QuadraticFeatureMap.fit(decisions, influent)
+        features = base_map.transform(decisions, influent)
+        responses = features @ rng.normal(size=(15, 3))
+        model = QuadraticSurrogate.fit(decisions, influent, responses)
+        assessment_decisions = rng.normal(size=(8, 2))
+        assessment_influent = rng.normal(size=(8, 2))
+        observed = model.predict(assessment_decisions, assessment_influent)
+        observed = observed + 0.05 * model.response_scale
+
+        metrics = assess_raw_surrogate(
+            model,
+            assessment_decisions,
+            assessment_influent,
+            observed,
+            delta=0.01,
+        )
+        self.assertAlmostEqual(metrics.complete_state_standardized_rmse, 0.05)
+        self.assertEqual(metrics.empirical_coverage, 1.0)
+        self.assertTrue(metrics.passed)
+
+
+class NetworkLayoutTests(unittest.TestCase):
+    def test_complete_response_layout_has_declared_order_and_size(self) -> None:
+        layout = NetworkLayout()
 
         self.assertEqual(layout.state_size, 170)
-        self.assertEqual(operators.equality_matrix.shape, (77, 170))
-        self.assertEqual(operators.inequality_matrix.shape, (26, 170))
-        self.assertLess(
-            np.linalg.norm(operators.equality_matrix @ state - operators.equality_rhs, ord=np.inf),
-            1.0e-12,
-        )
-        self.assertLessEqual(np.max(operators.inequality_matrix @ state), 1.0e-12)
-
-    def test_affine_and_full_projection_satisfy_independent_contracts(self) -> None:
-        layout, invariant, tss, influent = self.network_fixture()
-        operators = build_network_operators(
-            influent,
-            internal_recycle=1.5,
-            return_recycle=0.8,
-            waste_fraction=0.015,
-            invariant_operator=invariant,
-            tss_weights=tss,
-            layout=layout,
-        )
-        feasible = no_conversion_feasible_state(influent, operators=operators, tss_weights=tss)
-        rng = np.random.default_rng(18)
-        raw = feasible + rng.normal(scale=3.0, size=layout.state_size)
-        state_scale = np.maximum(1.0, np.abs(feasible))
-
-        affine = affine_projection(
-            raw,
-            operators.equality_matrix,
-            operators.equality_rhs,
-            state_scale,
-        )
-        self.assertLess(
-            np.linalg.norm(
-                operators.equality_matrix @ affine - operators.equality_rhs, ord=np.inf
-            ),
-            2.0e-10,
-        )
-
-        projector = PhysicalProjector(
-            state_scale=state_scale,
-            equality_scale=np.maximum(1.0, np.abs(operators.equality_rhs) + 1.0),
-            inequality_scale=np.ones(operators.inequality_matrix.shape[0]),
-        )
-        result = projector.project(
-            raw,
-            operators.equality_matrix,
-            operators.equality_rhs,
-            operators.inequality_matrix,
-        )
-        self.assertTrue(result.accepted)
-        self.assertGreaterEqual(np.min(result.state), -1.0e-8)
-        self.assertLessEqual(np.max(operators.inequality_matrix @ result.state), 2.0e-7)
-        self.assertLessEqual(result.diagnostics.equality_residual, 1.0e-8)
-        self.assertLessEqual(result.diagnostics.stationarity_residual, 1.0e-8)
-
-    def test_term_based_row_scales_are_positive_and_have_declared_sizes(self) -> None:
-        layout, invariant, tss, _ = self.network_fixture()
-        rng = np.random.default_rng(33)
-        states = []
-        influents = []
-        internal = np.linspace(0.2, 3.8, 12)
-        returned = np.linspace(0.3, 1.2, 12)
-        wasted = np.linspace(0.002, 0.045, 12)
-        for index in range(12):
-            influent = rng.uniform(0.5, 100.0, size=20)
-            operators = build_network_operators(
-                influent,
-                internal_recycle=float(internal[index]),
-                return_recycle=float(returned[index]),
-                waste_fraction=float(wasted[index]),
-                invariant_operator=invariant,
-                tss_weights=tss,
-                layout=layout,
-            )
-            influents.append(influent)
-            states.append(
-                no_conversion_feasible_state(influent, operators=operators, tss_weights=tss)
-            )
-        scales = fit_network_row_scales(
-            np.asarray(states),
-            np.asarray(influents),
-            internal_recycle=internal,
-            return_recycle=returned,
-            waste_fraction=wasted,
-            invariant_operator=invariant,
-            tss_weights=tss,
-            layout=layout,
-        )
-        self.assertEqual(scales.equality.shape, (77,))
-        self.assertEqual(scales.inequality.shape, (26,))
-        self.assertTrue(np.all(scales.equality > 0.0))
-        self.assertTrue(np.all(scales.inequality > 0.0))
-
-
-class BoundedSearchTests(unittest.TestCase):
-    @staticmethod
-    def settings() -> SearchSettings:
-        return SearchSettings(
-            total_budget=150,
-            full_direct_budget=60,
-            face_direct_budget=10,
-            direct_resolution=1.0 / 81.0,
-            local_seed_count=3,
-            initial_mesh=1.0 / 16.0,
-            terminal_mesh=1.0 / 256.0,
-        )
-
-    def test_merit_separates_feasible_infeasible_and_failed_points(self) -> None:
-        feasible = feasibility_first_merit(4.0, 0.0, accepted=True)
-        infeasible = feasibility_first_merit(0.0, 0.2, accepted=True)
-        failed = feasibility_first_merit(None, None, accepted=False)
-        self.assertLess(feasible, 1.0)
-        self.assertGreaterEqual(infeasible, 1.0)
-        self.assertLess(infeasible, failed)
-
-    def test_search_finds_boundary_basin_and_is_bitwise_deterministic(self) -> None:
-        def objective(point: np.ndarray) -> float:
-            return float(point[0] ** 2 + (point[1] - 0.73) ** 2)
-
-        first = deterministic_bounded_search(
-            objective,
-            ((0.0, 1.0), (0.0, 1.0)),
-            settings=self.settings(),
-        )
-        second = deterministic_bounded_search(
-            objective,
-            ((0.0, 1.0), (0.0, 1.0)),
-            settings=self.settings(),
-        )
-
-        self.assertEqual(first.evaluations, second.evaluations)
-        self.assertEqual(
-            tuple(record.normalized_point for record in first.records),
-            tuple(record.normalized_point for record in second.records),
-        )
-        self.assertEqual(first.fun, second.fun)
-        self.assertEqual(first.x[0], 0.0)
-        self.assertLess(abs(first.x[1] - 0.73), 0.012)
-        self.assertLessEqual(first.evaluations, self.settings().total_budget)
-        self.assertTrue(any(phase.startswith("face:0:0") for phase in first.phase_counts))
+        self.assertEqual(layout.mixer_slice, slice(0, 20))
+        self.assertEqual(layout.reactor_slice(0), slice(20, 40))
+        self.assertEqual(layout.reactor_slice(4), slice(100, 120))
+        self.assertEqual(layout.overflow_flow_slice, slice(120, 140))
+        self.assertEqual(layout.underflow_flow_slice, slice(140, 160))
+        self.assertEqual(layout.layer_slice, slice(160, 170))
 
 
 if __name__ == "__main__":

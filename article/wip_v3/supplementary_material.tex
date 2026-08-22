@@ -1,0 +1,1065 @@
+%% Elsevier single-column supplementary format matching the main manuscript.
+\documentclass[a4paper,fleqn]{cas-sc}
+
+\usepackage[authoryear,longnamesfirst]{natbib}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{array}
+\usepackage{booktabs}
+\usepackage{float}
+\usepackage{graphicx}
+\usepackage{longtable}
+\usepackage{microtype}
+\usepackage{placeins}
+\usepackage{xcolor}
+
+\DeclareMathOperator*{\argminop}{arg\,min}
+\DeclareMathOperator{\vech}{vech}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\diag}{\operatorname{Diag}}
+\newcommand{\pos}[1]{[#1]_+}
+\newcommand{\col}{\operatorname{col}}
+\renewcommand{\theequation}{S\arabic{equation}}
+\renewcommand{\thetable}{S\arabic{table}}
+\renewcommand{\thefigure}{S\arabic{figure}}
+\setcounter{MaxMatrixCols}{20}
+
+\def\tsc#1{\csdef{#1}{\textsc{\lowercase{#1}}\xspace}}
+\tsc{WGM}
+\tsc{QE}
+
+\ExplSyntaxOn
+\keys_set:nn { stm / mktitle } { nologo }
+\cs_set:Npn \__first_footerline:
+{
+    \group_begin:
+    \small
+    \sffamily
+    \ifnum\theblind>0\relax
+    \else
+        \__short_authors:
+    \fi
+    \group_end:
+}
+\ExplSyntaxOff
+
+\begin{document}
+\let\WriteBookmarks\relax
+
+\shorttitle{Supplementary Material: Projected-Surrogate Optimization}
+\shortauthors{Egberto F. Selerio Jr.}
+
+\title[mode=title]{Supplementary Material for ``Optimization of a Recycling Mixer-Reactor-Clarifier Activated Sludge System Using a Physically-Constrained Statistical Surrogate''}
+
+\author[1]{Egberto F. Selerio Jr.}
+\cormark[1]
+\ead{egbertoselerio@gmail.com}
+
+\affiliation[1]{
+  organization={Engineering Research and Development for Technology},
+  addressline={School of Engineering, University of San Carlos},
+  country={Philippines}}
+
+\cortext[cor1]{Corresponding author}
+
+\begin{abstract}
+This supplement gives the complete coordinate, mechanistic, sampling, training, physical-projection, optimization, and verification definitions for the accompanying article. General equations use $N$ reactors and $L$ Clarifier layers; all numerical values are identified separately as case-study choices.
+\end{abstract}
+
+\begin{keywords}
+supplementary methods \sep activated sludge \sep Clarifier \sep ridge regression \sep quadratic projection \sep process optimization
+\end{keywords}
+
+\maketitle
+
+\section{Scope and coordinate contract}
+
+This supplement completes the mechanistic generator, data design, five-fold cross-validation, ridge estimator, physical-projection quadratic program (QP), surrogate optimization reformulation, smooth mechanistic nonlinear program (NLP), reference replay, and reporting rules. The structural equations use $N$ reactors, $L$ Clarifier layers, $F=F_S+F_X$ components, and $K$ independent invariants. Their dimensions are
+\begin{equation}
+n_\chi=(N+3)F+L,\qquad n_y=NF+L,\qquad
+n_h=2F+NK+F_S+2,
+\end{equation}
+\begin{equation}
+n_g=F_X+2(L-2),\qquad n_q=n_\chi+n_g.
+\end{equation}
+\begin{equation}
+n_{\rm lift}=d_\vartheta+n_\chi+n_h+n_q,\qquad
+n_M=d_\vartheta+NF+L+1,\qquad
+n_{M,=}=NF+L+1+n_{\mathcal V,=}.
+\end{equation}
+Here $n_\chi$ is the complete surrogate-response dimension, $n_y$ is the reduced mechanistic-state dimension, $n_h$ counts projection equalities, $n_g$ counts physical-direction inequalities, and $n_q$ includes response non-negativity. The gap-based surrogate lift contains controls, projected displacement, and both multiplier vectors. The direct NLP adds one feed-TSS auxiliary to its controls and reduced state; $n_{\mathcal V,=}$ counts any stage-allocation equalities in its operating set. These expressions, rather than their numerical case-study values, govern the formulation.
+
+Every component vector uses the order
+\begin{equation}
+\begin{split}
+(&S_O,S_F,S_A,S_{NH4},S_{NO2},S_{NO3},S_{N2},S_{PO4},S_I,S_{ALK},\\
+&X_I,X_S,X_H,X_{PAO},X_{PP},X_{PHA},X_{AOB},X_{NOB},X_{MeP},X_{MeOH}).
+\end{split}
+\label{eq:Sorder}
+\end{equation}
+Define the particulate index set $\mathcal X$ as the component indices selected by $E_X$. For the case study, $F=20$, the first ten entries are soluble, and the final ten are particulate. Soluble oxygen, COD, nitrogen, phosphorus, and particulate coordinates retain their stated ASM mass bases; alkalinity is mol HCO$_3^-$ m$^{-3}$.
+
+\begin{table}[htbp]
+\centering
+\caption{Fresh-influent ranges and nominal values.}
+\label{tab:S1}
+\small
+\begin{tabular}{lrrl@{\qquad}lrrl}
+\toprule
+Component & Lower & Upper & Unit & Component & Lower & Upper & Unit\\
+\midrule
+$S_O$&0&0.5&g O$_2$ m$^{-3}$&$S_I$&10&90&g COD m$^{-3}$\\
+$S_F$&20&180&g COD m$^{-3}$&$S_{ALK}$&1.6&5.2&mol m$^{-3}$\\
+$S_A$&5&80&g COD m$^{-3}$&$X_I$&20&120&g COD m$^{-3}$\\
+$S_{NH4}$&12&55&g N m$^{-3}$&$X_S$&60&280&g COD m$^{-3}$\\
+$S_{NO2}$&0&3&g N m$^{-3}$&$X_H$&15&100&g COD m$^{-3}$\\
+$S_{NO3}$&0&8&g N m$^{-3}$&$X_{PAO}$&5&60&g COD m$^{-3}$\\
+$S_{N2}$&0&2&g N m$^{-3}$&$X_{PP}$&2&20&g P m$^{-3}$\\
+$S_{PO4}$&2&18&g P m$^{-3}$&$X_{PHA}$&1&30&g COD m$^{-3}$\\
+&&&&$X_{AOB}$&0.5&8&g COD m$^{-3}$\\
+&&&&$X_{NOB}$&0.5&8&g COD m$^{-3}$\\
+&&&&$X_{MeP}$&0&12&g TSS m$^{-3}$\\
+&&&&$X_{MeOH}$&0&12&g TSS m$^{-3}$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The nominal influent is the componentwise midpoint:
+\begin{equation}
+x_{\rm nom}=(0.25,100,42.5,33.5,1.5,4,1,10,50,3.4,
+70,170,57.5,32.5,11,15.5,4.25,4.25,6,6)^\top.
+\end{equation}
+
+\section{Complete mechanistic generator}
+
+\subsection{Generic stage balance and case specialization}
+
+For reactor $i\in\{1,\ldots,N\}$, define the fresh-flow-basis stage residence time $h_i=24V_i/Q_0$ h. Before division by volume, the component balance is
+\begin{equation}
+V_i\dot c_i=Q_0q_P(c_{i-1}-c_i)
++V_i\{\nu^\top\rho(c_i)+\omega_i e_{S_O}+\xi_i\},
+\qquad c_0=m.
+\label{eq:Sdynamicstage}
+\end{equation}
+Dividing by $V_i$ gives the dilution rate $d_i=Q_0q_P/V_i=24q_P/h_i$. A negligible-carrier-flow material control enters through $\xi_i$, and its invariant contribution is $A\xi_i/d_i$. If a dosing stream carries non-negligible liquid flow, its flow and composition must instead be added to the mixer or stage hydraulic balance and every downstream dilution rate must be recomputed. The case study uses equal reactor volumes, $h_i=H/5$, no material addition, $\xi_i=0$, and independently controlled aeration in stages 3--5. Consequently $d_i=120q_P/H$ d$^{-1}$ only in this case.
+
+\subsection{Reactor rates}
+
+The kinetic structure uses ASM2d as its base and adds the study-specific nitrite, metal, and boundary-preserving extensions defined completely below \citep{Henze2006}. For non-negative $z$ and positive $K$, define
+\begin{equation}
+M(z;K)=\frac{z}{K+z},\qquad \overline M(z;K)=\frac{K}{K+z}.
+\end{equation}
+Let $S_{NOx}=S_{NO2}+S_{NO3}$ and
+\begin{equation}
+\alpha_2=\frac{S_{NO2}}{S_{NOx}},\quad \alpha_3=\frac{S_{NO3}}{S_{NOx}},\quad
+\alpha_F=\frac{S_F}{S_F+S_A},\quad \alpha_A=\frac{S_A}{S_F+S_A}.
+\end{equation}
+A ratio is defined as zero when its denominator is zero. Also define
+\begin{equation}
+\theta_X=\frac{X_S}{K_XX_H+X_S},\quad r_{PP}=\frac{X_{PP}}{X_{PAO}},\quad
+r_{PHA}=\frac{X_{PHA}}{X_{PAO}},
+\end{equation}
+with the same zero-denominator convention, and
+\begin{equation}
+\psi_{PP}=M(r_{PP};K_{PP}),\quad \psi_{PHA}=M(r_{PHA};K_{PHA}),\quad
+c_{PP}=\frac{\pos{K_{\max}-r_{PP}}}{K_{IPP}+\pos{K_{\max}-r_{PP}}}.
+\end{equation}
+All PAO rates multiplying $X_{PAO}$ are zero when $X_{PAO}=0$. Repeated nutrient limitations are
+\begin{align}
+\Lambda_H&=M(S_{NH4};K_{NH4,H})M(S_{PO4};K_{PO4,H})M(S_{ALK};K_{ALK,H}),\\
+\Lambda_P&=M(S_{NH4};K_{NH4,PAO})M(S_{PO4};K_{PO4,PAO})M(S_{ALK};K_{ALK,PAO}),\\
+\Lambda_N&=M(S_{PO4};K_{PO4,nit})M(S_{ALK};K_{ALK,nit}),\\
+\Lambda_{NOB}&=\Lambda_NM(S_{NH4};K_{NH4,NOB}),\qquad
+\Lambda_{PRE}=M(S_{ALK};K_{ALK,PRE}).
+\end{align}
+The extra ammonium factor in $\Lambda_{NOB}$ supplies nitrogen needed for new NOB biomass, while $\Lambda_{PRE}$ prevents precipitation from consuming alkalinity at the zero-alkalinity boundary. Both are required for the non-negative concentration orthant to be forward invariant.
+
+The rate list follows the physical sequence of the model. Rates 1--4 hydrolyze slowly biodegradable substrate under aerobic, nitrite, nitrate, and fermentative conditions. Rates 5--10 describe aerobic and anoxic heterotrophic growth on fermentable substrate or acetate; the fractions $\alpha_F$, $\alpha_A$, $\alpha_2$, and $\alpha_3$ prevent double counting when substrates or electron acceptors coexist. Rate 11 ferments $S_F$ to $S_A$, and rate 12 is heterotrophic decay. Rates 13--22 describe PAO storage, polyphosphate formation, PAO growth, and decay. Rates 23--26 describe AOB/NOB growth and decay, while rates 27--28 precipitate and redissolve phosphorus with the metal phases. With that process map in mind, the 28 non-negative rates are
+\begingroup\small
+\begin{align}
+\rho_1&=K_HM(S_O;K_{O,hyd})\theta_XX_H,\\
+\rho_2&=\eta_{hyd,NO2}K_H\overline M(S_O;K_{O,hyd})M(S_{NO2};K_{NO2,hyd})\alpha_2\theta_XX_H,\\
+\rho_3&=\eta_{hyd,NO3}K_H\overline M(S_O;K_{O,hyd})M(S_{NO3};K_{NO3,hyd})\alpha_3\theta_XX_H,\\
+\rho_4&=\eta_{hyd,fe}K_H\overline M(S_O;K_{O,hyd})\overline M(S_{NOx};K_{NOx,hyd})\theta_XX_H,\\
+\rho_5&=\mu_HM(S_O;K_{O,H})M(S_F;K_F)\alpha_F\Lambda_HX_H,\\
+\rho_6&=\mu_HM(S_O;K_{O,H})M(S_A;K_A)\alpha_A\Lambda_HX_H,\\
+\rho_7&=\mu_H\overline M(S_O;K_{O,H})M(S_F;K_F)\alpha_F\Lambda_H\eta_{H,NO3}M(S_{NO3};K_{NO3,H})\alpha_3X_H,\\
+\rho_8&=\mu_H\overline M(S_O;K_{O,H})M(S_F;K_F)\alpha_F\Lambda_H\eta_{H,NO2}M(S_{NO2};K_{NO2,H})\alpha_2X_H,\\
+\rho_9&=\mu_H\overline M(S_O;K_{O,H})M(S_A;K_A)\alpha_A\Lambda_H\eta_{H,NO3}M(S_{NO3};K_{NO3,H})\alpha_3X_H,\\
+\rho_{10}&=\mu_H\overline M(S_O;K_{O,H})M(S_A;K_A)\alpha_A\Lambda_H\eta_{H,NO2}M(S_{NO2};K_{NO2,H})\alpha_2X_H,\\
+\rho_{11}&=q_{fe}\overline M(S_O;K_{O,H})\overline M(S_{NOx};K_{NOx,H})M(S_F;K_{fe})M(S_{ALK};K_{ALK,H})X_H,\\
+\rho_{12}&=b_HX_H,\\
+\rho_{13}&=q_{PHA}M(S_A;K_A)\overline M(S_O;K_{O,PAO})\overline M(S_{NOx};K_{NOx,PAO})M(S_{ALK};K_{ALK,PAO})\psi_{PP}X_{PAO},\\
+\rho_{14}&=q_{PP}M(S_O;K_{O,PAO})M(S_{PO4};K_{PS})M(S_{ALK};K_{ALK,PAO})\psi_{PHA}c_{PP}X_{PAO},\\
+\rho_{15}&=q_{PP}\overline M(S_O;K_{O,PAO})M(S_{PO4};K_{PS})M(S_{ALK};K_{ALK,PAO})\psi_{PHA}c_{PP}\eta_{PAO,NO3}M(S_{NO3};K_{NO3,PAO})\alpha_3X_{PAO},\\
+\rho_{16}&=q_{PP}\overline M(S_O;K_{O,PAO})M(S_{PO4};K_{PS})M(S_{ALK};K_{ALK,PAO})\psi_{PHA}c_{PP}\eta_{PAO,NO2}M(S_{NO2};K_{NO2,PAO})\alpha_2X_{PAO},\\
+\rho_{17}&=\mu_{PAO}M(S_O;K_{O,PAO})\Lambda_P\psi_{PHA}X_{PAO},\\
+\rho_{18}&=\mu_{PAO}\overline M(S_O;K_{O,PAO})\Lambda_P\psi_{PHA}\eta_{PAO,NO3}M(S_{NO3};K_{NO3,PAO})\alpha_3X_{PAO},\\
+\rho_{19}&=\mu_{PAO}\overline M(S_O;K_{O,PAO})\Lambda_P\psi_{PHA}\eta_{PAO,NO2}M(S_{NO2};K_{NO2,PAO})\alpha_2X_{PAO},\\
+\rho_{20}&=b_{PAO}M(S_{ALK};K_{ALK,PAO})X_{PAO},\\
+\rho_{21}&=b_{PP}M(S_{ALK};K_{ALK,PAO})X_{PP},\qquad
+\rho_{22}=b_{PHA}M(S_{ALK};K_{ALK,PAO})X_{PHA},\\
+\rho_{23}&=\mu_{AOB}M(S_O;K_{O,AOB})M(S_{NH4};K_{NH4,AOB})\Lambda_NX_{AOB},\\
+\rho_{24}&=\mu_{NOB}M(S_O;K_{O,NOB})M(S_{NO2};K_{NO2,NOB})\Lambda_{NOB}X_{NOB},\\
+\rho_{25}&=b_{AOB}X_{AOB},\qquad \rho_{26}=b_{NOB}X_{NOB},\\
+\rho_{27}&=k_{PRE}S_{PO4}X_{MeOH}\Lambda_{PRE},\\
+\rho_{28}&=k_{RED}i_{PMeP}M(S_{ALK};K_{ALK,chem})X_{MeP}.
+\end{align}
+\endgroup
+Rates 1--13, 17--20, and 22--26 use a COD basis; rates 14--16, 21, and 27--28 use a phosphorus basis. The stoichiometric columns below convert each rate basis into changes in all $F$ components.
+
+Aeration is an independent stage setting, not a plant-wide scalar. In the general model,
+\begin{equation}
+\omega_i=k_La_i(a_i)(S_O^*-c_{i,S_O}).
+\label{eq:Soxygen}
+\end{equation}
+The case study sets $S_O^*=8.5$ g O$_2$ m$^{-3}$, $k_La_1=k_La_2=0$, and $k_La_i=47a_i$ d$^{-1}$ for $i=3,4,5$, with $a_3,a_4,a_5$ varied independently on $[0,1]$.
+
+\subsection{Stoichiometry and invariant operator}
+
+Let $e_j$ be the coordinate column for component $j$. Omitted coefficients are zero. Preliminary rows are
+\begin{align}
+\bar\nu_{1:4}&=(1-f_{SI})e_{S_F}^\top+f_{SI}e_{S_I}^\top-e_{X_S}^\top,\\
+\bar\nu_5&=-Y_H^{-1}e_{S_F}^\top+(1-Y_H^{-1})e_{S_O}^\top+e_{X_H}^\top,\\
+\bar\nu_6&=-Y_H^{-1}e_{S_A}^\top+(1-Y_H^{-1})e_{S_O}^\top+e_{X_H}^\top,\\
+\bar\nu_7&=-Y_H^{-1}e_{S_F}^\top+\beta_H(e_{S_{NO2}}-e_{S_{NO3}})^\top+e_{X_H}^\top,\\
+\bar\nu_8&=-Y_H^{-1}e_{S_F}^\top+\gamma_H(e_{S_{N2}}-e_{S_{NO2}})^\top+e_{X_H}^\top,\\
+\bar\nu_9&=-Y_H^{-1}e_{S_A}^\top+\beta_H(e_{S_{NO2}}-e_{S_{NO3}})^\top+e_{X_H}^\top,\\
+\bar\nu_{10}&=-Y_H^{-1}e_{S_A}^\top+\gamma_H(e_{S_{N2}}-e_{S_{NO2}})^\top+e_{X_H}^\top,\\
+\bar\nu_{11}&=e_{S_A}^\top-e_{S_F}^\top,\\
+\bar\nu_{12}&=f_{XI}e_{X_I}^\top+(1-f_{XI})e_{X_S}^\top-e_{X_H}^\top,\\
+\bar\nu_{13}&=-e_{S_A}^\top-Y_{PO4}e_{X_{PP}}^\top+e_{X_{PHA}}^\top,\\
+\bar\nu_{14}&=-Y_{PHA}e_{S_O}^\top+e_{X_{PP}}^\top-Y_{PHA}e_{X_{PHA}}^\top,\\
+\bar\nu_{15}&=\beta_S(e_{S_{NO2}}-e_{S_{NO3}})^\top+e_{X_{PP}}^\top-Y_{PHA}e_{X_{PHA}}^\top,\\
+\bar\nu_{16}&=\gamma_S(e_{S_{N2}}-e_{S_{NO2}})^\top+e_{X_{PP}}^\top-Y_{PHA}e_{X_{PHA}}^\top,\\
+\bar\nu_{17}&=(1-Y_{PAO}^{-1})e_{S_O}^\top+e_{X_{PAO}}^\top-Y_{PAO}^{-1}e_{X_{PHA}}^\top,\\
+\bar\nu_{18}&=\beta_P(e_{S_{NO2}}-e_{S_{NO3}})^\top+e_{X_{PAO}}^\top-Y_{PAO}^{-1}e_{X_{PHA}}^\top,\\
+\bar\nu_{19}&=\gamma_P(e_{S_{N2}}-e_{S_{NO2}})^\top+e_{X_{PAO}}^\top-Y_{PAO}^{-1}e_{X_{PHA}}^\top,\\
+\bar\nu_{20}&=f_{XI}e_{X_I}^\top+(1-f_{XI})e_{X_S}^\top-e_{X_{PAO}}^\top,\\
+\bar\nu_{21}&=-e_{X_{PP}}^\top,\qquad \bar\nu_{22}=e_{S_A}^\top-e_{X_{PHA}}^\top,\\
+\bar\nu_{23}&=-\frac{3.43-Y_{AOB}}{Y_{AOB}}e_{S_O}^\top+Y_{AOB}^{-1}e_{S_{NO2}}^\top+e_{X_{AOB}}^\top,\\
+\bar\nu_{24}&=-\frac{1.14-Y_{NOB}}{Y_{NOB}}e_{S_O}^\top-Y_{NOB}^{-1}e_{S_{NO2}}^\top+Y_{NOB}^{-1}e_{S_{NO3}}^\top+e_{X_{NOB}}^\top,\\
+\bar\nu_{25}&=f_{XI}e_{X_I}^\top+(1-f_{XI})e_{X_S}^\top-e_{X_{AOB}}^\top,\\
+\bar\nu_{26}&=f_{XI}e_{X_I}^\top+(1-f_{XI})e_{X_S}^\top-e_{X_{NOB}}^\top,\\
+\bar\nu_{27}&=-e_{S_{PO4}}^\top-\gamma_{OH}e_{X_{MeOH}}^\top+i_{PMeP}^{-1}e_{X_{MeP}}^\top,\\
+\bar\nu_{28}&=e_{S_{PO4}}^\top+\gamma_{OH}e_{X_{MeOH}}^\top-i_{PMeP}^{-1}e_{X_{MeP}}^\top,
+\end{align}
+where
+\begin{equation}
+\beta_H=\frac{1-Y_H}{(8/7)Y_H},\quad \gamma_H=\frac{1-Y_H}{1.72Y_H},\quad
+\beta_S=\frac{Y_{PHA}}{8/7},\quad \gamma_S=\frac{Y_{PHA}}{1.72},
+\end{equation}
+\begin{equation}
+\beta_P=\frac{1-Y_{PAO}}{(8/7)Y_{PAO}},\qquad
+\gamma_P=\frac{1-Y_{PAO}}{1.72Y_{PAO}}.
+\end{equation}
+Define the component sets
+\begin{align}
+\mathcal N={}&\{S_F,S_I,S_{N2},S_{NO2},S_{NO3},X_I,X_S,X_H,X_{PAO},X_{AOB},X_{NOB}\},\\
+\mathcal P={}&\{S_F,S_I,X_I,X_S,X_H,X_{PAO},X_{AOB},X_{NOB},X_{PP},X_{MeP}\}.
+\end{align}
+Nitrogen, phosphorus, and alkalinity columns complete each row by elemental continuity:
+\begin{align}
+\nu_{p,S_{NH4}}&=-\sum_{j\in\mathcal N}n_j\bar\nu_{p,j},\\
+\nu_{p,S_{PO4}}&=-\sum_{j\in\mathcal P}p_j\bar\nu_{p,j},\\
+\nu_{p,S_{ALK}}&=\nu_{p,S_{NH4}}/14-\nu_{p,S_{NO2}}/14-\nu_{p,S_{NO3}}/14+\nu_{p,S_{PO4}}/31,
+\end{align}
+The nonzero nitrogen weights are
+$n_{S_F}=i_{NSF}$, $n_{S_I}=i_{NSI}$,
+$n_{S_{N2}}=n_{S_{NO2}}=n_{S_{NO3}}=1$,
+$n_{X_I}=i_{NXI}$, $n_{X_S}=i_{NXS}$, and
+$n_{X_H}=n_{X_{PAO}}=n_{X_{AOB}}=n_{X_{NOB}}=i_{NBM}$.
+The nonzero phosphorus weights are
+$p_{S_F}=i_{PSF}$, $p_{S_I}=i_{PSI}$,
+$p_{X_I}=i_{PXI}$, $p_{X_S}=i_{PXS}$,
+$p_{X_H}=p_{X_{PAO}}=p_{X_{AOB}}=p_{X_{NOB}}=i_{PBM}$,
+$p_{X_{PP}}=1$, and $p_{X_{MeP}}=i_{PMeP}$.
+Rows 27--28 retain their displayed phosphate coefficients. All other entries equal their preliminary values.
+
+The five unnormalized physical rows are
+\begin{align}
+b_{SI}&=e_{S_I}^\top,\\
+b_N&=e_{S_{NH4}}^\top+e_{S_{NO2}}^\top+e_{S_{NO3}}^\top+e_{S_{N2}}^\top+i_{NSI}e_{S_I}^\top+i_{NSF}e_{S_F}^\top
++i_{NXI}e_{X_I}^\top+i_{NXS}e_{X_S}^\top\\
+&\quad+i_{NBM}(e_{X_H}+e_{X_{PAO}}+e_{X_{AOB}}+e_{X_{NOB}})^\top,\\
+b_P&=e_{S_{PO4}}^\top+i_{PSI}e_{S_I}^\top+i_{PSF}e_{S_F}^\top+i_{PXI}e_{X_I}^\top+i_{PXS}e_{X_S}^\top+e_{X_{PP}}^\top\\
+&\quad+i_{PBM}(e_{X_H}+e_{X_{PAO}}+e_{X_{AOB}}+e_{X_{NOB}})^\top+i_{PMeP}e_{X_{MeP}}^\top,\\
+b_{alk}&=e_{S_{ALK}}^\top-e_{S_{NH4}}^\top/14+e_{S_{NO2}}^\top/14+e_{S_{NO3}}^\top/14-e_{S_{PO4}}^\top/31,\\
+b_{metal}&=\gamma_{OH}e_{X_{MeP}}^\top+i_{PMeP}^{-1}e_{X_{MeOH}}^\top.
+\end{align}
+For $B=(b_{SI},b_N,b_P,b_{alk},b_{metal})^\top$, define
+\begin{equation}
+A=\diag(\|b_1\|_2^{-1},\ldots,\|b_5\|_2^{-1})B.
+\end{equation}
+For $M_{\rm rank}\in\R^{n_{\rm row}\times n_{\rm col}}$ with singular values $\sigma_1\ge\sigma_2\ge\cdots$, define $\operatorname{rank}_{\rm num}(M_{\rm rank})$ as the number of singular values satisfying $\sigma_k>\max(n_{\rm row},n_{\rm col})\epsilon_{\rm mach}\sigma_1$, where the declared IEEE-754 binary64 arithmetic has machine precision $\epsilon_{\rm mach}=2^{-52}$. These five named rows are specific to the tabulated case chemistry (including $f_{SI}=0$). Generation proceeds only if $\operatorname{rank}_{\rm num}(\nu)=15$, $\operatorname{rank}_{\rm num}(A)=5$, and $\|A\nu^\top\|_\infty,\|Ae_{S_O}\|_\infty\le10^{-10}$. Combining the mixer, reactor-rail, and Clarifier balances gives the independent external check
+\begin{equation}
+Ax+\frac{1}{Q_0}\sum_{i=1}^{N}V_iA\xi_i
+=Ag_E+\frac{w}{q_U}Ag_U.
+\label{eq:Sexternalinvariant}
+\end{equation}
+The source contribution vanishes in the case study because $\xi_i=0$. MLR and RAS cancel because they are internal streams. Equation~\eqref{eq:Sexternalinvariant} is evaluated separately from the equations used to construct a target.
+
+\subsection{Clarifier model}
+
+The Clarifier is divided into $L\ge3$ finite volumes of volumes $V_{{\rm cl},\ell}$ and is fed into layer $\ell_F\in\{1,\ldots,L\}$. Denote feed TSS by
+\begin{equation}
+X_F=t_X^\top c_N.
+\end{equation}
+The Tak\'acs double-exponential law first calculates the raw unhindered-minus-flocculent settling tendency
+\begin{equation}
+v_{\rm raw}(s;X_F)=v_0\!\left[
+e^{-r_h(s-f_{ns}X_F)}-e^{-r_p(s-f_{ns}X_F)}\right].
+\label{eq:Srawsettling}
+\end{equation}
+The physical velocity then clips that tendency to $[0,v_0^{\max}]$ \citep{Takacs1991}:
+\begin{equation}
+v_s(s;X_F)=\max\{0,\min[v_0^{\max},v_{\rm raw}(s;X_F)]\}.
+\end{equation}
+The gravitational solids flux is $j_s(s;X_F)=s v_s(s;X_F)$. At the interface between an upper layer $\ell$ and its lower receiving layer $\ell+1$, a concentrated receiver can limit the flux. Thus
+\begin{equation}
+j^{\rm set}_{\ell+1/2}=\begin{cases}
+j_s(s_\ell;X_F),&s_{\ell+1}\le X_t,\\
+\min\{j_s(s_\ell;X_F),j_s(s_{\ell+1};X_F)\},&s_{\ell+1}>X_t,
+\end{cases}
+\quad \ell=1,\ldots,L-1.
+\end{equation}
+Taking downward flux as positive, the upward liquid above the feed contributes a negative advective flux and the underflow below the feed contributes a positive one:
+\begin{equation}
+\mathcal J_{\ell+1/2}=\begin{cases}
+-v_Es_{\ell+1}+j^{\rm set}_{\ell+1/2},&\ell<\ell_F,\\
+v_Us_\ell+j^{\rm set}_{\ell+1/2},&\ell\ge\ell_F,
+\end{cases}
+\end{equation}
+where $v_E=Q_0q_E/A_{\rm cl}$ and $v_U=Q_0q_U/A_{\rm cl}$. Boundary fluxes are $\mathcal J_{1/2}=-v_Es_1$ and $\mathcal J_{L+1/2}=v_Us_L$. Accumulation equals incoming minus outgoing interface flux, with the feed source added only to layer $\ell_F$:
+\begin{equation}
+V_{{\rm cl},\ell}\dot s_\ell=A_{\rm cl}(\mathcal J_{\ell-1/2}-\mathcal J_{\ell+1/2})
++\mathbf1_{\{\ell=\ell_F\}}Q_0q_CX_F,
+\quad \ell=1,\ldots,L.
+\label{eq:Slayerbalance}
+\end{equation}
+Summing Equation~\eqref{eq:Slayerbalance} over all layers cancels every internal interface and recovers $q_CX_F=q_Es_1+q_Us_L$ at steady state.
+
+Solubles follow the liquid unchanged. The reduced aggregate-solids model assumes a common particulate composition equal to the steady Clarifier feed composition. The complete component vector reconstructed in layer $\ell$ is therefore
+\begin{equation}
+c_{{\rm cl},\ell}=E_S^\top E_Sc_N+
+E_X^\top\left(\frac{s_\ell}{X_F}E_Xc_N\right),
+\label{eq:Scommoncomposition}
+\end{equation}
+on the declared domain $X_F\ge X_F^{\min}>0$. Thus
+\begin{equation}
+c_E=c_{{\rm cl},1},\quad c_U=c_{{\rm cl},L},\quad
+g_E=q_Ec_E,\quad g_U=q_Uc_U,\quad
+m=\frac{x+r_Ic_N+r_Rc_U}{q_P}.
+\label{eq:Sreconstruction}
+\end{equation}
+In particular, $E_Sc_E=E_Sc_U=E_Sc_N$, while $E_Xc_E=(s_1/X_F)E_Xc_N$ and $E_Xc_U=(s_L/X_F)E_Xc_N$. Equations~\eqref{eq:Scommoncomposition}--\eqref{eq:Sreconstruction}, together with $y$, define the reference response $\chi(\vartheta,x,y)$. In the smooth NLP, every occurrence of $X_F$ in this reconstruction and in the Clarifier residual is replaced by the bounded auxiliary $\widetilde X_F$, with the equality $\widetilde X_F=t_X^\top c_N$ imposed separately. The construction conserves every particulate component at steady state because the summed TSS balance multiplies the common feed fraction. During pseudo-transient relaxation the feed fractions change algebraically; individual particulate layer inventories are therefore not physical dynamic states. Stability and replay statements are explicitly limited to this reduced steady-state model.
+
+\begin{table}[htbp]
+\centering
+\caption{Clarifier geometry and settling constants.}
+\begin{tabular}{lll}
+\toprule
+Quantity & Value & Unit\\
+\midrule
+$A_{\rm cl}$; total depth & 1500; 4.0 & m$^2$; m\\
+Layers; layer depth; layer volume & 10; 0.4; 600 & --; m; m$^3$\\
+$v_0^{\max}$; $v_0$ & 250; 474 & m d$^{-1}$\\
+$r_h$; $r_p$ & 0.000576; 0.00286 & m$^3$ (g TSS)$^{-1}$\\
+$f_{ns}$; $X_t$ & 0.00228; 3000 & --; g TSS m$^{-3}$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Composite map and parameters}
+
+Rows of the following matrix return COD, reported TN, TP, and TSS:
+{\scriptsize
+\begin{equation}
+I_{\rm comp}=\begin{bmatrix}
+0&1&1&0&0&0&0&0&1&0&1&1&1&1&0&1&1&1&0&0\\
+0&0&0&1&1&1&0&0&0.01&0&0.02&0&0.07&0.07&0&0&0.07&0.07&0&0\\
+0&0&0&0&0&0&0&1&0&0&0.01&0&0.02&0.02&1&0&0.02&0.02&i_{PMeP}&0\\
+0&0&0&0&0&0&0&0&0&0&0.75&0.75&0.90&0.90&3.23&0.60&0.90&0.90&1&1
+\end{bmatrix}.
+\end{equation}}
+The transpose of its last row is $t_X$. Reported TN intentionally excludes dissolved nitrogen gas $S_{N2}$, which remains in the invariant balance but is not a water-quality pollutant coordinate.
+
+The parameter names in Table~\ref{tab:Sparameters} follow one consistent pattern. Symbols $Y$ are process yields, $f$ are decay or hydrolysis fractions, and $i$ are nitrogen or phosphorus contents of named components. Symbols $\mu$ and $q$ are maximum growth or storage rates, $b$ are decay rates, $K_H$ is the hydrolysis rate constant, and each $\eta$ is an anoxic or fermentative reduction factor. A half-saturation coefficient $K_{a,b}$ limits process group $b$ by constituent $a$; $K_X$ limits hydrolysis by the substrate-to-biomass ratio. The PAO coefficients $K_{PP}$, $K_{PHA}$, $K_{\max}$, and $K_{IPP}$ govern polyphosphate/PHA saturation and storage capacity. Finally, $k_{PRE}$, $k_{RED}$, and $\gamma_{OH}$ describe metal-phosphate precipitation, redissolution, and hydroxide stoichiometry. This naming map lets every factor in the rate and stoichiometric equations be traced to a physical role before its numerical value is used.
+
+\scriptsize
+\begin{longtable}{p{0.14\linewidth}p{0.31\linewidth}p{0.27\linewidth}p{0.17\linewidth}}
+\caption{Fixed parameters for ASM2d with two-step nitrification (ASM2d-TSN).}\label{tab:Sparameters}\\
+\toprule Group & Symbol & Value & Unit\\ \midrule\endfirsthead
+\toprule Group & Symbol & Value & Unit\\ \midrule\endhead
+Stoichiometry&$Y_H,Y_{PAO}$&0.625, 0.625&g COD g COD$^{-1}$\\
+&$Y_{PHA}$&0.20&g COD g P$^{-1}$\\
+&$Y_{PO4}$&0.40&g P g COD$^{-1}$\\
+&$Y_{AOB},Y_{NOB}$&0.18, 0.08&g COD g N$^{-1}$\\
+&$f_{SI},f_{XI}$&0, 0.10&--\\
+Composition&$i_{NSI},i_{NSF},i_{NXI},i_{NXS},i_{NBM}$&0.01, 0, 0.02, 0, 0.07&g N g COD$^{-1}$\\
+&$i_{PSI},i_{PSF},i_{PXI},i_{PXS},i_{PBM}$&0, 0, 0.01, 0, 0.02&g P g COD$^{-1}$\\
+&$i_{PMeP}$&$1/4.87$&g P g TSS$^{-1}$\\
+Hydrolysis&$K_H;\eta_{hyd,NO3},\eta_{hyd,NO2},\eta_{hyd,fe}$&3.0; 0.6, 0.6, 0.4&d$^{-1}$; --\\
+&$K_{O,hyd};K_{NO3,hyd},K_{NO2,hyd},K_{NOx,hyd}$&0.20; 0.5, 0.5, 0.5&g O$_2$ m$^{-3}$; g N m$^{-3}$\\
+&$K_X$&0.10&g $X_S$ g $X_H^{-1}$\\
+Heterotrophs&$\mu_H,q_{fe},b_H$&6.0, 3.0, 0.40&d$^{-1}$\\
+&$\eta_{H,NO3},\eta_{H,NO2}$&0.9, 0.9&--\\
+&$K_{O,H};K_F,K_{fe},K_A$&0.20; 4, 4, 4&g O$_2$ m$^{-3}$; g COD m$^{-3}$\\
+&$K_{NO3,H},K_{NO2,H},K_{NOx,H}$&0.5, 0.5, 0.5&g N m$^{-3}$\\
+&$K_{NH4,H};K_{PO4,H};K_{ALK,H}$&0.05; 0.01; 0.10&g N m$^{-3}$; g P m$^{-3}$; mol m$^{-3}$\\
+PAO&$q_{PHA};q_{PP};\mu_{PAO}$&5.0; 0.60; 0.56&d$^{-1}$; g P (g COD d)$^{-1}$; d$^{-1}$\\
+&$\eta_{PAO,NO3},\eta_{PAO,NO2}$&0.07, 0.90&--\\
+&$b_{PAO},b_{PP},b_{PHA}$&0.20, 0.20, 0.20&d$^{-1}$\\
+&$K_{O,PAO};K_{NO3,PAO},K_{NO2,PAO},K_{NOx,PAO}$&0.20; 0.5, 0.5, 0.5&g O$_2$ m$^{-3}$; g N m$^{-3}$\\
+&$K_{NH4,PAO};K_{PS},K_{PO4,PAO};K_{ALK,PAO}$&0.05; 0.20, 0.01; 0.10&g N m$^{-3}$; g P m$^{-3}$; mol m$^{-3}$\\
+&$K_{PP},K_{\max},K_{IPP}$&0.01, 0.34, 0.02&g P g COD$^{-1}$\\
+&$K_{PHA}$&0.01&g COD g COD$^{-1}$\\
+Nitrifiers&$\mu_{AOB},\mu_{NOB};b_{AOB},b_{NOB}$&1.81, 1.52; 0.20, 0.17&d$^{-1}$\\
+&$K_{O,AOB},K_{O,NOB}$&0.74, 1.75&g O$_2$ m$^{-3}$\\
+&$K_{NH4,AOB},K_{NO2,NOB}$&0.5, 0.5&g N m$^{-3}$\\
+&$K_{NH4,NOB}$&0.05&g N m$^{-3}$\\
+&$K_{ALK,nit};K_{PO4,nit}$&0.5; 0.01&mol m$^{-3}$; g P m$^{-3}$\\
+Chemical&$k_{PRE}$&1.0&m$^3$ (g TSS d)$^{-1}$\\
+&$k_{RED}$&0.60&d$^{-1}$\\
+&$\gamma_{OH}$&3.45&g TSS g P$^{-1}$\\
+&$K_{ALK,chem},K_{ALK,PRE}$&0.50, 0.50&mol m$^{-3}$\\
+\bottomrule
+\end{longtable}
+\normalsize
+
+The boundary-preserving case values $K_{NH4,NOB}=0.05$ g N m$^{-3}$ and $K_{ALK,PRE}=0.50$ mol m$^{-3}$ are matched, respectively, to the smallest biomass-nitrogen half-saturation used in the case and to the declared chemical alkalinity half-saturation. They regularize only the low-substrate boundary and are reported explicitly as case assumptions rather than fitted constants.
+
+\subsection{Steady-state generation and acceptance}
+
+The reduced state is
+\begin{equation}
+y=\col(c_1,\ldots,c_N,s_1,\ldots,s_L)\in\R_+^{NF+L}.
+\end{equation}
+At each residual evaluation, the common-composition Clarifier outlet states are reconstructed first, then the mixer, and finally the $N$ reactor and $L$ layer residuals. Variable-order BDF is used as a pseudo-transient route to the nonsmooth steady equations. In the case study its maximum horizon is $\max(400\ \mathrm{d},(50/w)\ \mathrm{d})$, and its maximum step is one hundredth of that horizon. Relative and dimensionless absolute tolerances are $10^{-7}$ and $10^{-9}$. Every route is integrated in log coordinates from $y_{j,+}^{(0)}=\max\{y_j^{(0)},10^{-8}\operatorname{unit}(y_j)\}$:
+\begin{equation}
+y_j^{\log}=\log\!\left[\frac{y_j}{\operatorname{unit}(y_j)}\right],\qquad
+y_j=\operatorname{unit}(y_j)e^{y_j^{\log}},\qquad
+\dot y_j^{\log}=f_{{\rm ref},j}(\vartheta,x,y)/y_j,
+\label{eq:Slogstate}
+\end{equation}
+where $\operatorname{unit}(y_j)$ means one unit in the physical unit assigned to coordinate $j$. This transformation keeps every BDF trial state inside the positive domain, keeps the common-composition denominator defined, and leaves every strictly positive steady root unchanged. A route that cannot pass the endpoint checks is rejected. A remaining endpoint may receive one domain-restricted non-negative least-squares polish with at most 5,000 residual evaluations and $10^{-9}$ step, objective, and gradient tolerances; its line search rejects a trial before residual evaluation whenever $t_X^\top c_N<X_F^{\min}$.
+
+The two case-study initializations depend deterministically on the influent rather than being undocumented fixed vectors. Start 1 sets $c_i^{(0)}=x$ and $s_\ell^{(0)}=t_X^\top x$. Start 2 sets $E_Sc_i^{(0)}=E_Sx$, multiplies every particulate influent coordinate in stages 1--5 by $(1.5,2.0,2.5,3.0,3.5)$, respectively, and multiplies the resulting final-reactor TSS by the layer factors
+\begin{equation}
+(0.002,0.005,0.01,0.03,0.10,0.50,1.25,2.25,3.25,4.00).
+\end{equation}
+
+Define the diagonal generation scale $D_{y,{\rm gen}}$ coordinatewise as the larger of one unit and the declared influent upper bound for a reactor coordinate, or the larger of 1 g TSS m$^{-3}$ and feed TSS for a layer coordinate. Every heterogeneous equality is audited termwise: if row $a$ is $\sum_{t\in\mathcal T_a}t=0$, its dimensionless residual is
+\begin{equation}
+r_a^{\rm bal}=\frac{|\sum_{t\in\mathcal T_a}t|}
+{\max\{\operatorname{unit}_a,\max_{t\in\mathcal T_a}|t|\}},
+\end{equation}
+where $\operatorname{unit}_a$ is one unit in row $a$'s physical units. State and rate negativity are likewise divided by one unit of the corresponding coordinate or rate. An accepted target requires the maximum reactor, layer, component-closure, outlet-identity, and external-invariant $r_a^{\rm bal}$ to be no greater than $10^{-8}$; scaled state negativity no greater than $10^{-10}$; scaled rate negativity no greater than $10^{-12}$; a valid layer envelope; $X_F\ge1$ g TSS m$^{-3}$; and external solids loss $\dot M_X/Q_0\ge1$ g TSS m$^{-3}$. Thus no numerical tolerance compares quantities having different units.
+
+Let $f_{\rm ref}(\vartheta,x,y)$ denote the physical right-hand side of the nonsmooth reduced pseudo-transient model. The stability matrix is the correctly scaled similarity transform
+\begin{equation}
+J_z=D_{y,{\rm gen}}^{-1}\frac{\partial f_{\rm ref}}{\partial y}D_{y,{\rm gen}}.
+\label{eq:Sscaledjacobian}
+\end{equation}
+Let $y_{\rm sc}=D_{y,{\rm gen}}^{-1}y$ and $\mathfrak f_{\rm stab}(y_{\rm sc})=D_{y,{\rm gen}}^{-1}f_{\rm ref}(\vartheta,x,D_{y,{\rm gen}}y_{\rm sc})$. For column $j$, a centered difference is used only when $y_{{\rm sc},j}>2\delta_{\rm FD}$; otherwise the domain-respecting second-order forward formula
+\begin{equation}
+\frac{-3\mathfrak f_{\rm stab}(y_{\rm sc})
++4\mathfrak f_{\rm stab}(y_{\rm sc}+\delta_{\rm FD} e_j)
+-\mathfrak f_{\rm stab}(y_{\rm sc}+2\delta_{\rm FD} e_j)}{2\delta_{\rm FD}}
+\label{eq:Sdomainfd}
+\end{equation}
+is used. Complete matrices are formed at $\delta_{\rm FD}=\epsilon_{\rm mach}^{1/3}$ and $2\delta_{\rm FD}$. For an interior differentiable point, Equation~\eqref{eq:Sscaledjacobian} is similar to $\partial f_{\rm ref}/\partial y$ and therefore has the same eigenvalues; scaling changes conditioning, not the physical stability classification. At an active non-negativity face, Equation~\eqref{eq:Sdomainfd} is explicitly a feasible-side reduced-model diagnostic, not an unconstrained spectral theorem. The estimate is accepted only if the two rightmost-real-part values differ by at most $10^{-9}$ d$^{-1}$ and their larger value is no greater than $-10^{-8}$ d$^{-1}$.
+
+Branch margins are also explicit. Every interface must satisfy $|s_{\ell+1}-X_t|>\tau_X$ for the receiver switch; every layer must satisfy $|s_\ell-f_{ns}X_F|>10^{-6}S_X$ and $|v_{\rm raw}(s_\ell;X_F)|>10^{-6}S_v$ for the settling positive-part/floor switch, and $|v_{\rm raw}(s_\ell;X_F)-v_0^{\max}|>10^{-6}S_v$ for the velocity cap. A receiver-flux minimum requires $|j_s(s_\ell;X_F)-j_s(s_{\ell+1};X_F)|>10^{-6}S_J$, and every reactor requires $|K_{\max}X_{PAO}-X_{PP}|>10^{-6}\sigma_{cap}$ for the storage-capacity positive part. The scales are defined in Equations~\eqref{eq:Ssmoothkineticshares}--\eqref{eq:Ssmoothscales}. They are calculated from provisional mechanistic solutions for the 800 development inputs before the branch screen is applied; test points never enter them. Any provisional or test point lacking a margin is labeled branch-ambiguous and stops the fixed design rather than being replaced. This is a reduced-model numerical stability and differentiability screen, not a species-resolved plant stability claim.
+
+Both initializations are run for every design point. Each route must independently pass the acceptance tests, and the two accepted roots must satisfy
+\begin{equation}
+\|D_{y,{\rm gen}}^{-1}(y^{(1)}-y^{(2)})\|_\infty\le10^{-6}
+\end{equation}
+with identical receiver, settling, and kinetic storage-capacity branch classifications. If only one route succeeds or two distinct stable roots are found, the design point is labeled unresolved and the fixed design is stopped rather than resampled. This order-independent rule prevents the training response from depending on which initial condition happened to be tried first.
+
+Finally, every non-negative coordinate face is audited through the inward-pointing condition, with $\mathbf e_j^{(y)}$ denoting reduced-state coordinate $j$,
+\begin{equation}
+(\mathbf e_j^{(y)})^\top f_{\rm ref}(\vartheta,x,y)\big|_{y_j=0}\ge0
+\quad\text{for every admissible non-negative choice of the remaining coordinates}.
+\label{eq:Sfacecondition}
+\end{equation}
+For reactor coordinates, non-negative inflow supplies the boundary and every consuming process must vanish there; for a Clarifier layer, the upwind advective and settling fluxes leave no negative outflow when its own solids concentration is zero. In particular, NOB growth includes $M(S_{NH4};K_{NH4,NOB})$ and precipitation includes $M(S_{ALK};K_{ALK,PRE})$; without those factors the model could consume ammonium or alkalinity at a zero boundary.
+
+\section{Sampling, partitioning, and five-fold cross-validation}
+
+For the seven free controls in the case study, the statistical input has $d_z=7+20=27$ coordinates and the complete quadratic has $n_\phi=1+27+27(28)/2=406$ columns. Two separately randomized strength-one Latin-hypercube blocks \citep{McKay1979} are generated in the 27-dimensional box: 800 development rows from unsigned 64-bit state 100042 and 200 untouched test rows from state 100043. Ten influent-only scenario rows use state 314159. The blocks restart distinct random streams; rows inside a Latin hypercube are stratified and are not treated as independent and identically distributed observations.
+
+For exact reproducibility, one SplitMix64 word is generated modulo $2^{64}$ by
+\begin{align}
+z_0&\leftarrow z_0+\mathtt{9E3779B97F4A7C15},\notag\\
+z_1&\leftarrow(z_0\oplus(z_0\!\gg30))\mathtt{BF58476D1CE4E5B9},\notag\\
+z_2&\leftarrow(z_1\oplus(z_1\!\gg27))\mathtt{94D049BB133111EB},\notag\\
+U&\leftarrow z_2\oplus(z_2\!\gg31).
+\end{align}
+Each dimension consumes an unbiased Fisher--Yates permutation followed by its row jitters $[(U\!\gg11)+1/2]/2^{53}$. Dimensions are consumed in the order $(H,a_3,a_4,a_5,r_I,r_R,w,x_1,\ldots,x_{20})$, and affine maps convert unit coordinates to the declared bounds. Rejection sampling is used rather than modular reduction whenever a permutation range does not divide $2^{64}$.
+
+The feature calculation is restated here so that fitting can be reproduced without an implicit preprocessing step. For $n$ scalar observations $v_i$ in a fitting set $\mathcal I$, define the population mean and scale
+\begin{equation}
+\bar v_{\mathcal I}=\frac1n\sum_{i\in\mathcal I}v_i,
+\qquad
+\operatorname{sd}_{\mathcal I}(v)=
+\left[\frac1n\sum_{i\in\mathcal I}(v_i-\bar v_{\mathcal I})^2\right]^{1/2}.
+\label{eq:Ssd}
+\end{equation}
+Let $D_{\vartheta,{\rm fit}}$ and $D_{x,{\rm fit}}$ contain the coordinatewise scales from Equation~\eqref{eq:Ssd}. For each row,
+\begin{equation}
+z_i=\col[D_{\vartheta,{\rm fit}}^{-1}(\vartheta_i-\bar\vartheta),
+D_{x,{\rm fit}}^{-1}(x_i-\bar x)],\qquad
+r_i=\col[z_i,\vech(z_iz_i^\top)].
+\end{equation}
+With $D_{r,{\rm fit}}$ formed from the scales of the coordinates of $r_i$, the feature and standardized response are
+\begin{equation}
+\phi_i=\col[1,D_{r,{\rm fit}}^{-1}(r_i-\bar r)],
+\qquad
+\widetilde\chi_i=D_\chi^{-1}(\chi_i-\bar\chi).
+\label{eq:Sstandardization}
+\end{equation}
+Here $D_\chi=\diag(\sigma_{\chi,1},\ldots,\sigma_{\chi,n_\chi})$ contains the response scales from Equation~\eqref{eq:Ssd}. Rows $\phi_i^\top$ and $\widetilde\chi_i^\top$ form $\Phi$ and $\widetilde Y$, respectively. All bars and diagonal scales refer only to the current fitting set.
+
+Development rows are permuted once from state 271828 and divided consecutively into five folds of 160. For each fold and each strictly positive ridge candidate
+\begin{equation}
+\mathcal R_{\rm ridge}=\{10^{-8},10^{-7},10^{-6},10^{-5},10^{-4},10^{-3},10^{-2},10^{-1},1,10,100\},
+\end{equation}
+all input, monomial, and response centers and population standard deviations are recomputed from the 640 fitting rows. A coordinate is accepted only if
+\begin{equation}
+\operatorname{sd}_{\mathcal I}(v)>10^{-12}\max(1,\max_{i\in\mathcal I}|v_i|).
+\end{equation}
+The leading intercept is exempt. Failure for any required coordinate stops model development rather than silently dropping a response or monomial.
+
+For fold $k$, raw validation score is
+\begin{equation}
+R_k(\gamma_{\rm R})=\left[\frac{1}{160n_\chi}
+\sum_{i\in\mathcal I_k^{\rm val}}\left\|D_{\chi,-k}^{-1}\left(\chi_i-\chi_{{\rm raw},-k,\gamma_{\rm R}}(\vartheta_i,x_i)\right)\right\|_2^2\right]^{1/2}.
+\end{equation}
+Let $\overline R(\gamma_{\rm R})=5^{-1}\sum_{k=1}^5R_k(\gamma_{\rm R})$ and
+\begin{equation}
+SE(\gamma_{\rm R})=
+\left[\frac{1}{5(5-1)}\sum_{k=1}^5
+\{R_k(\gamma_{\rm R})-\overline R(\gamma_{\rm R})\}^2\right]^{1/2}.
+\end{equation}
+If $\gamma_{\rm R,min}$ minimizes the mean, the selected value is the largest candidate satisfying
+\begin{equation}
+\overline R(\gamma_{\rm R})\le\overline R(\gamma_{\rm R,min})+SE(\gamma_{\rm R,min}).
+\end{equation}
+An exact tie uses the larger $\gamma_{\rm R}$. This is the one-standard-error rule \citep{Hastie2009}. Because the rows originate from a randomized Latin hypercube rather than an iid sample, $SE$ is used only as a descriptive fold-stability rule, not as inferential sampling uncertainty. Projection errors and correction magnitudes are retained for every fold but do not select the parameter.
+
+The final model is fitted on all 800 development rows with the selected value. Ridge regression is solved by a column-pivoted QR factorization of the augmented system
+\begin{equation}
+\underbrace{\begin{bmatrix}\Phi\\\sqrt{800\gamma_{\rm R}}\,R_\phi\end{bmatrix}}_{\displaystyle\Phi_{\rm aug}}C^\top
+\approx\begin{bmatrix}\widetilde Y\\0\end{bmatrix},\qquad R_\phi=\diag(0,1,\ldots,1),
+\end{equation}
+The positive penalty and the nonzero intercept column make the penalized normal matrix positive definite; full rank of the unregularized $\Phi$ is therefore not required. Let $C_{\rm QR}$ and $C_{\rm SVD}$ be the two coefficient solutions, use $\|C\|_{\max}:=\max_{ab}|C_{ab}|$ for a coefficient matrix, and let $\kappa_{\rm aug}=\operatorname{cond}_2(\Phi_{\rm aug})$. Development stops if $\kappa_{\rm aug}\epsilon_{\rm mach}>10^{-8}$ or if
+\begin{equation}
+\frac{\|C_{\rm QR}-C_{\rm SVD}\|_{\max}}
+{1+\max(\|C_{\rm QR}\|_{\max},\|C_{\rm SVD}\|_{\max})}
+>100\,\kappa_{\rm aug}\epsilon_{\rm mach}.
+\label{eq:Scoefaudit}
+\end{equation}
+Define
+\begin{equation}
+M_{\rm R}=\Phi^\top\Phi+800\gamma_{\rm R}R_\phi^\top R_\phi,\qquad
+\operatorname{df}_{\rm R}=\operatorname{tr}(\Phi M_{\rm R}^{-1}\Phi^\top).
+\label{eq:Sridgedf}
+\end{equation}
+The condition number, audit residual, and $\operatorname{df}_{\rm R}$ are reported because each fold has 640 rows for 406 columns.
+
+\section{Physical-projection construction and acceptance}
+
+For equality row $r$, let $\mathcal T_{ir}^{(b)}$ be the signed physical terms at development row $i$ before cancellation. For an inequality row, define $\mathcal T_{ir}^{(g)}$ analogously. Row scales are
+\begin{align}
+(D_b)_{rr}&=\max\left\{\operatorname{unit}_r^{(b)},\left[\frac1{800}\sum_i\frac1{|\mathcal T_{ir}^{(b)}|}\sum_{t\in\mathcal T_{ir}^{(b)}}t^2\right]^{1/2}\right\},\\
+(D_g)_{rr}&=\max\left\{\operatorname{unit}_r^{(g)},\left[\frac1{800}\sum_i\frac1{|\mathcal T_{ir}^{(g)}|}\sum_{t\in\mathcal T_{ir}^{(g)}}t^2\right]^{1/2}\right\}.
+\end{align}
+Here $\operatorname{unit}_r^{(b)}$ and $\operatorname{unit}_r^{(g)}$ denote one unit in the corresponding row's physical units. These scales are not residual scales and remain positive even when mechanistic balances close exactly.
+
+Write the right-hand side of the projection equalities as $\mathfrak b(\vartheta,x)$, consistently with the main article. The standardized projection matrices are
+\begin{equation}
+\mathsf E=D_b^{-1}\mathcal H D_\chi,\quad
+e=D_b^{-1}(\mathfrak b-\mathcal H\chi_{\rm raw}),
+\end{equation}
+\begin{equation}
+\mathsf G_u=\begin{bmatrix}-I_{n_\chi}\\D_g^{-1}\mathcal GD_\chi\end{bmatrix},\qquad
+g=\begin{bmatrix}D_\chi^{-1}\chi_{\rm raw}\\-D_g^{-1}\mathcal G\chi_{\rm raw}\end{bmatrix}.
+\end{equation}
+Thus the QP is $\min_u\|u\|_2^2/2$ subject to $\mathsf Eu=e$ and $\mathsf G_u u\le g$. The equality matrix must have numerical row rank $n_h$; in the case study $n_h=77$. Set $\tau_{\rm act}=10^{-7}$ and define the numerical active set
+\begin{equation}
+\mathcal A_Q(u)=\{j:(\mathsf G_u u-g)_j\ge-\tau_{\rm act}\}.
+\label{eq:SQPactive}
+\end{equation}
+After solving for $u$, set every inactive inequality multiplier to zero and recover the remaining multipliers from
+\begin{equation}
+\min_{\alpha,\,\beta\ge0}
+\left\|u+\mathsf E^\top\alpha+
+\mathsf G_{u,\mathcal A_Q}^\top\beta\right\|_2^2,
+\qquad
+\lambda^{=}=\alpha,\quad
+\lambda_{\mathcal A_Q}^{\le}=\beta.
+\label{eq:SQPmultiplier}
+\end{equation}
+If the least-squares minimizer is not unique, the minimum-Euclidean-norm multiplier pair is used. Thus the dual audit is reconstructed from the reported primal point and matrices rather than inherited from a solver-specific sign convention. A QP result is accepted only if all arrays are finite and
+\begin{equation}
+r_E,r_G,r_{stat},r_{dual},r_{comp}\le10^{-8},\qquad r_+\le10^{-10},
+\end{equation}
+where
+\begin{align}
+r_E&=\|\mathsf Eu-e\|_\infty,&r_G&=\|\pos{D_g^{-1}\mathcal G\widehat\chi}\|_\infty,\\
+r_+&=\|\pos{-D_\chi^{-1}\widehat\chi}\|_\infty,&
+r_{dual}&=\|\pos{-\lambda^{\le}}\|_\infty,\\
+r_{stat}&=\max_k\frac{|u_k+(\mathsf E^\top\lambda^{=})_k+
+(\mathsf G_u^\top\lambda^{\le})_k|}
+{1+|u_k|+|(\mathsf E^\top\lambda^{=})_k|+
+|(\mathsf G_u^\top\lambda^{\le})_k|},\\
+r_{comp}&=\|\lambda^{\le}\odot(g-\mathsf G_u u)\|_\infty.
+\end{align}
+Every final candidate is resolved from a cold start and these residuals are recomputed independently.
+
+For completeness, the engineering rows are evaluated without unsafe trial-point division. Let
+\begin{equation}
+M_X=\sum_{i=1}^{N}V_i t_X^\top c_i+\sum_{\ell=1}^{L}V_{{\rm cl},\ell}s_\ell,
+\qquad B_X=t_X^\top g_E+\frac{w}{q_U}t_X^\top g_U.
+\end{equation}
+Because $Q_0B_X$ is the external solids loss rate, the SRT bounds $T_{\rm SRT}^L$ and $T_{\rm SRT}^U$ are imposed as
+\begin{equation}
+T_{\rm SRT}^LQ_0B_X-M_X\le0,\qquad
+M_X-T_{\rm SRT}^UQ_0B_X\le0,\qquad B_X\ge B_X^{\min}>0.
+\end{equation}
+The case uses $B_X^{\min}=1$ g TSS m$^{-3}$, so the mass-rate guard in the main article is $\epsilon_X=Q_0B_X^{\min}$. The remaining rows are
+\begin{equation}
+\frac{10^{-3}Q_0q_Ct_X^\top c_N}{A_{\rm cl}}\le100,\qquad
+\frac{t_X^\top g_U}{q_U}\le15{,}000,\qquad t_X^\top c_N\ge1,
+\end{equation}
+in their units stated in the main article. SOR is only reported because $Q_0q_E/A_{\rm cl}\le20$ is redundant throughout the case box.
+
+The upper trust diagnostics are now explicit. The correction diagnostic is
+\begin{equation}
+\kappa_{\rm corr}^2=\frac{u^\top u}{n_\chi}.
+\end{equation}
+Using the final-fit matrix $M_{\rm R}$ from Equation~\eqref{eq:Sridgedf}, regularized feature leverage at a proposed input is
+\begin{equation}
+\ell_{\rm R}(\vartheta,x)=\phi(\vartheta,x)^\top M_{\rm R}^{-1}\phi(\vartheta,x).
+\end{equation}
+The convex projection intentionally permits particulate components to have different recoveries, whereas the reduced mechanistic Clarifier assumes one common particulate composition. A denominator-free diagnostic of that relaxation is
+\begin{equation}
+r_{\rm split}=D_{\rm split}^{-1}
+\left[(t_X^\top c_N)E_Xg_U-(t_X^\top g_U)E_Xc_N\right],
+\qquad \kappa_{\rm split}^2=\frac{r_{\rm split}^\top r_{\rm split}}{F_X},
+\end{equation}
+For particulate coordinate $j$, write $p_{ij}^{(1)}=(t_X^\top c_{N,i})(E_Xg_{U,i})_j$ and $p_{ij}^{(2)}=(t_X^\top g_{U,i})(E_Xc_{N,i})_j$. Its positive scale is defined without using the nearly cancelling residual:
+\begin{equation}
+(D_{\rm split})_{jj}=\max\left\{\operatorname{unit}_j^{\rm split},
+\left[\frac1{1600}\sum_{i=1}^{800}
+\{(p_{ij}^{(1)})^2+(p_{ij}^{(2)})^2\}\right]^{1/2}\right\},
+\end{equation}
+where $\operatorname{unit}_j^{\rm split}$ is the product of one unit of TSS concentration and one unit of particulate-component flow concentration. Conservation alone is not a kinetic test, so the projected reactors are also substituted into the smooth rate equations. With $\rho_{\epsilon}$ defined below, let
+\begin{equation}
+f_{{\rm rxn},\epsilon}=\col\!\left(
+\left\{d_i(c_{i-1}-c_i)+\nu^\top\rho_\epsilon(c_i)
++\omega_i e_{S_O}+\xi_i\right\}_{i=1}^{N}\right),
+\qquad
+\kappa_{\rm rxn}^2=\frac{\|D_{\rm rxn}^{-1}f_{{\rm rxn},\epsilon}\|_2^2}{NF}.
+\end{equation}
+If $f_{{\rm cl},\epsilon}(s;c_N,\vartheta)\in\R^L$ denotes the smooth layer residual defined below, define
+\begin{equation}
+\kappa_{\rm flux}^2=\frac{1}{L}
+\left\|D_{\rm cl}^{-1}f_{{\rm cl},\epsilon}(s;c_N,\vartheta)\right\|_2^2.
+\end{equation}
+For either residual family, let $\mathcal T_{ia}$ be its separately evaluated, volume-scaled physical terms at mechanistic development target $i$ (dilution, reaction, aeration, and addition for a reactor row; incoming flux, outgoing flux, and feed for a Clarifier row). At the final smoothing pair $(\epsilon,\tau_X)=(10^{-8},1\ \mathrm{g\ TSS\ m}^{-3})$, its diagonal scale is
+\begin{equation}
+(D_f)_{aa}=\max\left\{\operatorname{unit}_a,
+\left[\frac1{800}\sum_i\frac1{|\mathcal T_{ia}|}
+\sum_{t\in\mathcal T_{ia}}t^2\right]^{1/2}\right\},
+\qquad D_f\in\{D_{\rm rxn},D_{\rm cl}\},
+\label{eq:Sbalancescales}
+\end{equation}
+where $\operatorname{unit}_a$ is one unit of concentration per day for that row. Equation~\eqref{eq:Sbalancescales} completely specifies the residual scales used by the trust constraints and equivalence audits.
+
+The optimization imposes the differentiable squared forms $\kappa_{\rm corr}^2\le\bar\kappa_{\rm corr}^2$, $\ell_{\rm R}\le\bar\ell$, $\kappa_{\rm split}^2\le\bar\kappa_{\rm split}^2$, $\kappa_{\rm rxn}^2\le\bar\kappa_{\rm rxn}^2$, and $\kappa_{\rm flux}^2\le\bar\kappa_{\rm flux}^2$. The four $\bar\kappa$ limits are nearest-rank 95th percentiles computed from the corresponding out-of-fold projected development predictions, with the reactor and Clarifier quantities evaluated at the final smoothing pair; $\bar\ell$ is the maximum development-row leverage under the final fit. Model development fails if $\bar\kappa_{\rm corr}>0.50$: that case gate prevents the projection from making an RMS repair larger than one-half development response standard deviation. These screens constrain the upper problem; they do not alter the lower projection.
+
+Finite solver tolerance means a generated target need not lie exactly in the ideal projection polyhedron. Let $\mathcal C_i$ denote that polyhedron for row $i$, let $P_{\mathcal C_i}$ denote projection in the norm $\|v\|_{D_\chi^{-1}}:=\|D_\chi^{-1}v\|_2$, and define
+\begin{equation}
+\delta_{{\rm feas},i}=\|D_\chi^{-1}[P_{\mathcal C_i}(\chi_i)-\chi_i]\|_2
+\end{equation}
+for every target. The valid bound
+\begin{equation}
+\|D_\chi^{-1}[\widehat\chi_i-\chi_i]\|_2
+\le \|D_\chi^{-1}[\chi_{{\rm raw},i}-\chi_i]\|_2+\delta_{{\rm feas},i}
+\end{equation}
+is checked for every numerical target. The stronger squared projection inequality is used only if $\delta_{{\rm feas},i}=0$ in exact arithmetic, never merely because the value is small. The untouched-test admission gate also requires all 200 QPs to pass the primal--dual contract and complete-state raw nRMSE to be below one. The latter means that the complete-state root-mean-square error, after coordinatewise development scaling, is less than one development response standard deviation on average; it is a predeclared adequacy gate rather than a comparison with a separately fitted baseline. Failure ends the study without changing $\gamma_{\rm R}$ or refitting.
+
+\section{Surrogate-optimization solution protocol}
+
+The single-level projection certificate uses controls $\vartheta$, displacement $u$, equality multipliers $\lambda^{=}\in\R^{n_h}$, and inequality multipliers $\lambda^{\le}\in\R_+^{n_q}$. It does not introduce one slack variable per inequality. The case therefore contains $7+170+77+196=450$ variables, rather than 646 in an explicit complementarity-and-slack lift.
+
+For primal-feasible $u$ and dual-feasible $\lambda^{\le}$, the non-negative primal--dual gap is
+\begin{equation}
+\Gamma=\tfrac12\|u+\mathsf E^\top\lambda^{=}+\mathsf G_u^\top\lambda^{\le}\|_2^2
++(\lambda^{\le})^\top(g-\mathsf G_u u).
+\end{equation}
+At zero gap, both stationarity and every complementary product vanish by convex strong duality \citep{Boyd2004}. To keep the continuation tolerance comparable when $N$ or $L$ changes, define $\overline\Gamma=\Gamma/(n_\chi+n_q)$. Numerical continuation imposes $0\le\overline\Gamma\le\tau$ for $\tau\in\{10^{-2},10^{-4},10^{-6},10^{-8}\}$, warm-starting each stage from its predecessor.
+
+Nine control starts comprise the box center and eight fixed Latin-hypercube points in the normalized seven-dimensional box, generated from a separately initialized state 271828 stream. This center-plus-space-filling choice is a fixed computational compromise for local-basin exploration and is not presented as coverage of every basin. The lower primal and dual at the first continuation stage come from the projection QP solved to the acceptance tolerances. A continuation stage may use at most 2500 interior-point iterations, algorithmic first and second derivatives of the displayed smooth expressions, adaptive barrier updates, and zero bound relaxation. Derivatives are audited in dimensionless internal coordinates before production and at every selected endpoint. If $\mathfrak f_{\rm audit}$ stacks the objective and constraint functions, a coordinate with two-step clearance from both finite bounds uses $[\mathfrak f_{\rm audit}(v_{\rm int}+\delta_{\rm FD}e_k)-\mathfrak f_{\rm audit}(v_{\rm int}-\delta_{\rm FD}e_k)]/(2\delta_{\rm FD})$. At an active or nearby bound, choose $\varsigma_k\in\{-1,1\}$ to point into the declared domain and use
+\begin{equation}
+\frac{-3\mathfrak f_{\rm audit}(v_{\rm int})
++4\mathfrak f_{\rm audit}(v_{\rm int}+\varsigma_k\delta_{\rm FD}e_k)
+-\mathfrak f_{\rm audit}(v_{\rm int}+2\varsigma_k\delta_{\rm FD}e_k)}
+{2\varsigma_k\delta_{\rm FD}}.
+\label{eq:Sderivativeaudit}
+\end{equation}
+The audit is repeated for $\delta_{\rm FD}\in\{10^{-6},5\times10^{-7}\}$; Hessian columns are checked by applying the same domain-aware rule to the Lagrangian gradient. The largest infinity-norm discrepancy from the corresponding algorithmic column, divided by one plus that column's norm, must not exceed $10^{-5}$ at either step. A failed derivative audit stops the calculation. The final control vector must satisfy the original upper constraints and an independently replayed unrelaxed QP contract.
+
+A final outer refinement solves the projection QP to the acceptance tolerances at every trial control. To make the upper audit independent of units, write each raw physical upper row as a signed sum $\widetilde r_{ir}=\sum_{t\in\mathcal U_{ir}}t$ when it is evaluated at development state $i$. Its frozen diagonal scale is
+\begin{equation}
+(D_{\rm up})_{rr}=\max\left\{\operatorname{unit}_r,
+\left[\frac1{800}\sum_{i=1}^{800}\frac1{|\mathcal U_{ir}|}
+\sum_{t\in\mathcal U_{ir}}t^2\right]^{1/2}\right\},
+\label{eq:Supscale}
+\end{equation}
+where $\operatorname{unit}_r$ is one unit in that row's physical units. Separate submatrices of $D_{\rm up}$ scale raw equalities and inequalities: $a_{\rm up}=D_{{\rm up},=}^{-1}\widetilde a_{\rm up}$ and $c_{\rm up}=D_{{\rm up},\le}^{-1}\widetilde c_{\rm up}$. Trust rows are already dimensionless and receive unit scale; each control-bound row is divided by its positive coordinate span. Thus $a_{\rm up}(\vartheta)=0$ collects any upper equalities, while $c_{\rm up}(\vartheta)\le0$ collects engineering, trust, and control-bound inequalities. Let $D_{\vartheta,{\rm span}}=\diag(\vartheta^U-\vartheta^L)$ contain the positive case-study decision spans and let $\mathcal A_U=\{j:c_{{\rm up},j}\ge-\tau_{\rm act}\}$. Inactive multipliers are set to zero; the unrestricted $\eta_{\rm up}$ and active non-negative $\zeta_{{\rm up},\mathcal A_U}$ minimize
+\begin{equation}
+\left\|D_{\vartheta,{\rm span}}\left[
+\nabla_\vartheta J+J_{a_{\rm up}}^\top\eta_{\rm up}
++J_{c_{\rm up},\mathcal A_U}^\top\zeta_{{\rm up},\mathcal A_U}
+\right]\right\|_2^2,
+\label{eq:Suppermultiplier}
+\end{equation}
+with the minimum-norm multiplier pair selected among ties. Here $J_a$ denotes the Jacobian of constraint vector $a$, not the scalar engineering objective $J$. Every derivative in Equation~\eqref{eq:Suppermultiplier}, and subsequently in $r_{\rm upper}$, is a total derivative with respect to $\vartheta$ through the independently resolved projection QP; the projected response is not held fixed. The reduced upper Lagrangian is
+\begin{equation}
+\mathcal L_U=J(\vartheta,\widehat\chi(\vartheta,x))
++\eta_{\rm up}^\top a_{\rm up}(\vartheta)
++\zeta_{\rm up}^\top c_{\rm up}(\vartheta).
+\end{equation}
+For lower-QP sensitivity, set
+\begin{equation}
+B_Q=\begin{bmatrix}\mathsf E\\\mathsf G_{u,\mathcal A_Q}\end{bmatrix},
+\qquad
+K_Q=\begin{bmatrix}I_{n_\chi}&B_Q^\top\\B_Q&0\end{bmatrix}.
+\label{eq:SQPKKTmatrix}
+\end{equation}
+With the active set held fixed, collect the primal and active multipliers in $v_Q=\col(u,\lambda^{=},\lambda_{\mathcal A_Q}^{\le})$ and the corresponding right-hand side in $b_Q=\col(0_{n_\chi},e,g_{\mathcal A_Q})$. The active KKT equations are therefore
+\begin{equation}
+K_Qv_Q=b_Q,
+\qquad
+K_Q\frac{\partial v_Q}{\partial\vartheta_k}
+=\frac{\partial b_Q}{\partial\vartheta_k}
+-\frac{\partial K_Q}{\partial\vartheta_k}v_Q,
+\quad k=1,\ldots,d_\vartheta.
+\label{eq:SQPKKTsensitivity}
+\end{equation}
+The derivative $dv_Q/d\vartheta$ is accepted only if $\operatorname{rank}_{\rm num}(B_Q)=n_h+|\mathcal A_Q|$, $\kappa_2(K_Q)\epsilon_{\rm mach}\le10^{-8}$, every active multiplier exceeds $\tau_{\rm mult}=10^{-8}$, and domain-aware normalized-control perturbations of magnitude $10^{-6}$ preserve the active set and these multiplier signs. Under those conditions Equation~\eqref{eq:SQPKKTsensitivity} is solved once per control coordinate. The gradient below is the total derivative through the resolved projection QP:
+\begin{equation}
+r_{\rm upper}=\|D_{\vartheta,{\rm span}}\nabla_\vartheta
+\mathcal L_U\|_\infty.
+\end{equation}
+A point is called a first-order KKT-stationary feasible point only if $r_{\rm upper}\le10^{-6}$ and
+\begin{equation}
+\max\{\|a_{\rm up}\|_\infty,\|\pos{c_{\rm up}}\|_\infty\},\quad
+\|\pos{-\zeta_{\rm up}}\|_\infty,\quad
+\|\zeta_{\rm up}\odot c_{\rm up}\|_\infty
+\end{equation}
+are each no greater than $10^{-6}$. An active-set change triggers a fresh QP and derivative reconstruction. Interior controls are additionally perturbed in both directions. If any rank, conditioning, strict-complementarity, or active-set test fails, stationarity is labeled unresolved and the point is reported only as a validated feasible local incumbent. If at least one first-order KKT-stationary feasible candidate exists, the candidate with the smallest independently projected objective is selected. Otherwise, the smallest validated feasible local incumbent is retained and explicitly labeled stationarity-unresolved. A relative $10^{-10}$ objective tie uses lexicographically smaller normalized controls. First-order KKT conditions do not certify a local or global minimum; nonconvexity still precludes a global certificate, and the fate of every start is reported.
+
+\section{Smooth mechanistic NLP and equivalence test}
+
+The direct NLP contains the seven case controls, $n_y=110$ reduced mechanistic states, and one Clarifier-feed auxiliary, for 118 primal variables. The auxiliary is not free: it obeys
+\begin{equation}
+\widetilde X_F=t_X^\top c_N,\qquad
+\widetilde X_F\ge X_F^{\min}=1\ \mathrm{g\ TSS\ m}^{-3}.
+\label{eq:Sfeedaux}
+\end{equation}
+At a feasible point it is exactly the final-reactor TSS. Its lower bound merely keeps the common-composition quotient defined while an NLP iterate is infeasible. Let $\mu_y$ contain development medians and define
+\begin{equation}
+D_y=\diag\!\left(\max\{\operatorname{unit}(y_j),\operatorname{MAD}_{\rm dev}(y_{\cdot j})\}\right)_{j=1}^{n_y},
+\end{equation}
+where $\operatorname{unit}(y_j)$ has the meaning defined above and the unscaled median absolute deviation is
+\begin{equation}
+\operatorname{MAD}_{\rm dev}(y_{\cdot j})
+=\operatorname{median}_{i\in\mathcal I_{\rm dev}}
+\left|y_{ij}-\operatorname{median}_{k\in\mathcal I_{\rm dev}}y_{kj}\right|.
+\label{eq:Smad}
+\end{equation}
+No normal-consistency factor is applied. Define also
+\begin{equation}
+\sigma_F=\max\{1\ \mathrm{g\ TSS\ m}^{-3},
+\operatorname{RMS}_{\rm dev}(X_F)\},\qquad
+D_{\rm bal}=\operatorname{blkdiag}(D_{\rm rxn},D_{\rm cl}).
+\label{eq:Sdirectscales}
+\end{equation}
+Here
+\begin{equation}
+\operatorname{RMS}_{\rm dev}(X_F)=
+\left(\frac1{800}\sum_{i\in\mathcal I_{\rm dev}}X_{F,i}^2\right)^{1/2}.
+\label{eq:Sfeedrms}
+\end{equation}
+The internal state variable is $D_y^{-1}(y-\mu_y)$. Reactor and Clarifier residuals use $D_{\rm rxn}$ and $D_{\rm cl}$ defined above. The direct NLP also imposes the same layer envelope as the surrogate route, so neither optimizer can select a profile that target generation would reject.
+
+Only operations that are nonsmooth or have a possible zero denominator are regularized. For a variable with scale $S>0$, define
+\begin{align}
+\operatorname{smax}_{\epsilon,S}(a,b)&=\tfrac12[a+b+\sqrt{(a-b)^2+(\epsilon S)^2}],\\
+\operatorname{smin}_{\epsilon,S}(a,b)&=\tfrac12[a+b-\sqrt{(a-b)^2+(\epsilon S)^2}],\\
+p_{\epsilon,S}(v)&=
+\begin{cases}
+[v+\operatorname{hypot}(v,\epsilon S)]/2,&v\ge0,\\
+(\epsilon S)^2/[2\{\operatorname{hypot}(v,\epsilon S)-v\}],&v<0,
+\end{cases}\\
+\operatorname{sdiv}_{\epsilon,S}(a,b)&=\frac{ab}{b^2+(\epsilon S)^2}.
+\end{align}
+The two branches defining $p_{\epsilon,S}$ are algebraically identical to $(v+\sqrt{v^2+(\epsilon S)^2})/2$, but the negative branch avoids catastrophic cancellation and a spurious numerical zero. The last expression approximates $a/b$ and is used only when $b$ can be zero. For every reactor-state denominator $b$, define the stage-pooled scale
+\begin{equation}
+\operatorname{RMS}_{\rm dev}(b)=
+\left[\frac1{800N}\sum_{i\in\mathcal I_{\rm dev}}\sum_{k=1}^{N}
+b(c_{ik})^2\right]^{1/2},\qquad
+\sigma_b=\max\{\operatorname{unit}(b),\operatorname{RMS}_{\rm dev}(b)\},
+\label{eq:Sdenomrms}
+\end{equation}
+where $\operatorname{unit}(b)$ is one unit of that denominator. The complete smooth kinetic map is defined by
+\begin{align}
+\alpha_{2,\epsilon}&=\operatorname{sdiv}_{\epsilon,\sigma_{NOx}}(S_{NO2},S_{NOx}),&
+\alpha_{3,\epsilon}&=\operatorname{sdiv}_{\epsilon,\sigma_{NOx}}(S_{NO3},S_{NOx}),\\
+\alpha_{F,\epsilon}&=\operatorname{sdiv}_{\epsilon,\sigma_{FA}}(S_F,S_F+S_A),&
+\alpha_{A,\epsilon}&=\operatorname{sdiv}_{\epsilon,\sigma_{FA}}(S_A,S_F+S_A),\\
+\Theta_{X,\epsilon}&=\operatorname{sdiv}_{\epsilon,\sigma_{hyd}}
+(X_SX_H,K_XX_H+X_S),\\
+\Psi_{PP,\epsilon}&=\operatorname{sdiv}_{\epsilon,\sigma_{PP}}
+(X_{PP}X_{PAO},K_{PP}X_{PAO}+X_{PP}),\\
+\Psi_{PHA,\epsilon}&=\operatorname{sdiv}_{\epsilon,\sigma_{PHA}}
+(X_{PHA}X_{PAO},K_{PHA}X_{PAO}+X_{PHA}).
+\label{eq:Ssmoothkineticshares}
+\end{align}
+Here $\sigma_{NOx}$, $\sigma_{FA}$, $\sigma_{hyd}$, $\sigma_{PP}$, and $\sigma_{PHA}$ are the Equation~\eqref{eq:Sdenomrms} scales of the respective second arguments. To smooth the storage-capacity switch without first dividing by $X_{PAO}$, define
+\begin{equation}
+\Delta_{PP,\epsilon}=p_{\epsilon,\sigma_{cap}}(K_{\max}X_{PAO}-X_{PP}),
+\qquad
+c_{PP,\epsilon}=\frac{\Delta_{PP,\epsilon}}
+{K_{IPP}X_{PAO}+\Delta_{PP,\epsilon}},
+\label{eq:Ssmoothcapacity}
+\end{equation}
+where
+\begin{equation}
+\sigma_{cap}=\max\{1\ \mathrm{g\ P\ m}^{-3},
+\operatorname{RMS}_{\rm dev}(K_{\max}X_{PAO}-X_{PP})\},
+\end{equation}
+using the same $800N$ stage pooling as Equation~\eqref{eq:Sdenomrms}. The vector $\rho_\epsilon(c_i)$ is obtained from the 28 displayed rate laws by replacing $(\alpha_2,\alpha_3,\alpha_F,\alpha_A)$ by their smooth versions, every product $\theta_XX_H$ by $\Theta_{X,\epsilon}$, every product $\psi_{PP}X_{PAO}$ by $\Psi_{PP,\epsilon}$, every product $\psi_{PHA}X_{PAO}$ by $\Psi_{PHA,\epsilon}$, and $c_{PP}$ by $c_{PP,\epsilon}$. All Monod factors with strictly positive half-saturation denominators remain exact. This cancellation-safe construction makes every zero-denominator substitution explicit, including $X_{PAO}=0$.
+
+Quantities with positive hydraulic guards use their ordinary quotient: in particular $c_E=g_E/q_E$, $c_U=g_U/q_U$, and the direct-NLP common particulate fraction $E_Xc_N/\widetilde X_F$ use $q_E>0$, $q_U>0$, and Equation~\eqref{eq:Sfeedaux}. This avoids an undefined trial-point quotient while preserving $t_X^\top c_{{\rm cl},\ell}=s_\ell$ exactly at every feasible point. In every smooth Clarifier expression below, $X_F$ is therefore replaced by $\widetilde X_F$ when the expression is evaluated inside the direct NLP.
+
+For a layer-indexed development quantity $a_{i\ell}$, define
+\begin{equation}
+\operatorname{RMS}_{i,\ell}(a)=
+\left[\frac1{800L}\sum_{i\in\mathcal I_{\rm dev}}\sum_{\ell=1}^{L}a_{i\ell}^2\right]^{1/2}.
+\end{equation}
+The smoothing scales are then fixed from the development block:
+\begin{equation}
+S_X=\max\{1,\operatorname{RMS}_{i,\ell}|s_{i\ell}-f_{ns}X_{F,i}|\},\quad
+S_v=\max\{1,v_0^{\max}\},\quad
+S_J=\max\{1,\operatorname{RMS}_{i,\ell}j_s(s_{i\ell};X_{F,i})\}.
+\label{eq:Ssmoothscales}
+\end{equation}
+Their units are, respectively, g TSS m$^{-3}$, m d$^{-1}$, and g TSS m$^{-2}$ d$^{-1}$. The smooth settling velocity is constructed in three visible steps:
+\begin{align}
+\Delta_\epsilon(s)&=p_{\epsilon,S_X}(s-f_{ns}\widetilde X_F),\\
+v_{\rm raw,\epsilon}(s)&=v_0\{e^{-r_h\Delta_\epsilon(s)}-e^{-r_p\Delta_\epsilon(s)}\},\\
+v_{s,\epsilon}(s)&=\operatorname{smax}_{\epsilon,S_v}
+\{0,\operatorname{smin}_{\epsilon,S_v}(v_0^{\max},v_{\rm raw,\epsilon}(s))\},
+\end{align}
+and $j_{s,\epsilon}(s)=s v_{s,\epsilon}(s)\ge0$. This construction prevents exponential overflow and negative settling velocity at trial points.
+
+The discontinuous receiver threshold uses a $C^2$ transition of half-width $\tau_X=1$ g TSS m$^{-3}$:
+\begin{equation}
+w_X(s)=\begin{cases}
+0,&s\le X_t-\tau_X,\\
+6\upsilon_X^5-15\upsilon_X^4+10\upsilon_X^3,&X_t-\tau_X<s<X_t+\tau_X,\\
+1,&s\ge X_t+\tau_X,
+\end{cases}\quad
+\upsilon_X=\frac{s-X_t+\tau_X}{2\tau_X}.
+\end{equation}
+The square-root smooth minimum can itself be slightly negative when one non-negative argument is zero. The receiver limiter therefore applies a final smooth positive part:
+\begin{equation}
+j_{{\rm lim},\epsilon}(s_u,s_d)=[1-w_X(s_d)]j_{s,\epsilon}(s_u)+w_X(s_d)
+p_{\epsilon,S_J}\!\left(\operatorname{smin}_{\epsilon,S_J}
+[j_{s,\epsilon}(s_u),j_{s,\epsilon}(s_d)]\right).
+\end{equation}
+It replaces $j^{\rm set}$ in the otherwise unchanged advective and layer balances. The complete smooth residual is
+\begin{equation}
+\begin{aligned}
+f_{\rm sm}=\col\!\Big(&
+\{d_i(c_{i-1}-c_i)+\nu^\top\rho_{\epsilon}(c_i)
++\omega_i e_{S_O}+\xi_i\}_{i=1}^{N},\\
+&\{V_{{\rm cl},\ell}^{-1}[A_{\rm cl}(\mathcal J_{\ell-1/2,\epsilon}-
+\mathcal J_{\ell+1/2,\epsilon})
++\mathbf1_{\{\ell=\ell_F\}}Q_0q_C\widetilde X_F]\}_{\ell=1}^{L}\Big).
+\end{aligned}
+\end{equation}
+
+The final case settings are $\epsilon=10^{-8}$ and $\tau_X=1$ g TSS m$^{-3}$, but they are reached by the paired continuation
+\begin{equation}
+(\epsilon,\tau_X)=(10^{-6},10),\ (10^{-7},3),\ (10^{-8},1).
+\end{equation}
+Because $w_X(X_t)=1/2$ whereas the nonsmooth rule selects one branch, every comparison reports the active receiver branch, the kinetic storage-capacity positive-part branch, and the settling-velocity floor, cap, and receiver-flux minimum branches. A point inside a final smoothing band, or with a different smooth/reference branch classification, is not used to claim branch equivalence; its discrepancy is reported directly.
+
+The direct NLP uses the same nine control starts as the surrogate route. Define a generic positive initialization map from a non-negative base state $y_{\rm base}$:
+\begin{equation}
+y_j^{(0)}=\max\{y_{{\rm base},j},10^{-8}\operatorname{unit}(y_j)\},\qquad
+\widetilde X_F^{(0)}=\max\{X_F^{\min},t_X^\top c_N^{(0)}\}.
+\label{eq:Sdirectstart}
+\end{equation}
+For optimization, $y_{\rm base}$ is the target at the development row $i^\star$ minimizing
+\begin{equation}
+\left\|D_{\vartheta,{\rm fit}}^{-1}(\vartheta^{(0)}-\vartheta_i)\right\|_2^2+
+\left\|D_{x,{\rm fit}}^{-1}(x-x_i)\right\|_2^2,
+\qquad i\in\mathcal I_{\rm dev},
+\label{eq:Sneareststate}
+\end{equation}
+where the scales come from the final 800-row development fit and an exact tie uses the smaller development-row index. The floor affects only initialization, not the equations. Solver settings and derivative audits match the surrogate route, and the paired smoothing continuation is used for every start.
+
+The direct route has its own independently recomputed KKT contract. Let $p_M=\col(\vartheta,y,\widetilde X_F)$ and
+\begin{equation}
+D_M=\operatorname{blkdiag}(D_{\vartheta,{\rm span}},D_y,\sigma_F),\qquad
+a_M(p_M)=\col\!\left(D_{\rm bal}^{-1}f_{\rm sm},
+\frac{\widetilde X_F-t_X^\top c_N}{\sigma_F},a_{\mathcal V}(\vartheta)\right).
+\label{eq:Sdirecteq}
+\end{equation}
+Here $a_{\mathcal V}$ contains any scaled stage-allocation equality in the operating set $\mathcal V$ and is empty in the present case. Let $D_{\rm env}$ and $D_{\rm eng,red}$ be the relevant frozen row-scale submatrices from Equation~\eqref{eq:Supscale}, and let $c_{\mathcal V}(\vartheta)\le0$ contain any already scaled non-box inequalities in $\mathcal V$. The complete direct inequality stack, with every row written in the $\le0$ convention, is
+\begin{equation}
+\begin{aligned}
+c_M(p_M)=\col\big(&D_{\rm env}^{-1}g_{\rm env}(y),
+D_{\rm eng,red}^{-1}g_{\rm eng,red}[\vartheta,\chi(\vartheta,x,y,\widetilde X_F)],
+-D_y^{-1}y,\\
+&[X_F^{\min}-\widetilde X_F]/\sigma_F,
+D_{\vartheta,{\rm span}}^{-1}(\vartheta^L-\vartheta),
+D_{\vartheta,{\rm span}}^{-1}(\vartheta-\vartheta^U),
+c_{\mathcal V}(\vartheta)\big)\le0.
+\end{aligned}
+\label{eq:Sdirectineq}
+\end{equation}
+The feed-TSS row is omitted from $g_{\rm eng,red}$ because Equation~\eqref{eq:Sfeedaux} imposes the identical restriction; retaining both would duplicate an active constraint. Define the direct-route objective without overloading its arguments by
+\begin{equation}
+J_M(p_M;x,\varpi)=J[\vartheta,\chi(\vartheta,x,y,\widetilde X_F);\varpi].
+\label{eq:Sdirectobjective}
+\end{equation}
+Let $\mathcal A_M=\{j:c_{M,j}\ge-\tau_{\rm act}\}$. Set inactive multipliers to zero and recover unrestricted $\eta_M$ and active non-negative $\zeta_{M,\mathcal A_M}$ by minimizing
+\begin{equation}
+\left\|D_M\left[
+\nabla_{p_M}J_M+J_{a_M}^\top\eta_M+
+J_{c_M,\mathcal A_M}^\top\zeta_{M,\mathcal A_M}
+\right]\right\|_2^2,
+\label{eq:Sdirectmultiplier}
+\end{equation}
+again selecting the minimum-norm multiplier pair among ties. The direct Lagrangian is
+\begin{equation}
+\mathcal L_M=J_M(p_M;x,\varpi)+\eta_M^\top a_M(p_M)+\zeta_M^\top c_M(p_M),\qquad
+r_{M,{\rm stat}}=\|D_M\nabla_{p_M}\mathcal L_M\|_\infty.
+\label{eq:Sdirectlag}
+\end{equation}
+A direct candidate is called first-order KKT-stationary and feasible only if
+\begin{equation}
+\|a_M\|_\infty\le10^{-8},\quad
+\|\pos{c_M}\|_\infty\le10^{-6},\quad
+r_{M,{\rm stat}}\le10^{-6},
+\label{eq:Sdirectprimal}
+\end{equation}
+and the dimensionless dual-feasibility and complementarity residuals
+\begin{equation}
+\|\pos{-\zeta_M}\|_\infty,\qquad
+\|\zeta_M\odot c_M\|_\infty
+\label{eq:Sdirectdual}
+\end{equation}
+are each no greater than $10^{-6}$. These quantities are recalculated from the reported physical variables, rather than copied from a solver status. If at least one candidate passes, the passing candidate with the smallest independently recomputed objective is selected. If none passes but a validated feasible candidate exists, the best such candidate is retained and explicitly labeled stationarity-unresolved. The relative $10^{-10}$ tie rule and lexicographic normalized-control tie-break used for the surrogate route also apply. First-order KKT stationarity is not described as proof of local or global optimality.
+
+Smooth--reference equivalence is evaluated on the 200 untouched test inputs and every available selected decision from the nominal and ten scenario cases, for at most 22 selected decisions. The actual denominator is reported, and a failed route contributes no invented decision. At each fixed $(\vartheta,x)$, the two influent-defined initializations in the generation section are used in turn as $y_{\rm base}$ in Equation~\eqref{eq:Sdirectstart}, and the smooth equalities are solved through the full continuation; neither the reference endpoint nor an optimization endpoint is used as a warm start. Throughout each continuation solve, $y\ge0$ and $\widetilde X_F\ge X_F^{\min}$ are solver-maintained simple bounds and $g_{\rm env}(y)\le0$ is enforced. Each endpoint must additionally pass its own residual check. The two smooth endpoints must have identical branch classifications and satisfy
+\begin{equation}
+\max\left\{\|D_y^{-1}(y_{\rm sm}^{(1)}-y_{\rm sm}^{(2)})\|_\infty,
+\frac{|\widetilde X_{F,\rm sm}^{(1)}-\widetilde X_{F,\rm sm}^{(2)}|}{\sigma_F}\right\}\le10^{-6}.
+\label{eq:Ssmoothroots}
+\end{equation}
+At every selected mechanistic-NLP decision, the independently obtained fixed-input smooth endpoint must also satisfy
+\begin{equation}
+\max\left\{\|D_y^{-1}(y_{\rm sm}-y_M)\|_\infty,
+\frac{|\widetilde X_{F,\rm sm}-\widetilde X_{F,M}|}{\sigma_F}\right\}\le10^{-6}
+\label{eq:Soptimizerroot}
+\end{equation}
+with the same branch classification as the optimizer state. This additional check prevents a different smooth root at the same controls from being used to validate the optimized root.
+
+For a smooth endpoint and its independently converged nonsmooth reference endpoint, define the own-model and cross-model residuals
+\begin{align}
+r_{\rm own,sm}&=\max\left\{\|D_{\rm bal}^{-1}f_{\rm sm}
+(\vartheta,x,y_{\rm sm},\widetilde X_{F,\rm sm})\|_\infty,
+\frac{|\widetilde X_{F,\rm sm}-t_X^\top c_{N,\rm sm}|}{\sigma_F}\right\},\notag\\
+r_{\rm own,ref}&=\|D_{\rm bal}^{-1}f_{\rm ref}(\vartheta,x,y_{\rm ref})\|_\infty,\notag\\
+r_{\rm cross}&=\max\left\{
+\|D_{\rm bal}^{-1}f_{\rm ref}(\vartheta,x,y_{\rm sm})\|_\infty,
+\|D_{\rm bal}^{-1}f_{\rm sm}(\vartheta,x,y_{\rm ref},t_X^\top c_{N,\rm ref})\|_\infty
+\right\}.
+\label{eq:Scrossresidual}
+\end{align}
+Both own-model residuals must be no greater than $10^{-8}$, and $r_{\rm cross}\le10^{-5}$. The cross check asks whether each accepted state nearly satisfies the other formulation; it complements, rather than replaces, direct state comparison.
+
+Reference BDF replay always uses both influent-defined mechanistic starts, never a smooth or optimization solution, so agreement is not a warm-start artifact. Each reference route must independently pass the balance, non-negativity, domain, stability, and branch checks used for target generation. Its two endpoints must have identical branch classifications and satisfy both
+\begin{equation}
+\|D_{y,{\rm gen}}^{-1}(y_{\rm ref}^{(1)}-y_{\rm ref}^{(2)})\|_\infty\le10^{-6},
+\qquad
+\|D_y^{-1}(y_{\rm ref}^{(1)}-y_{\rm ref}^{(2)})\|_\infty\le10^{-6}.
+\label{eq:Sreplayroots}
+\end{equation}
+Failure of either route makes that replay unresolved and is retained in the failure accounting. Let $\chi_{\rm sm}$ and $\chi_{\rm ref}$ be the complete reconstructed responses at the accepted smooth and reference endpoints, and set $J_{\rm sm}=J(\vartheta,\chi_{\rm sm};\varpi)$ and $J_{\rm ref}=J(\vartheta,\chi_{\rm ref};\varpi)$. Let $q_{\rm eng}$ collect SRT, SOR, SLR, underflow TSS, feed TSS, and external solids loss in their reported units. In addition to the state and residual metrics, define
+\begin{equation}
+r_J=\frac{|J_{\rm sm}-J_{\rm ref}|}{\max(1,|J_{\rm ref}|)},\qquad
+r_{\rm eng}=\max_r\frac{|q_{{\rm eng},r}^{\rm sm}-q_{{\rm eng},r}^{\rm ref}|}
+{\max\{\operatorname{unit}(q_{{\rm eng},r}),|q_{{\rm eng},r}^{\rm ref}|\}},
+\end{equation}
+where $\operatorname{unit}(q_{{\rm eng},r})$ is one unit of engineering quantity $r$. The study records scaled RMS and infinity state discrepancies, $r_J$, $r_{\rm eng}$, every branch classification, continuation changes, and feasibility classification. Any failure of the manuscript tolerances is reported casewise and prevents an unqualified numerical-equivalence claim.
+For the case-study equivalence gate, both $r_J$ and $r_{\rm eng}$ must be no greater than $10^{-6}$, in addition to the two state tolerances in the main article.
+
+\section{Prediction, decision, and timing metrics}
+
+For response block $\mathcal B$, sample count $n$, and prediction method $\mathfrak m\in\{{\rm raw},{\rm proj},{\rm sm}\}$, let $\sigma_{\chi,j}=(D_\chi)_{jj}$ and define
+\begin{align}
+\mathrm{nRMSE}^{(\mathfrak m)}_{\mathcal B}&=\left[\frac1{n|\mathcal B|}\sum_{i=1}^n\sum_{j\in\mathcal B}
+\left(\frac{\chi_{ij}^{(\mathfrak m)}-\chi_{ij}^{\rm ref}}{\sigma_{\chi,j}}\right)^2\right]^{1/2},\\
+\mathrm{nMAE}^{(\mathfrak m)}_{\mathcal B}&=\frac1{n|\mathcal B|}\sum_{i=1}^n\sum_{j\in\mathcal B}
+\left|\frac{\chi_{ij}^{(\mathfrak m)}-\chi_{ij}^{\rm ref}}{\sigma_{\chi,j}}\right|.
+\end{align}
+Bias and $R^2$ are calculated coordinatewise. Blocks are mixer, reactors 1--$N$ separately, overflow flows, underflow flows, layers, complete Clarifier, and complete state. Physical-unit metrics are additionally reported for stage DO/TN/TP/TSS and Clarifier outlet COD/TN/TP/TSS, layer TSS, and inventory.
+
+At each selected decision, prediction error and decision comparison remain distinct. Raw, projected, smooth, and reference states are all evaluated at both $\vartheta_S$ and $\vartheta_M$. The objective-prediction error of the surrogate route is $J(\vartheta_S,\widehat\chi_S)-J(\vartheta_S,\chi_{{\rm ref},S})$. The signed local-incumbent difference is $J(\vartheta_S,\chi_{{\rm ref},S})-J(\vartheta_M,\chi_{{\rm ref},M})$. Neither is called regret because neither optimization route has a global certificate.
+
+Timing uses a monotonic high-resolution clock and identical numerical-thread allocation. Five untimed warmups precede 30 timed batches for each inference route. One raw batch evaluates feature construction and all 200 untouched-test raw predictions once in fixed row order. One projection batch takes those cached raw predictions and solves exactly one physical QP for each of the same 200 rows; raw-regression time is therefore not counted again in the QP-only statistic. Per-response latency is the batch time divided by 200. Optimization timings include all nine starts, continuation stages, final refinements, and independent endpoint audits. The reported casewise ratio is complete mechanistic-route wall time divided by complete surrogate-route wall time, so a value above one favors the surrogate route. The report gives count, total, mean, median, interquartile range, nearest-rank 95th percentile, and maximum for raw inference, QP deployment, surrogate optimization, mechanistic NLP, and reference replay. Dataset generation and training are reported separately as one-time costs.
+
+\section{Required reporting tables and failure accounting}
+
+The journal record contains:
+\begin{enumerate}
+\item foldwise ridge scores, selected $\gamma_{\rm R}$, penalized-system condition number, effective degrees of freedom, and coefficient audit;
+\item raw and projected test metrics for every response block and coordinate;
+\item projection feasibility, correction, leverage, particulate-recovery, reactor-residual, and Clarifier-flux diagnostics;
+\item nominal raw, projected, smooth, and reference stage/Clarifier profiles;
+\item ten casewise scenario rows for both optimization routes and reference replays;
+\item smooth--reference equivalence metrics for all prescribed points;
+\item solver outcomes, active constraints, objective decomposition, and timing; and
+\item a failure table whose denominator includes every nominal or sensitivity case.
+\end{enumerate}
+An unobserved failure class is retained with count zero. The first applicable class is: no accepted optimization start; projection failure; reference integration failure; residual or reduced-stability failure; engineering infeasibility; smooth-branch disagreement; upper-stationarity failure; or validated result. Downstream diagnostics are retained whenever finite even after the first failed check.
+
+\begin{thebibliography}{00}
+\bibitem[Boyd and Vandenberghe(2004)]{Boyd2004}
+Boyd, S., Vandenberghe, L., 2004. Convex Optimization. Cambridge University Press.
+
+\bibitem[Hastie et~al.(2009)Hastie, Tibshirani, and Friedman]{Hastie2009}
+Hastie, T., Tibshirani, R., Friedman, J., 2009. The Elements of Statistical Learning, second ed. Springer.
+
+\bibitem[Henze et~al.(2006)Henze, Gujer, Mino, and van Loosdrecht]{Henze2006}
+Henze, M., Gujer, W., Mino, T., van Loosdrecht, M.C.M., 2006. Activated Sludge Models ASM1, ASM2, ASM2d and ASM3. IWA Publishing.
+
+\bibitem[McKay et~al.(1979)McKay, Beckman, and Conover]{McKay1979}
+McKay, M.D., Beckman, R.J., Conover, W.J., 1979. A comparison of three methods for selecting values of input variables in the analysis of output from a computer code. Technometrics 21, 239--245.
+
+\bibitem[Tak\'acs et~al.(1991)Tak\'acs, Patry, and Nolasco]{Takacs1991}
+Tak\'acs, I., Patry, G.G., Nolasco, D., 1991. A dynamic model of the clarification-thickening process. Water Research 25, 1263--1271.
+\end{thebibliography}
+
+\end{document}

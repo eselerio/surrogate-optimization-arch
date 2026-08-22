@@ -1,28 +1,30 @@
-# Recycling mixer–reactor–clarifier activated sludge optimization
+# Optimization of a Recycling Mixer-Reactor-Clarifier Activated Sludge System Using a Physically-Constrained Statistical Surrogate
 
-This repository contains the executable study for **“Optimization of a Recycling Mixer-Reactor-Clarifier Activated Sludge System Using a Physically-Constrained Statistical Surrogate.”** The canonical entry points are [main_closed_loop.ipynb](main_closed_loop.ipynb) and [scripts/run_closed_loop.py](scripts/run_closed_loop.py). Both use [config/params_closed_loop.json](config/params_closed_loop.json) and the same staged workflow.
+This repository contains the executable study for **“Optimization of a Recycling Mixer-Reactor-Clarifier Activated Sludge System Using a Physically-Constrained Statistical Surrogate.”** The canonical entry points are `main_closed_loop.ipynb` and `scripts/run_closed_loop.py`; both read `config/params_closed_loop.json` and execute the same staged workflow.
 
-The calculation couples five ASM2d-TSN CSTRs, mixed-liquor and return-sludge recycles, sludge wasting, and a ten-layer secondary Clarifier. It generates 170-coordinate mechanistic targets, fits a fixed 351-feature standardized quadratic response, deploys each prediction through a 77-equality/26-inequality physical QP, and performs nominal and influent-robustness optimization with independent mechanistic reference searches.
+The process model couples an inlet mixer, five ASM2d-TSN CSTRs, mixed-liquor and return-sludge recycles, sludge wasting, and a ten-layer secondary Clarifier. A fixed 351-feature quadratic surrogate predicts 170 plant-state coordinates. One sparse nonlinear program jointly optimizes five controls and 110 reactor-and-Clarifier states, reconstructs the complete response, imposes the smooth mechanistic balances, and requires both conformal fidelity and development support. One exact nonsmoothed BDF replay validates the selected decision.
 
 ## Environment
 
-From the repository root, create the locked Python 3.12 environment:
+Create the locked Python 3.12 environment from the repository root:
 
 ```powershell
 uv sync --frozen
 ```
 
-The workflow writes only beneath `results/closed_loop/<run-id>`. A run ID binds the configuration and scientific module hashes. Completed runs are immutable.
+CasADi 3.7.2 supplies automatic derivatives and its bundled IPOPT/MUMPS solver. Scientific outputs are written only below `results/closed_loop/<run-id>`. A run ID binds the configuration, source hashes, dependencies, and random-generator records; a sealed run is immutable.
 
-## Staged 2,000-point verification
+An unsealed run may be resumed. Before reuse, every completed NLP-start and exact-replay artifact is checked against its case, selected candidate, dimensions, and stored digest. Verified artifacts are reused without another scientific solver call, and the persistent invocation record—not an inferred case multiple—supplies realized NLP and BDF counts. Exact fidelity is judged on the same normalized constraint scale as the NLP: `d_BDF / delta - 1` must not exceed the configured normalized feasibility tolerance (currently `1e-8`). Physical projection QPs and DIRECT searches have no executable route and therefore always have zero evaluations.
 
-The `test_2000` profile exercises every scientific stage with exactly 2,000 mechanistic design points, an ordered 1,600/400 development-assessment split, five robustness cases, and reduced search budgets. It is intentionally marked article-ineligible: a 2,000-point Latin hypercube is not a prefix of the independent 20,000-point article design.
+## Staged 2,000-row verification
 
-Choose a new run ID, then execute the notebook:
+The `test_2000` profile uses independent blocks of 1,400 development, 200 calibration, and 400 untouched assessment rows. It runs the nominal case, ten fresh-influent robustness cases, and twelve sensitivity cases. Each case uses nine deterministic starts of the combined NLP and permits one exact validation replay, for a maximum of 207 NLP starts and 2,023 BDF routes. Verification data use streams distinct from the full study and are never reused as article results.
+
+The lightweight `unit` profile uses 420/60/120 rows and one robustness case. Its 14 cases require 126 combined-NLP starts and at most 614 BDF routes.
 
 ```powershell
 $env:CLOSED_LOOP_PROFILE = "test_2000"
-$env:CLOSED_LOOP_RUN_ID = "verify_2000_001"
+$env:CLOSED_LOOP_RUN_ID = "verify_combined_2000_001"
 
 uv run --frozen jupyter nbconvert `
   --to notebook `
@@ -33,58 +35,53 @@ uv run --frozen jupyter nbconvert `
   --ExecutePreprocessor.timeout=-1
 ```
 
-The equivalent command-line execution is:
+The equivalent command-line run is:
 
 ```powershell
 uv run --frozen python scripts\run_closed_loop.py `
   --profile test_2000 `
-  --run-id verify_2000_001 `
+  --run-id verify_combined_2000_001 `
   --through complete
 ```
 
-For explicit checks between long stages, advance the same unsealed run in order:
+For inspection between expensive stages, advance the same unsealed run in order:
 
 ```powershell
-uv run --frozen python scripts\run_closed_loop.py --profile test_2000 --run-id verify_2000_001 --through static
-uv run --frozen python scripts\run_closed_loop.py --profile test_2000 --run-id verify_2000_001 --through pilot
-uv run --frozen python scripts\run_closed_loop.py --profile test_2000 --run-id verify_2000_001 --through dataset
-uv run --frozen python scripts\run_closed_loop.py --profile test_2000 --run-id verify_2000_001 --through assessment
-uv run --frozen python scripts\run_closed_loop.py --profile test_2000 --run-id verify_2000_001 --through complete
+uv run --frozen python scripts\run_closed_loop.py --profile test_2000 --run-id verify_combined_2000_001 --through static
+uv run --frozen python scripts\run_closed_loop.py --profile test_2000 --run-id verify_combined_2000_001 --through pilot
+uv run --frozen python scripts\run_closed_loop.py --profile test_2000 --run-id verify_combined_2000_001 --through dataset
+uv run --frozen python scripts\run_closed_loop.py --profile test_2000 --run-id verify_combined_2000_001 --through fit
+uv run --frozen python scripts\run_closed_loop.py --profile test_2000 --run-id verify_combined_2000_001 --through calibration
+uv run --frozen python scripts\run_closed_loop.py --profile test_2000 --run-id verify_combined_2000_001 --through assessment
+uv run --frozen python scripts\run_closed_loop.py --profile test_2000 --run-id verify_combined_2000_001 --through nlp_preflight
+uv run --frozen python scripts\run_closed_loop.py --profile test_2000 --run-id verify_combined_2000_001 --through optimization
+uv run --frozen python scripts\run_closed_loop.py --profile test_2000 --run-id verify_combined_2000_001 --through report
+uv run --frozen python scripts\run_closed_loop.py --profile test_2000 --run-id verify_combined_2000_001 --through complete
 ```
 
-The pilot stage seals checkpoints at 4, 16, 64, and 256 rows. Dataset generation then resumes without recomputing accepted chunks. Any rejected row stops the workflow and is not resampled.
+The pilot persists checkpoints after 4, 16, 64, and 256 accepted design rows. A failed mechanistic row is not replaced. Later stages likewise stop at their declared numerical or scientific gate rather than silently changing the method. The `report` stage writes an immutable summary with `release_status="provisional_pending_terminal_replay"` and `release_authority="COMPLETED.json is created only after terminal replay and sealing"`. Its tables and figures become final scientific outputs only after terminal algebraic, KKT, and exact-state replay succeeds and the `complete` stage writes the immutable seal and `COMPLETED.json`, where `report_release_status="terminally_sealed"` records release authorization.
 
 ## Full article calculation
 
-The `full` profile uses the manuscript contract: 20,000 mechanistic design rows, an ordered 16,000/4,000 assessment, 100 independent robustness influents, 25,000 surrogate evaluations per case, a 10,000-evaluation nominal mechanistic reference, and 2,500 mechanistic evaluations per robustness case.
+The `full` profile uses 14,000 development, 2,000 independent calibration, and 4,000 untouched assessment rows. It contains 113 optimization cases: nominal, 100 robustness, two additional Clarifier underflow-TSS limits, and ten objective-weight sensitivities. The planned maximum is 1,017 combined-NLP starts and 20,113 BDF routes, with no physical QPs or DIRECT evaluations.
 
 ```powershell
-$env:CLOSED_LOOP_PROFILE = "full"
-$env:CLOSED_LOOP_RUN_ID = "article_closed_loop_001"
-uv run --frozen python scripts\run_closed_loop.py --profile full --run-id article_closed_loop_001 --through complete
+uv run --frozen python scripts\run_closed_loop.py `
+  --profile full `
+  --run-id article_combined_001 `
+  --through complete
 ```
 
-This is a large CPU workload. Run the `test_2000` profile successfully before committing resources to it.
+Run and review `test_2000` before allocating resources to the full calculation.
 
 ## Tests
-
-The tests are deliberately layered around the same boundaries as the workflow:
 
 ```powershell
 uv run --frozen python -m unittest discover -s tests -v
 ```
 
-They cover stoichiometric invariants and kinetics, Clarifier flux and mass closure, loaded and boundary steady states, the exact random design, feature uniqueness and OLS audits, QP/KKT acceptance, deterministic boundary search, artifact round trips, checkpoints, and resume behavior.
+The tests cover the kinetic and stoichiometric model, Clarifier closure, independent random-design blocks, feature serialization and OLS audits, conformal calibration, smooth symbolic parity, combined-NLP IPOPT/KKT acceptance, multistart selection, checkpoints, exact replay classification, and immutable resume behavior.
 
 ## Scientific record
 
-A completed run includes:
-
-- immutable input and generator records;
-- checkpointed mechanistic chunks, row diagnostics, and the consolidated dataset;
-- ordered split metadata, development and production surrogate bundles;
-- raw, affine, and deployed assessment predictions and QP diagnostics;
-- nominal and robustness search archives and mechanistic incumbent comparisons;
-- generated tables, figures, timing summaries, hashes, and `COMPLETED.json`.
-
-A directory without a valid completion seal is an interrupted or failed run, not a finished result set.
+A completed run contains generator states and draw counts; checkpointed mechanistic data; the development-only surrogate; calibration and assessment records; all combined-NLP starts; independent KKT replays; exact BDF validation states; robustness and sensitivity summaries; timings, hashes, figures, and a completion seal. A directory without a valid seal is an interrupted or failed run, not a finished result set.

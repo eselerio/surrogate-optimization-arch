@@ -5,13 +5,13 @@ description = "Reproducible mixer-reactor-clarifier activated-sludge optimizatio
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "casadi==3.7.2",
     "ipykernel>=7.2.0",
     "jupyterlab>=4.5.4",
     "matplotlib>=3.10.8",
     "nbconvert>=7.16.6",
     "numpy>=2.4.3",
     "openpyxl>=3.1.5",
-    "osqp>=1.0.4",
     "pandas>=3.0.1",
     "psutil>=7.2.2",
     "pyarrow>=23.0.1",

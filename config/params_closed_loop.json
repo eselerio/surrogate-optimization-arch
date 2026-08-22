@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "article": {
     "title": "Optimization of a Recycling Mixer-Reactor-Clarifier Activated Sludge System Using a Physically-Constrained Statistical Surrogate",
     "manuscript": "article/wip_v2/manuscript.tex"
@@ -9,64 +9,99 @@
     "profile_environment_variable": "CLOSED_LOOP_PROFILE",
     "run_id_environment_variable": "CLOSED_LOOP_RUN_ID",
     "results_root": "results/closed_loop",
+    "resume_requires_exact_contract_hash": true,
+    "seal_completed_run": true,
     "computational_feasibility": {
-      "mechanistic_preflight_rows": 256,
-      "qp_preflight_rows": 1000,
-      "production_fit_projection_factor": 2.25,
+      "bdf_serial_preflight_rows": 256,
+      "nlp_panel_robustness_cases": 10,
+      "nlp_panel_includes_nominal": true,
+      "nlp_panel_includes_all_sensitivity_cases": true,
+      "robustness_panel_selection": "greedy maximin in configured-span-standardized influent space; initialize with nominal and break exact ties by smallest original row index",
+      "nearest_rank_probability": 0.95,
+      "projection_safety_factor": 1.5,
       "maximum_projected_core_days": 30.0,
-      "memory_allocation_gib": 64.0,
-      "maximum_projected_resident_memory_gib": 51.2
-    },
-    "profiles": {
-      "unit": {
-        "article_eligible": false,
-        "sample_count": 480,
-        "development_count": 400,
-        "assessment_count": 80,
-        "parallel_workers": 2,
-        "generation_checkpoints": [4, 16, 64, 256, 480],
-        "robustness_cases": 1,
-        "surrogate_search_budget": 100,
-        "nominal_mechanistic_search_budget": 20,
-        "robustness_mechanistic_search_budget": 10
-      },
-      "test_2000": {
-        "article_eligible": false,
-        "sample_count": 2000,
-        "development_count": 1600,
-        "assessment_count": 400,
-        "parallel_workers": 12,
-        "generation_checkpoints": [4, 16, 64, 256, 1000, 2000],
-        "robustness_cases": 5,
-        "surrogate_search_budget": 800,
-        "nominal_mechanistic_search_budget": 100,
-        "robustness_mechanistic_search_budget": 50
-      },
-      "full": {
-        "article_eligible": true,
-        "sample_count": 20000,
-        "development_count": 16000,
-        "assessment_count": 4000,
-        "parallel_workers": 12,
-        "generation_checkpoints": [4, 16, 64, 256, 2000, 20000],
-        "robustness_cases": 100,
-        "surrogate_search_budget": 25000,
-        "nominal_mechanistic_search_budget": 10000,
-        "robustness_mechanistic_search_budget": 2500
-      }
+      "reference_host_installed_memory_gib": 31.43,
+      "maximum_projected_resident_memory_gib": 25.0,
+      "projection_is_empirical_not_guaranteed": true
     }
   },
-  "random_design": {
-    "method": "strength-1 Latin hypercube",
-    "generator": "SplitMix64 with unbiased Fisher-Yates permutations",
-    "design_seed": 42,
-    "robustness_seed": 314159,
+  "design": {
+    "generator": "SplitMix64",
+    "development_method": "strength-1 Latin hypercube with unbiased Fisher-Yates permutations",
+    "iid_method": "row-major open-unit iid uniform midpoints",
+    "lhs_jitter_formula": "(U >> 11) / 2^53",
+    "iid_coordinate_formula": "((U >> 12) + 0.5) / 2^52",
+    "require_every_row_accepted": true,
+    "immutable_block_order": ["development", "calibration", "assessment"],
     "dimension_order": [
       "H", "a", "r_I", "r_R", "w",
       "S_O", "S_F", "S_A", "S_NH4", "S_NO2", "S_NO3", "S_N2", "S_PO4", "S_I", "S_ALK",
       "X_I", "X_S", "X_H", "X_PAO", "X_PP", "X_PHA", "X_AOB", "X_NOB", "X_MeP", "X_MeOH"
     ],
-    "require_every_row_accepted": true
+    "profiles": {
+      "unit": {
+        "article_eligible": false,
+        "blocks": {
+          "development": {"count": 420, "seed": 60042, "method": "lhs"},
+          "calibration": {"count": 60, "seed": 60043, "method": "iid_open_uniform"},
+          "assessment": {"count": 120, "seed": 60044, "method": "iid_open_uniform"}
+        },
+        "robustness": {"count": 1, "seed": 600314159, "method": "lhs"},
+        "parallel_workers": 2,
+        "generation_checkpoints": [4, 16, 64, 256, 420, 480, 600]
+      },
+      "test_2000": {
+        "article_eligible": false,
+        "blocks": {
+          "development": {"count": 1400, "seed": 200042, "method": "lhs"},
+          "calibration": {"count": 200, "seed": 200043, "method": "iid_open_uniform"},
+          "assessment": {"count": 400, "seed": 200044, "method": "iid_open_uniform"}
+        },
+        "robustness": {"count": 10, "seed": 2000314159, "method": "lhs"},
+        "parallel_workers": 12,
+        "generation_checkpoints": [4, 16, 64, 256, 1000, 1400, 1600, 2000]
+      },
+      "full": {
+        "article_eligible": true,
+        "blocks": {
+          "development": {"count": 14000, "seed": 42, "method": "lhs"},
+          "calibration": {"count": 2000, "seed": 43, "method": "iid_open_uniform"},
+          "assessment": {"count": 4000, "seed": 44, "method": "iid_open_uniform"}
+        },
+        "robustness": {"count": 100, "seed": 314159, "method": "lhs"},
+        "parallel_workers": 12,
+        "generation_checkpoints": [4, 16, 64, 256, 2000, 14000, 16000, 20000]
+      }
+    }
+  },
+  "workloads": {
+    "unit": {
+      "total_cases": 14,
+      "design_bdf_routes": 600,
+      "exact_validation_bdf_routes_max": 14,
+      "bdf_routes_max": 614,
+      "combined_nlp_starts": 126,
+      "qp_evaluations": 0,
+      "direct_evaluations": 0
+    },
+    "test_2000": {
+      "total_cases": 23,
+      "design_bdf_routes": 2000,
+      "exact_validation_bdf_routes_max": 23,
+      "bdf_routes_max": 2023,
+      "combined_nlp_starts": 207,
+      "qp_evaluations": 0,
+      "direct_evaluations": 0
+    },
+    "full": {
+      "total_cases": 113,
+      "design_bdf_routes": 20000,
+      "exact_validation_bdf_routes_max": 113,
+      "bdf_routes_max": 20113,
+      "combined_nlp_starts": 1017,
+      "qp_evaluations": 0,
+      "direct_evaluations": 0
+    }
   },
   "process": {
     "fresh_flow_m3_per_d": 10000.0,
@@ -142,7 +177,7 @@
     "dynamic_relaxation": {
       "method": "BDF",
       "minimum_horizon_d": 400.0,
-      "waste_sludge_turnovers": 40.0,
+      "waste_sludge_turnovers": 50.0,
       "horizon_formula": "max(minimum_horizon_d, waste_sludge_turnovers / w)",
       "relative_tolerance": 1e-7,
       "scaled_absolute_tolerance": 1e-9,
@@ -155,6 +190,7 @@
     }
   },
   "surrogate": {
+    "fit_block": "development",
     "input_dimension": 25,
     "feature_dimension": 351,
     "target_dimension": 170,
@@ -162,23 +198,31 @@
     "population_standard_deviation_ddof": 0,
     "variance_relative_floor": 1e-12,
     "maximum_design_condition_number": 1e8,
-    "fit_method": "column-pivoted Householder QR",
+    "fit_method": "column-pivoted Householder QR with one iterative-refinement replay",
     "independent_fit_check": "thin SVD",
-    "assessment": {
-      "deployed_state_standardized_rmse_max": 1.0,
-      "correction_to_raw_error_ratio_max": 0.5,
-      "correction_rms_p95_max": 0.5,
-      "nonexpansive_relative_slack": 1e-6
+    "persist_feature_qr_upper": true,
+    "persist_feature_qr_pivots": true,
+    "production_refit": false,
+    "model_selection": false,
+    "calibration": {
+      "block": "calibration",
+      "alpha": 0.05,
+      "quantile_rule": "k=min(n,ceil((n+1)*(1-alpha))); zero_based_index=k-1",
+      "score": "mean squared error over 170 coordinates standardized by development target scales",
+      "delta_min_exclusive": 0.0,
+      "delta_max_inclusive": 1.0
     },
-    "deployment_qp": {
-      "equality_rows": 77,
-      "inequality_rows_excluding_nonnegativity": 26,
-      "absolute_tolerance": 1e-8,
-      "relative_tolerance": 1e-8,
-      "nonnegativity_tolerance": 1e-10,
-      "maximum_iterations": 100000,
-      "polish": true,
-      "cold_retry": true
+    "assessment": {
+      "block": "assessment",
+      "raw_predictions_only": true,
+      "require_all_predictions_finite": true,
+      "complete_state_standardized_rmse_max_exclusive": 1.0,
+      "empirical_coverage_min_inclusive": 0.90,
+      "coverage_is_operational_gate_not_significance_test": true,
+      "reported_state_blocks": [
+        "mixer", "reactor_1", "reactor_2", "reactor_3", "reactor_4", "reactor_5",
+        "overflow_flow", "underflow_flow", "clarifier_layers", "complete_state"
+      ]
     }
   },
   "objective": {
@@ -196,42 +240,106 @@
     "surface_overflow_rate_max_m_d": 20.0,
     "solids_loading_rate_max_kg_m2_d": 100.0,
     "underflow_tss_max_g_m3": 15000.0,
-    "correction_rms_max": 0.5,
-    "particulate_recovery_spread_max": 0.05,
-    "clarifier_flux_residual_max": 0.05,
+    "feed_tss_domain_min_g_m3": 1.0,
+    "boundary_solids_domain_min_g_m3": 1.0,
     "normalized_feasibility_tolerance": 1e-8
   },
   "optimization": {
-    "method": "boundary-augmented DIRECT followed by deterministic multi-basin complete-pattern refinement",
-    "direct_epsilon": 1e-4,
-    "direct_maximum_side": 0.0009765625,
-    "pattern_initial_mesh": 0.0625,
-    "pattern_terminal_mesh": 0.001953125,
-    "basin_separation_linf": 0.125,
-    "surrogate_full": {
-      "total_budget": 25000,
-      "full_box_direct_cap": 18000,
-      "corner_count": 32,
-      "face_count": 10,
-      "new_points_per_face": 300,
-      "minimum_local_budget": 3968,
-      "maximum_local_seeds": 4
+    "method": "single combined physics-constrained statistical NLP",
+    "global_optimality_claim": false,
+    "independent_reference_search": false,
+    "nlp": {
+      "symbolic_system": "CasADi",
+      "solver": "IPOPT",
+      "linear_solver": "MUMPS",
+      "derivatives": "exact automatic first and second derivatives",
+      "mu_strategy": "adaptive",
+      "primal_tolerance": 1e-8,
+      "stationarity_tolerance": 1e-6,
+      "dual_tolerance": 1e-6,
+      "complementarity_tolerance": 1e-6,
+      "tol": 1e-8,
+      "constraint_violation_tolerance": 1e-8,
+      "dual_infeasibility_tolerance": 1e-6,
+      "physical_nonnegativity_tolerance": 1e-10,
+      "maximum_iterations": 2500,
+      "bound_relax_factor": 0.0,
+      "accepted_return_statuses": ["Solve_Succeeded", "Solved_To_Acceptable_Level"],
+      "require_independent_kkt_replay": true,
+      "combined_dimensions": {"variables": 115, "equalities": 110, "general_inequalities": 9}
     },
-    "mechanistic_nominal_full": {
-      "total_budget": 10000,
-      "selected_point_stencil_max": 51,
-      "full_box_direct_cap": 7000,
-      "new_points_per_face": 100,
-      "minimum_local_budget": 1917,
-      "maximum_local_seeds": 4
+    "multistart": {
+      "count": 9,
+      "center_start": [0.5, 0.5, 0.5, 0.5, 0.5],
+      "lhs_start_count": 8,
+      "lhs_seed": 271828,
+      "coordinate_order": ["H", "a", "r_I", "r_R", "w"],
+      "cross_start_warm_start": false,
+      "initialization_floor_factor": 1e-8,
+      "nearest_development_tie_break": "smallest development row index",
+      "objective_tie_relative_factor": 1e-10,
+      "tie_break_order": ["objective tolerance", "lexicographically smallest normalized controls", "smallest start index"]
     },
-    "mechanistic_robustness_full": {
-      "total_budget": 2500,
-      "selected_point_stencil_max": 51,
-      "full_box_direct_cap": 1700,
-      "new_points_per_face": 25,
-      "minimum_local_budget": 467,
-      "maximum_local_seeds": 1
+    "combined_nlp": {
+      "mechanistic_state_dimension": 110,
+      "smooth_balance_equalities": 110,
+      "domain_guards": 2,
+      "engineering_inequalities": 5,
+      "statistical_trust_inequalities": 2,
+      "trust_families": ["conformal fidelity", "development leverage"],
+      "always_attempt_nine_starts": true
+    },
+    "smoothing": {
+      "epsilon": 1e-8,
+      "scale_floor_in_relevant_row_unit": 1.0,
+      "minimum_maximum": "0.5*(a+b +/- sqrt((a-b)^2+(epsilon*S)^2))",
+      "division": "a*b/(b^2+(epsilon*S_b)^2)",
+      "positive_part": "0.5*(v+sqrt(v^2+(epsilon*S_v)^2))",
+      "denominator_scales": ["NOx", "fermentable_and_acetate", "hydrolysis", "PAO"],
+      "denominator_scale_pool": "all development rows and all five reactor stages where applicable",
+      "settling_delta_scale_pool": "all development rows and ten Clarifier layers",
+      "settling_velocity_scale_m_d": 474.0,
+      "settling_flux_scale_g_m2_d": 7110000.0,
+      "receiver_transition": "compact C2 quintic",
+      "receiver_half_width_formula": "max(1 g TSS/m3, 1e-4*flux_limiting_threshold)",
+      "feed_tss_reciprocal_extension_threshold_g_m3": 1.0
+    },
+    "exact_validation": {
+      "one_replay_per_selected_case": true,
+      "bdf_initialization": "fixed Start-1 then conditional Start-2 generator route",
+      "use_nlp_state_as_bdf_initial_condition": false,
+      "second_best_fallback": false,
+      "requires_exact_fidelity": true,
+      "branch_scaled_infinity_tolerance": 1e-3
+    },
+    "disabled_legacy_methods": ["physical projection QP", "DIRECT", "pattern search", "mechanistic reference search"]
+  },
+  "sensitivity": {
+    "case_count": 12,
+    "underflow_tss": {
+      "objective_reference_g_m3": 15000.0,
+      "cases": [
+        {"case_id": "underflow_tss_12000", "limit_g_m3": 12000.0, "reuse_primary_case": false},
+        {"case_id": "underflow_tss_15000", "limit_g_m3": 15000.0, "reuse_primary_case": true, "primary_case_id": "nominal"},
+        {"case_id": "underflow_tss_20000", "limit_g_m3": 20000.0, "reuse_primary_case": false}
+      ]
+    },
+    "objective_weights": {
+      "quality_weight_fixed": 0.50,
+      "nonquality_weight_total": 0.50,
+      "other_nonquality_weight_rule": "rescale the other four primary non-quality weights proportionally",
+      "cases": [
+        {"case_id": "weight_H_x0p5", "focal_weight": "H_weight", "factor": 0.5},
+        {"case_id": "weight_H_x1p5", "focal_weight": "H_weight", "factor": 1.5},
+        {"case_id": "weight_a_x0p5", "focal_weight": "a_weight", "factor": 0.5},
+        {"case_id": "weight_a_x1p5", "focal_weight": "a_weight", "factor": 1.5},
+        {"case_id": "weight_r_I_x0p5", "focal_weight": "r_I_weight", "factor": 0.5},
+        {"case_id": "weight_r_I_x1p5", "focal_weight": "r_I_weight", "factor": 1.5},
+        {"case_id": "weight_r_R_x0p5", "focal_weight": "r_R_weight", "factor": 0.5},
+        {"case_id": "weight_r_R_x1p5", "focal_weight": "r_R_weight", "factor": 1.5},
+        {"case_id": "weight_wasted_solids_x0p5", "focal_weight": "wasted_solids_weight", "factor": 0.5},
+        {"case_id": "weight_wasted_solids_x1p5", "focal_weight": "wasted_solids_weight", "factor": 1.5}
+      ]
     }
   },
   "reporting": {
@@ -240,6 +348,27 @@
     "write_json_stage_checks": true,
     "write_model_npz": true,
     "write_figures": true,
-    "seal_completed_run": true
+    "required_tables": [
+      "combined_route_outcomes", "robustness_summary", "bound_activity",
+      "underflow_tss_sensitivity", "objective_weight_sensitivity", "workload", "timing_summary"
+    ],
+    "combined_outcome_classes": [
+      "no accepted NLP start", "exact integration failure", "residual/stability failure",
+      "domain/engineering failure", "statistical-fidelity-validation failure",
+      "branch/smoothing-validation failure", "validated combined recommendation"
+    ],
+    "summary_quantiles": [0.25, 0.50, 0.75, 0.95],
+    "quantile_definition": "nearest-rank order statistic y_(ceil(p*n))",
+    "activity": {
+      "control_normalized_distance": 1e-6,
+      "scaled_constraint_lower": -0.001,
+      "scaled_constraint_upper": 1e-8
+    },
+    "timing": {
+      "counter": "monotonic nanosecond-resolution perf_counter_ns",
+      "numerical_threads_per_nlp_start": 1,
+      "repeat_expensive_stages": false,
+      "reported_statistics": ["count", "total", "mean", "median", "q1", "q3", "interquartile_range", "p95", "maximum", "maximum_resident_memory"]
+    }
   }
 }

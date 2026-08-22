@@ -225,3 +225,5 @@ artifacts/wip/*
 !artifacts/wip/supplementary_material.tex
 docs/
 .tools/
+results/
+.build/
