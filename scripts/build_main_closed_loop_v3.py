@@ -37,10 +37,14 @@ development inputs and 1,000 untouched test inputs. Rejected mechanistic
 candidates remain fully audited but are excluded and deterministically
 replaced. It uses ten robustness cases plus the nominal case and a ten-layer
 Clarifier. Each route uses one deterministic box-center start per case and
-accepts the validated local result without claiming global optimality. The
-surrogate route directly runs the seven-variable exact-QP active-set optimizer;
-it does not execute the retired embedded-KKT IPOPT problem or any of its seven
-gap-continuation stages. The direct smooth-mechanistic route retains its
+searches only that basin without claiming global optimality. The surrogate
+route primarily runs the seven-variable exact-QP active-set optimizer. If
+exact active-set derivatives are unavailable, deterministic value-only COBYQA
+cold-solves the unchanged projection QP at every distinct fallback trial and
+retains the best feasible visited incumbent. A budget-limited or
+stationarity-unresolved incumbent is not called a local optimum. The surrogate
+route does not execute the retired embedded-KKT IPOPT problem or any of its
+seven gap-continuation stages. The direct smooth-mechanistic route retains its
 separate three-stage smoothing continuation. There is no wall-time ceiling in
 the full article run. The scientific admission thresholds remain unchanged and still
 determine whether results are article-eligible. For this model-function
@@ -170,6 +174,25 @@ if optimization.get("surrogate_gap_sequence") != []:
     raise RuntimeError("The surrogate route must not execute gap-continuation stages.")
 if OPTIMIZATION_PROTOCOL != optimization["runner_protocol"]:
     raise RuntimeError("The runner and configuration optimization protocols differ.")
+fallback = optimization.get("surrogate_active_set_derivative_fallback", {})
+required_fallback = {
+    "enabled": True,
+    "method": "COBYQA",
+    "deterministic": True,
+    "value_only": True,
+    "finite_difference_derivatives_used": False,
+    "maximum_iterations": 250,
+    "maximum_function_evaluations": 250,
+    "selected_point_cold_replayed": True,
+    "endpoint_active_set_and_upper_kkt_reaudited": True,
+    "fallback_failure_stops_other_cases": False,
+}
+for field, expected in required_fallback.items():
+    if fallback.get(field) != expected:
+        raise RuntimeError(
+            f"Surrogate fallback contract mismatch for {field}: "
+            f"{fallback.get(field)!r} != {expected!r}"
+        )
 
 display(pd.Series({
     "run_id": RUN_ID,
@@ -183,10 +206,15 @@ display(pd.Series({
     "clarifier_layers": profile["layer_count"],
     "starts_per_route_and_case": 1,
     "surrogate_optimization": optimization["surrogate_protocol"],
+    "surrogate_derivative_fallback": fallback["method"],
+    "fallback_value_only": fallback["value_only"],
+    "fallback_distinct_trial_qp": fallback["projection_qp_at_each_distinct_trial"],
+    "fallback_evaluation_budget": fallback["maximum_function_evaluations"],
     "surrogate_embedded_ipopt_stages": 0,
     "direct_optimization": optimization["direct_protocol"],
     "direct_smoothing_stages": len(optimization["smooth_sequence"]),
-    "local_optimum_accepted": True,
+    "local_optimum_label_requires": fallback["local_optimum_label_requires"],
+    "unresolved_incumbent_is_called_local_optimum": False,
     "global_optimality_claimed": False,
     "full_run_wall_time_ceiling": None,
     "scientific_admission_gate_enforced_for_article_eligibility": True,
@@ -385,9 +413,13 @@ if physical_path.is_file():
 
 This resumes the completed assessment, including any recorded scientific gate
 failure, and runs the nominal plus ten robustness cases. Both routes use one
-deterministic box-center start per case and accept the validated local result.
-The surrogate route directly uses the seven-variable exact-QP active-set
-solver with normalized constraints and no embedded-KKT IPOPT continuation.
+deterministic box-center start per case and search only that local basin. The
+surrogate route primarily uses the seven-variable exact-QP active-set solver
+with normalized constraints and no embedded-KKT IPOPT continuation. If its
+exact derivatives are unavailable, deterministic value-only COBYQA evaluates
+the same problem, cold-solving the unchanged projection QP at every distinct
+trial. The best feasible visited point is cold-replayed; a budget-limited or
+stationarity-unresolved result remains an incumbent, not a claimed optimum.
 The direct route retains only its separate three-stage smoothing continuation.
 The driver then performs fixed-input smooth/nonsmooth replay,
 derivative and root-reproduction checks, and raw/projected/smooth/reference

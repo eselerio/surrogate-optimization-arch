@@ -362,6 +362,7 @@ SINGLE_START_EXACT_QP_MIGRATION = OptimizationProtocolMigrationAuthorization(
     allowed_changed_source_files=frozenset({
         "scripts/run_article_v3_5000.py",
         "closed_loop/v3_surrogate_nlp.py",
+        "closed_loop/v3_reporting.py",
         "scripts/build_main_closed_loop_v3.py",
         "main_closed_loop.ipynb",
         "config/params_manuscript_v3.json",
@@ -371,6 +372,7 @@ SINGLE_START_EXACT_QP_MIGRATION = OptimizationProtocolMigrationAuthorization(
     required_changed_source_files=frozenset({
         "scripts/run_article_v3_5000.py",
         "closed_loop/v3_surrogate_nlp.py",
+        "closed_loop/v3_reporting.py",
         "scripts/build_main_closed_loop_v3.py",
         "main_closed_loop.ipynb",
         "config/params_manuscript_v3.json",
@@ -3968,6 +3970,7 @@ def _run_selected_derivative_audit(
                 final.feasibility.projection_reproduction_passed
             ),
         }
+        evidence = _json_ready(evidence, nonfinite_to_none=True)
         audit_contract = sha256(
             selection_contract.encode()
             + _canonical_json_digest(evidence).encode()

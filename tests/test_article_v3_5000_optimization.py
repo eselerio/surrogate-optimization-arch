@@ -327,6 +327,31 @@ class ArticleV3OptimizationHookTests(unittest.TestCase):
     def test_derivative_audit_is_source_bound(self) -> None:
         self.assertIn("closed_loop/v3_derivative_audit.py", runner.SOURCE_FILES)
 
+    def test_exact_qp_route_uses_endpoint_audit_without_continuation(self) -> None:
+        _, _, _, analysis = _fixture()
+        selected = _surrogate_start(0, np.asarray(EXACT_QP_CENTER_START))
+        self.assertEqual(selected.stages, ())
+        with tempfile.TemporaryDirectory() as temporary, patch.object(
+            runner, "audit_casadi_nlp_derivatives",
+        ) as legacy_audit:
+            case = Path(temporary)
+            payload = runner._run_selected_derivative_audit(
+                case,
+                route="surrogate",
+                case_id="nominal",
+                influent=0.5 * (INFLUENT_LOWER + INFLUENT_UPPER),
+                selected=selected,
+                analysis=analysis,
+                selection_contract="selection",
+            )
+            legacy_audit.assert_not_called()
+            self.assertTrue(payload["passed"])
+            self.assertEqual(payload["audited_point"], "exact_qp_active_set_endpoint")
+            marker = json.loads((
+                case / "surrogate_derivative_audit_complete.json"
+            ).read_text())
+            self.assertEqual(marker["stage"], "selected_exact_qp_active_set_audit")
+
     def test_inference_timing_uses_five_warmups_and_thirty_cached_batches(self) -> None:
         design, _, _, base_analysis = _fixture()
         cached_raw = np.full((2, RESPONSE_COUNT), 7.0)

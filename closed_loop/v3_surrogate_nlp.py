@@ -1,23 +1,17 @@
 """Manuscript-v3 projected-surrogate operational optimization.
 
-This module implements the route in ``article/wip_v3`` without hiding the
-lower physical projection behind a black-box callback.  The continuation NLP
-has exactly the variables displayed by the manuscript,
+The primary article route is a single deterministic local optimization over
+the seven normalized operating controls. Every distinct trial is evaluated by
+a cold solve of the exact physical projection QP. Analytical active-set
+sensitivities are used when their numerical audit passes; otherwise a
+deterministic value-only COBYQA solve continues on the same exact-QP values and
+constraints. The selected endpoint is independently cold-replayed. It is
+classified as stationarity-unresolved unless an independent endpoint
+active-set and upper-KKT audit passes.
 
-``(theta, u, lambda_eq, lambda_ineq)``,
-
-where ``theta`` is represented in the normalized seven-dimensional operating
-box.  The raw quadratic predictor, the network matrices, and the primal-dual
-gap are CasADi expressions.  Reportable endpoints are never accepted from the
-single-level relaxation alone: a newly constructed OSQP problem resolves the
-original projection and the independently reconstructed lower-QP KKT
-residuals supplied by :mod:`closed_loop.projection` are retained.
-
-The exact-QP outer refinement resolves a cold projection at every trial
-control.  A candidate is promoted to stationary only after stable-active-set
-sensitivity, an independent final cold-QP reproduction, and reconstructed
-upper multipliers pass the manuscript audit; a solver success flag alone is
-never sufficient.
+The former embedded-KKT IPOPT continuation implementation remains available
+for checkpoint compatibility and methodological comparison, but it is not
+used by :func:`solve_surrogate_exact_qp_local`.
 """
 
 from __future__ import annotations
@@ -2501,16 +2495,9 @@ def _derivative_free_exact_qp_refine(
     def evaluate(value: npt.ArrayLike) -> _DerivativeFreeEvaluation:
         nonlocal cold_qp_resolutions
         normalized = _vector(value, 7, "derivative-free normalized controls")
-        # COBYQA treats finite bounds as unrelaxable. Retain a small numerical
-        # guard so an implementation-level bound excursion becomes a clean
-        # failed evaluation rather than an out-of-domain physical solve.
-        if np.any(normalized < -1.0e-12) or np.any(normalized > 1.0 + 1.0e-12):
-            key = np.ascontiguousarray(normalized, dtype=np.float64).tobytes()
-            if key not in cache:
-                message = "derivative-free solver requested an out-of-box point"
-                cache[key] = _DerivativeFreeEvaluation(normalized, None, message)
-                evaluation_errors.append(message)
-            return cache[key]
+        # COBYQA treats finite bounds as unrelaxable, but its scaled internal
+        # coordinates can return roundoff-sized excursions at a boundary.
+        # Canonicalize those values to the physical box before cache lookup.
         normalized = np.clip(normalized, 0.0, 1.0)
         key = np.ascontiguousarray(normalized, dtype=np.float64).tobytes()
         if key in cache:
@@ -2596,9 +2583,18 @@ def _derivative_free_exact_qp_refine(
                 "maxiter": settings.outer_maximum_iterations,
                 "maxfev": settings.outer_maximum_iterations,
                 "initial_tr_radius": 0.25,
-                "final_tr_radius": settings.outer_function_tolerance,
+                # Resolving controls more tightly than the independently
+                # audited upper-feasibility scale cannot strengthen the
+                # scientific claim and needlessly exhausts value evaluations.
+                "final_tr_radius": max(
+                    settings.outer_function_tolerance,
+                    settings.final_upper_tolerance,
+                ),
                 "feasibility_tol": settings.final_upper_tolerance,
-                "scale": True,
+                # Controls are already normalized. Leaving COBYQA scaling
+                # disabled also keeps its objective and nonlinear-constraint
+                # callbacks in the identical coordinate system.
+                "scale": False,
                 "disp": False,
             },
         )
@@ -2754,9 +2750,27 @@ def _derivative_free_exact_qp_refine(
             )
             final_status = "validated_stationary"
         else:
+            normalized_solver_status = solver_status.lower()
+            budget_limited = bool(
+                not solver_success
+                and "maximum number" in normalized_solver_status
+                and (
+                    "evaluation" in normalized_solver_status
+                    or "iteration" in normalized_solver_status
+                )
+            )
+            nonconverged_label = (
+                "budget_limited_derivative_free_feasible_incumbent_"
+                "stationarity_unresolved"
+                if budget_limited
+                else "nonconverged_derivative_free_feasible_incumbent_"
+                "stationarity_unresolved"
+            )
             stationarity = StationarityRecord(
                 classification=(
-                    "derivative_free_local_candidate_stationarity_unresolved"
+                    nonconverged_label
+                    if final_feasibility.feasible and not solver_success
+                    else "derivative_free_local_candidate_stationarity_unresolved"
                     if final_feasibility.feasible
                     else "derivative_free_local_candidate_feasibility_failed"
                 ),
@@ -2765,13 +2779,31 @@ def _derivative_free_exact_qp_refine(
                 lower_qp_kkt_passed=bool(final.projection.accepted),
                 upper_stationarity_residual=endpoint_stationarity_residual,
                 reason=(
-                    "COBYQA returned a derivative-free exact-QP local candidate; "
-                    "stationarity remains unresolved because the independent "
-                    f"active-set/KKT audit did not pass: {derivative_error or solver_status}"
+                    (
+                        "COBYQA reached its iteration/evaluation budget; this is "
+                        "the best feasible exact-QP point visited, not an "
+                        "established local optimum. "
+                        if budget_limited
+                        else "COBYQA did not report convergence; this is the best "
+                        "feasible exact-QP point visited, not an established "
+                        "local optimum. "
+                        if not solver_success
+                        else "COBYQA converged to a derivative-free exact-QP local candidate. "
+                    )
+                    + "Stationarity remains unresolved because the independent "
+                    + "active-set/KKT audit did not pass: "
+                    + str(derivative_error or solver_status)
                 ),
             )
             final_status = (
-                "validated_feasible_derivative_free_local_candidate_stationarity_unresolved"
+                "validated_feasible_budget_limited_derivative_free_incumbent_"
+                "stationarity_unresolved"
+                if final_feasibility.feasible and budget_limited
+                else "validated_feasible_nonconverged_derivative_free_incumbent_"
+                "stationarity_unresolved"
+                if final_feasibility.feasible and not solver_success
+                else "validated_feasible_derivative_free_local_candidate_"
+                "stationarity_unresolved"
                 if final_feasibility.feasible
                 else (
                     "projection_reproduction_failed"
@@ -2806,6 +2838,15 @@ def _derivative_free_exact_qp_refine(
         solver_success=solver_success,
         status=(
             "derivative_free_local_candidate"
+            if final is not None and solver_success
+            else "derivative_free_budget_limited_candidate"
+            if final is not None
+            and "maximum number" in solver_status.lower()
+            and (
+                "evaluation" in solver_status.lower()
+                or "iteration" in solver_status.lower()
+            )
+            else "derivative_free_nonconverged_candidate"
             if final is not None
             else "derivative_free_local_optimization_failed"
         ),
@@ -3027,11 +3068,13 @@ def solve_surrogate_exact_qp_local(
 
 
 IMPLEMENTATION_LIMITATIONS = (
-    "Exact-QP derivatives are available only when the lower active set passes "
-    "the manuscript's LICQ, conditioning, strict-complementarity, and local "
-    "perturbation gates. Otherwise the independently projected feasible "
-    "continuation incumbent is retained as stationarity-unresolved; no "
-    "finite-difference derivative fallback is used."
+    "Exact-QP analytical derivatives are available only when the lower active "
+    "set passes the LICQ, conditioning, strict-complementarity, and local "
+    "perturbation audits. When they do not, deterministic value-only COBYQA "
+    "continues with a cold exact projection QP at every distinct trial. Its "
+    "independently replayed endpoint remains stationarity-unresolved unless "
+    "the endpoint active-set and upper-KKT audits pass. No finite-difference "
+    "derivative is substituted for a failed analytical audit."
 )
 
 

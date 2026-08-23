@@ -207,29 +207,44 @@ class ExactQPActiveSetTests(unittest.TestCase):
             EXACT_QP_SINGLE_START_PROTOCOL,
         )
 
-    def test_primary_exact_qp_protocol_retains_derivative_failure_as_unresolved(self) -> None:
+    def test_primary_exact_qp_protocol_uses_derivative_free_fallback(self) -> None:
         assets, case = _toy_assets(weak_active_set=True)
         result = solve_surrogate_exact_qp_local(
             assets,
             case,
-            settings=SurrogateSolverSettings(outer_maximum_iterations=10),
+            settings=SurrogateSolverSettings(outer_maximum_iterations=40),
         )
 
         start = result.starts[0]
         self.assertEqual(start.stages, ())
         self.assertEqual(
             start.outer_refinement.status,
-            "initial_active_set_derivative_unavailable",
+            "derivative_free_budget_limited_candidate",
+        )
+        self.assertEqual(
+            start.outer_refinement.method,
+            "exact_qp_derivative_free_cobyqa",
+        )
+        self.assertTrue(start.outer_refinement.fallback_used)
+        self.assertEqual(start.outer_refinement.fallback_method, "COBYQA")
+        self.assertGreater(start.outer_refinement.fallback_evaluations, 1)
+        self.assertGreaterEqual(
+            start.outer_refinement.cold_qp_resolutions,
+            start.outer_refinement.fallback_evaluations,
         )
         self.assertIsNotNone(start.outer_refinement.derivative_error)
         self.assertIsNotNone(start.final)
         assert start.final is not None
+        self.assertLess(
+            start.final.objective,
+            start.outer_refinement.initial_objective,
+        )
         self.assertFalse(start.final.stationarity.stationary)
         self.assertEqual(
             start.final.stationarity.classification,
-            "stationarity_unresolved",
+            "budget_limited_derivative_free_feasible_incumbent_stationarity_unresolved",
         )
-        self.assertIn("cold-projected center incumbent", start.final.stationarity.reason)
+        self.assertIn("not an established local optimum", start.final.stationarity.reason)
 
     def test_primary_exact_qp_checkpoint_resume_performs_no_recomputation(self) -> None:
         assets, case = _toy_assets(weak_active_set=True)

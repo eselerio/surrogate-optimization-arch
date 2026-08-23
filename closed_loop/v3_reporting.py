@@ -82,7 +82,8 @@ PENDING_CLASS = "not yet adjudicated"
 REQUIRED_PHYSICAL_METHODS: tuple[str, ...] = (
     "raw", "projected", "mechanistic", "smooth", "reference",
 )
-EXPECTED_STARTS = 9
+EXPECTED_STARTS = 1
+LEGACY_EXPECTED_STARTS = 9
 GENERATION_BLOCKS: tuple[str, ...] = ("development", "test")
 GENERATION_REJECTION_FLAGS: tuple[tuple[str, str], ...] = (
     ("solver_exception", "rejected_solver_exception"),
@@ -541,6 +542,19 @@ def _replay_status(snapshot: RouteSnapshot) -> str:
 def _route_status_table(snapshots: Sequence[RouteSnapshot]) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
     for snapshot in snapshots:
+        declared_attempts = None
+        if snapshot.payload is not None:
+            declared_attempts = _as_int(
+                snapshot.payload.get(
+                    "optimization_attempt_count",
+                    snapshot.payload.get("article_start_count"),
+                )
+            )
+        expected_starts = (
+            declared_attempts
+            if declared_attempts is not None and declared_attempts >= 0
+            else LEGACY_EXPECTED_STARTS
+        )
         stages = [stage for start in snapshot.starts for stage in _stages(start)]
         iterations = [
             _as_int(stage.get("iterations"))
@@ -559,7 +573,7 @@ def _route_status_table(snapshots: Sequence[RouteSnapshot]) -> pd.DataFrame:
             "selected_feasible": _selected_feasible(snapshot),
             "selected_stationary": _selected_stationary(snapshot),
             "starts_attempted": len(snapshot.starts),
-            "starts_expected": EXPECTED_STARTS,
+            "starts_expected": expected_starts,
             "feasible_starts": feasible,
             "stationary_starts": stationary,
             "failed_starts": len(snapshot.starts) - feasible,
@@ -1118,6 +1132,46 @@ def _sum(frame: pd.DataFrame, column: str) -> int:
     return int(values.sum())
 
 
+def _audited_physical_rows(
+    group: pd.DataFrame,
+) -> tuple[pd.DataFrame, int, int, float]:
+    """Return rows with an available audit and explicit coverage counts.
+
+    Historical physical-audit tables predate ``audit_available``. Those rows
+    contain computed residual columns and remain valid evidence, so an absent
+    column (or the NaNs introduced when such a table is concatenated with a
+    newer one) is treated as available. An explicit false value identifies a
+    placeholder whose zero-valued count fields must not enter violation sums.
+    """
+
+    total = int(len(group))
+    if total == 0:
+        return group, 0, 0, math.nan
+    if "audit_available" not in group:
+        audited = group
+    else:
+        def available(value: Any) -> bool:
+            if pd.isna(value):
+                return True
+            if isinstance(value, (bool, np.bool_)):
+                return bool(value)
+            if isinstance(value, str):
+                normalized = value.strip().lower()
+                if normalized in {"true", "1", "yes"}:
+                    return True
+                if normalized in {"false", "0", "no"}:
+                    return False
+            if isinstance(value, (int, np.integer)) and value in (0, 1):
+                return bool(value)
+            return False
+
+        mask = group["audit_available"].map(available).to_numpy(dtype=bool)
+        audited = group.loc[mask]
+    audited_count = int(len(audited))
+    unavailable_count = total - audited_count
+    return audited, audited_count, unavailable_count, audited_count / total
+
+
 def _physical_summary(detail: pd.DataFrame) -> pd.DataFrame:
     families = (
         "mass_mixer_component_max", "mass_reactor_invariant_max",
@@ -1139,69 +1193,119 @@ def _physical_summary(detail: pd.DataFrame) -> pd.DataFrame:
                 if {"analysis_scope", "method"}.issubset(detail.columns)
                 else pd.DataFrame()
             )
-            mass_count = _sum(group, "mass_conservation_violation_count")
-            negative_count = _sum(group, "nonnegativity_violation_count")
+            audited, audited_count, unavailable_count, coverage = (
+                _audited_physical_rows(group)
+            )
+            has_audit = audited_count > 0
+            mass_count = (
+                _sum(audited, "mass_conservation_violation_count")
+                if has_audit else math.nan
+            )
+            negative_count = (
+                _sum(audited, "nonnegativity_violation_count")
+                if has_audit else math.nan
+            )
             row = {
                 "analysis_scope": scope,
                 "method": method,
-                "availability": "available" if len(group) else "not_available",
+                "availability": (
+                    "available" if audited_count == len(group) and audited_count
+                    else "partially_available" if audited_count
+                    else "not_available"
+                ),
                 "record_count": int(len(group)),
+                "audited_record_count": audited_count,
+                "unavailable_record_count": unavailable_count,
+                "audit_coverage_fraction": coverage,
                 "mass_conservation_tolerance": 1.0e-8,
-                "mass_conservation_violation_max": _maximum(group, "mass_conservation_violation_max"),
+                "mass_conservation_violation_max": _maximum(
+                    audited, "mass_conservation_violation_max"
+                ),
                 "mass_conservation_violation_count": mass_count,
                 "records_with_mass_violation": int(
                     np.count_nonzero(
-                        pd.to_numeric(group.get("mass_conservation_violation_count", pd.Series(dtype=float)), errors="coerce").fillna(0.0).to_numpy() > 0
+                        pd.to_numeric(audited.get("mass_conservation_violation_count", pd.Series(dtype=float)), errors="coerce").fillna(0.0).to_numpy() > 0
                     )
-                ),
+                ) if has_audit else math.nan,
                 "nonnegativity_tolerance": 1.0e-10,
-                "nonnegativity_violation_max": _maximum(group, "nonnegativity_violation_max"),
+                "nonnegativity_violation_max": _maximum(
+                    audited, "nonnegativity_violation_max"
+                ),
                 "nonnegativity_violation_count": negative_count,
                 "records_with_nonnegativity_violation": int(
                     np.count_nonzero(
-                        pd.to_numeric(group.get("nonnegativity_violation_count", pd.Series(dtype=float)), errors="coerce").fillna(0.0).to_numpy() > 0
+                        pd.to_numeric(audited.get("nonnegativity_violation_count", pd.Series(dtype=float)), errors="coerce").fillna(0.0).to_numpy() > 0
                     )
-                ),
+                ) if has_audit else math.nan,
                 "minimum_coordinate": (
-                    float(pd.to_numeric(group["minimum_coordinate"], errors="coerce").min())
-                    if len(group) and "minimum_coordinate" in group else math.nan
+                    float(pd.to_numeric(audited["minimum_coordinate"], errors="coerce").min())
+                    if has_audit and "minimum_coordinate" in audited else math.nan
                 ),
-                "network_inequality_violation_max": _maximum(group, "network_inequality_violation_max"),
-                "network_inequality_violation_count": _sum(group, "network_inequality_violation_count"),
+                "network_inequality_violation_max": _maximum(
+                    audited, "network_inequality_violation_max"
+                ),
+                "network_inequality_violation_count": (
+                    _sum(audited, "network_inequality_violation_count")
+                    if has_audit else math.nan
+                ),
             }
-            row.update({column: _maximum(group, column) for column in families})
+            row.update({column: _maximum(audited, column) for column in families})
             rows.append(row)
     for method in REQUIRED_PHYSICAL_METHODS:
         group = detail[detail["method"] == method] if "method" in detail else pd.DataFrame()
+        audited, audited_count, unavailable_count, coverage = _audited_physical_rows(group)
+        has_audit = audited_count > 0
         row = {
             "analysis_scope": "all_analysis",
             "method": method,
-            "availability": "available" if len(group) else "not_available",
+            "availability": (
+                "available" if audited_count == len(group) and audited_count
+                else "partially_available" if audited_count
+                else "not_available"
+            ),
             "record_count": int(len(group)),
+            "audited_record_count": audited_count,
+            "unavailable_record_count": unavailable_count,
+            "audit_coverage_fraction": coverage,
             "mass_conservation_tolerance": 1.0e-8,
-            "mass_conservation_violation_max": _maximum(group, "mass_conservation_violation_max"),
-            "mass_conservation_violation_count": _sum(group, "mass_conservation_violation_count"),
+            "mass_conservation_violation_max": _maximum(
+                audited, "mass_conservation_violation_max"
+            ),
+            "mass_conservation_violation_count": (
+                _sum(audited, "mass_conservation_violation_count")
+                if has_audit else math.nan
+            ),
             "records_with_mass_violation": int(
                 np.count_nonzero(
-                    pd.to_numeric(group.get("mass_conservation_violation_count", pd.Series(dtype=float)), errors="coerce").fillna(0.0).to_numpy() > 0
+                    pd.to_numeric(audited.get("mass_conservation_violation_count", pd.Series(dtype=float)), errors="coerce").fillna(0.0).to_numpy() > 0
                 )
-            ),
+            ) if has_audit else math.nan,
             "nonnegativity_tolerance": 1.0e-10,
-            "nonnegativity_violation_max": _maximum(group, "nonnegativity_violation_max"),
-            "nonnegativity_violation_count": _sum(group, "nonnegativity_violation_count"),
+            "nonnegativity_violation_max": _maximum(
+                audited, "nonnegativity_violation_max"
+            ),
+            "nonnegativity_violation_count": (
+                _sum(audited, "nonnegativity_violation_count")
+                if has_audit else math.nan
+            ),
             "records_with_nonnegativity_violation": int(
                 np.count_nonzero(
-                    pd.to_numeric(group.get("nonnegativity_violation_count", pd.Series(dtype=float)), errors="coerce").fillna(0.0).to_numpy() > 0
+                    pd.to_numeric(audited.get("nonnegativity_violation_count", pd.Series(dtype=float)), errors="coerce").fillna(0.0).to_numpy() > 0
                 )
-            ),
+            ) if has_audit else math.nan,
             "minimum_coordinate": (
-                float(pd.to_numeric(group["minimum_coordinate"], errors="coerce").min())
-                if len(group) and "minimum_coordinate" in group else math.nan
+                float(pd.to_numeric(audited["minimum_coordinate"], errors="coerce").min())
+                if has_audit and "minimum_coordinate" in audited else math.nan
             ),
-            "network_inequality_violation_max": _maximum(group, "network_inequality_violation_max"),
-            "network_inequality_violation_count": _sum(group, "network_inequality_violation_count"),
+            "network_inequality_violation_max": _maximum(
+                audited, "network_inequality_violation_max"
+            ),
+            "network_inequality_violation_count": (
+                _sum(audited, "network_inequality_violation_count")
+                if has_audit else math.nan
+            ),
         }
-        row.update({column: _maximum(group, column) for column in families})
+        row.update({column: _maximum(audited, column) for column in families})
         rows.append(row)
     return pd.DataFrame(rows)
 

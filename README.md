@@ -73,16 +73,24 @@ The article profile uses exactly 5,000 **accepted** mechanistic inputs: 4,000
 development and 1,000 untouched test rows, ten fresh influent
 scenarios plus nominal, and ten Clarifier layers. Its seeds are 100042,
 100043, and 314159. Both optimization routes now use one deterministic
-box-center start per case and accept the resulting validated local solution;
-they make no global-optimality claim. The surrogate route directly solves the
-seven-variable exact-QP active-set problem. It cold-solves and audits the
-original projection QP at each distinct trial control and does not run the
-former approximately 450-variable embedded-KKT IPOPT problem or any of its
-seven gap-continuation stages. The direct smooth-mechanistic route remains an
-IPOPT NLP and retains its separate three-stage smoothing continuation. The
-nominal case and all ten robustness cases are still attempted for both routes.
-An optimization failure is recorded casewise and does not suppress the
-remaining cases, replay, physical audits, timing, or reporting.
+box-center start per case and search only that local basin; they make no
+global-optimality claim. The surrogate route primarily uses analytical
+active-set sensitivities in the seven controls. If those derivatives are
+unavailable, deterministic value-only COBYQA continues from the same center,
+and every distinct fallback trial cold-solves the unchanged exact projection
+QP. No finite-difference derivative replaces a failed active-set audit.
+
+The fallback retains the best validated feasible point it visited and cold
+replays that point independently. It is reported as a budget-limited or
+stationarity-unresolved incumbent—not as a local optimum—unless solver
+convergence and the independent endpoint active-set/upper-KKT audit support
+the stronger label. The surrogate route does not run the former approximately
+450-variable embedded-KKT IPOPT problem or any of its seven gap-continuation
+stages. The direct smooth-mechanistic route remains an IPOPT NLP and retains
+its separate three-stage smoothing continuation. The nominal case and all ten
+robustness cases are still attempted for both routes. An optimization failure
+or unresolved audit is recorded casewise and does not suppress the remaining
+cases, replay, physical audits, timing, or reporting.
 
 The earlier nine-start surrogate gap-continuation protocol is retired for
 production. This explicit revision reuses the verified 5,000-row generation,

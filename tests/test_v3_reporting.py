@@ -116,6 +116,120 @@ def _make_run(root: Path, robustness_count: int = 2) -> None:
 
 
 class ReportingSnapshotTests(unittest.TestCase):
+    def test_physical_summary_excludes_unavailable_placeholders(self) -> None:
+        detail = pd.DataFrame([
+            {
+                "analysis_scope": "selected_decisions",
+                "case": "nominal:surrogate",
+                "method": "smooth",
+                "audit_available": True,
+                "mass_conservation_violation_max": 2.0e-8,
+                "mass_conservation_violation_count": 2,
+                "nonnegativity_violation_max": 3.0e-10,
+                "nonnegativity_violation_count": 1,
+                "minimum_coordinate": -3.0e-10,
+                "network_inequality_violation_count": 4,
+            },
+            {
+                "analysis_scope": "selected_decisions",
+                "case": "robustness_01:surrogate",
+                "method": "smooth",
+                "audit_available": False,
+                "mass_conservation_violation_max": np.nan,
+                "mass_conservation_violation_count": 0,
+                "nonnegativity_violation_max": np.nan,
+                "nonnegativity_violation_count": 0,
+                "minimum_coordinate": np.nan,
+                "network_inequality_violation_count": 0,
+            },
+            {
+                # Missing availability is a legacy computed row, not a failed
+                # placeholder; concatenated legacy tables acquire this NaN.
+                "analysis_scope": "untouched_test",
+                "case": "test_0000",
+                "method": "smooth",
+                "audit_available": np.nan,
+                "mass_conservation_violation_max": 1.0e-9,
+                "mass_conservation_violation_count": 0,
+                "nonnegativity_violation_max": 0.0,
+                "nonnegativity_violation_count": 0,
+                "minimum_coordinate": 0.0,
+                "network_inequality_violation_count": 0,
+            },
+        ])
+
+        summary = reporting._physical_summary(detail)
+        selected = summary[
+            (summary["analysis_scope"] == "selected_decisions")
+            & (summary["method"] == "smooth")
+        ].iloc[0]
+        self.assertEqual(selected["availability"], "partially_available")
+        self.assertEqual(selected["record_count"], 2)
+        self.assertEqual(selected["audited_record_count"], 1)
+        self.assertEqual(selected["unavailable_record_count"], 1)
+        self.assertEqual(selected["audit_coverage_fraction"], 0.5)
+        self.assertEqual(selected["mass_conservation_violation_count"], 2)
+        self.assertEqual(selected["nonnegativity_violation_count"], 1)
+
+        all_smooth = summary[
+            (summary["analysis_scope"] == "all_analysis")
+            & (summary["method"] == "smooth")
+        ].iloc[0]
+        self.assertEqual(all_smooth["record_count"], 3)
+        self.assertEqual(all_smooth["audited_record_count"], 2)
+        self.assertEqual(all_smooth["unavailable_record_count"], 1)
+        self.assertEqual(all_smooth["mass_conservation_violation_count"], 2)
+
+        only_placeholder = detail.iloc[[1]].copy()
+        unavailable = reporting._physical_summary(only_placeholder)
+        unavailable = unavailable[
+            (unavailable["analysis_scope"] == "selected_decisions")
+            & (unavailable["method"] == "smooth")
+        ].iloc[0]
+        self.assertEqual(unavailable["availability"], "not_available")
+        self.assertEqual(unavailable["audited_record_count"], 0)
+        self.assertEqual(unavailable["unavailable_record_count"], 1)
+        self.assertTrue(np.isnan(unavailable["mass_conservation_violation_count"]))
+        self.assertTrue(np.isnan(unavailable["nonnegativity_violation_count"]))
+
+    def test_physical_summary_treats_legacy_rows_as_audited(self) -> None:
+        legacy = pd.DataFrame([{
+            "analysis_scope": "untouched_test",
+            "case": "test_0000",
+            "method": "mechanistic",
+            "mass_conservation_violation_max": 1.0e-9,
+            "mass_conservation_violation_count": 0,
+            "nonnegativity_violation_max": 0.0,
+            "nonnegativity_violation_count": 0,
+        }])
+        summary = reporting._physical_summary(legacy)
+        row = summary[
+            (summary["analysis_scope"] == "untouched_test")
+            & (summary["method"] == "mechanistic")
+        ].iloc[0]
+        self.assertEqual(row["availability"], "available")
+        self.assertEqual(row["audited_record_count"], 1)
+        self.assertEqual(row["unavailable_record_count"], 0)
+        self.assertEqual(row["mass_conservation_violation_count"], 0)
+
+    def test_route_status_uses_declared_single_attempt_and_reads_legacy_nine(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            run = Path(temporary) / "run"
+            _make_run(run, robustness_count=0)
+            path = run / "optimization" / "nominal" / "direct.json"
+            current = _direct_payload()
+            current["optimization_attempt_count"] = 1
+            _write_json(path, current)
+            row = build_reporting_tables(run)["route_status"]
+            row = row[(row["case"] == "nominal") & (row["route"] == "direct")].iloc[0]
+            self.assertEqual(row["starts_expected"], 1)
+
+            legacy = _direct_payload()
+            _write_json(path, legacy)
+            row = build_reporting_tables(run)["route_status"]
+            row = row[(row["case"] == "nominal") & (row["route"] == "direct")].iloc[0]
+            self.assertEqual(row["starts_expected"], 9)
+
     def test_replacement_generation_tables_and_effective_artifacts_are_preferred(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             run = Path(temporary) / "run"
