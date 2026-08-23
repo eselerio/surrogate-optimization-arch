@@ -119,9 +119,9 @@ class ReportingSnapshotTests(unittest.TestCase):
     def test_physical_summary_excludes_unavailable_placeholders(self) -> None:
         detail = pd.DataFrame([
             {
-                "analysis_scope": "selected_decisions",
+                "analysis_scope": "selected_decision_common_reference",
                 "case": "nominal:surrogate",
-                "method": "smooth",
+                "method": "optimizer_native",
                 "audit_available": True,
                 "mass_conservation_violation_max": 2.0e-8,
                 "mass_conservation_violation_count": 2,
@@ -131,9 +131,9 @@ class ReportingSnapshotTests(unittest.TestCase):
                 "network_inequality_violation_count": 4,
             },
             {
-                "analysis_scope": "selected_decisions",
+                "analysis_scope": "selected_decision_common_reference",
                 "case": "robustness_01:surrogate",
-                "method": "smooth",
+                "method": "optimizer_native",
                 "audit_available": False,
                 "mass_conservation_violation_max": np.nan,
                 "mass_conservation_violation_count": 0,
@@ -147,7 +147,7 @@ class ReportingSnapshotTests(unittest.TestCase):
                 # placeholder; concatenated legacy tables acquire this NaN.
                 "analysis_scope": "untouched_test",
                 "case": "test_0000",
-                "method": "smooth",
+                "method": "optimizer_native",
                 "audit_available": np.nan,
                 "mass_conservation_violation_max": 1.0e-9,
                 "mass_conservation_violation_count": 0,
@@ -160,8 +160,8 @@ class ReportingSnapshotTests(unittest.TestCase):
 
         summary = reporting._physical_summary(detail)
         selected = summary[
-            (summary["analysis_scope"] == "selected_decisions")
-            & (summary["method"] == "smooth")
+            (summary["analysis_scope"] == "selected_decision_common_reference")
+            & (summary["method"] == "optimizer_native")
         ].iloc[0]
         self.assertEqual(selected["availability"], "partially_available")
         self.assertEqual(selected["record_count"], 2)
@@ -171,20 +171,11 @@ class ReportingSnapshotTests(unittest.TestCase):
         self.assertEqual(selected["mass_conservation_violation_count"], 2)
         self.assertEqual(selected["nonnegativity_violation_count"], 1)
 
-        all_smooth = summary[
-            (summary["analysis_scope"] == "all_analysis")
-            & (summary["method"] == "smooth")
-        ].iloc[0]
-        self.assertEqual(all_smooth["record_count"], 3)
-        self.assertEqual(all_smooth["audited_record_count"], 2)
-        self.assertEqual(all_smooth["unavailable_record_count"], 1)
-        self.assertEqual(all_smooth["mass_conservation_violation_count"], 2)
-
         only_placeholder = detail.iloc[[1]].copy()
         unavailable = reporting._physical_summary(only_placeholder)
         unavailable = unavailable[
-            (unavailable["analysis_scope"] == "selected_decisions")
-            & (unavailable["method"] == "smooth")
+            (unavailable["analysis_scope"] == "selected_decision_common_reference")
+            & (unavailable["method"] == "optimizer_native")
         ].iloc[0]
         self.assertEqual(unavailable["availability"], "not_available")
         self.assertEqual(unavailable["audited_record_count"], 0)
@@ -332,84 +323,73 @@ class ReportingSnapshotTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             run = Path(temporary) / "run"
             _make_run(run, robustness_count=0)
-            # Preserve the response scale needed elsewhere while adding the
-            # one-time ridge-training duration consumed by the timing table.
             np.savez_compressed(
                 run / "models" / "ridge_surrogate.npz",
                 response_scale=np.ones(165),
-                elapsed_seconds=np.asarray([17.0]),
-            )
-            pd.DataFrame({"elapsed_seconds": [11.0, 13.0]}).to_csv(
-                run / "metrics" / "mechanistic_generation_summary.csv",
-                index=False,
             )
             pd.DataFrame([
                 {
-                    "category": "raw_inference",
-                    "elapsed_seconds": 10.0,
-                    "per_response_latency_seconds": 0.01,
+                    "case": "robustness_01", "route": "surrogate",
+                    "candidate_available": True,
+                    "primary_optimization_seconds": 10.0,
+                    "certification_seconds": 5.0,
+                    "recovery_seconds": np.nan,
+                    "complete_optimization_seconds": 15.0,
+                    "exact_reference_seconds": 7.0,
                 },
                 {
-                    "category": "raw_inference",
-                    "elapsed_seconds": 30.0,
-                    "per_response_latency_seconds": 0.03,
+                    "case": "robustness_02", "route": "surrogate",
+                    "candidate_available": True,
+                    "primary_optimization_seconds": 20.0,
+                    "certification_seconds": 9.0,
+                    "recovery_seconds": np.nan,
+                    "complete_optimization_seconds": 29.0,
+                    "exact_reference_seconds": 11.0,
                 },
                 {
-                    "category": "qp_deployment",
-                    "elapsed_seconds": 20.0,
-                    "per_response_latency_seconds": 0.02,
+                    "case": "robustness_01", "route": "direct",
+                    "candidate_available": True,
+                    "primary_optimization_seconds": 12.0,
+                    "certification_seconds": np.nan,
+                    "recovery_seconds": np.nan,
+                    "complete_optimization_seconds": 12.0,
+                    "exact_reference_seconds": 8.0,
                 },
                 {
-                    "category": "qp_deployment",
-                    "elapsed_seconds": 40.0,
-                    "per_response_latency_seconds": 0.04,
+                    "case": "robustness_02", "route": "direct",
+                    "candidate_available": False,
+                    "primary_optimization_seconds": 18.0,
+                    "certification_seconds": np.nan,
+                    "recovery_seconds": np.nan,
+                    "complete_optimization_seconds": 18.0,
+                    "exact_reference_seconds": np.nan,
                 },
             ]).to_csv(
-                run / "metrics" / "inference_timing_batches.csv", index=False,
-            )
-            # This fallback stream must be ignored when the dedicated batch
-            # artifact exists.
-            pd.DataFrame([
-                {
-                    "category": "raw_inference",
-                    "elapsed_seconds": 999.0,
-                    "per_response_latency_seconds": 999.0,
-                }
-            ]).to_csv(run / "metrics" / "timing_events.csv", index=False)
-            _write_json(
-                run / "optimization" / "nominal" / "direct.json",
-                _direct_payload(),
-            )
-            _write_json(
-                run / "optimization" / "nominal" / "direct_equivalence.json",
-                {
-                    "elapsed_seconds": 101.0,
-                    "reference_replay": {"elapsed_seconds": 7.0},
-                },
+                run / "metrics" / "robustness_case_timing.csv",
+                index=False,
             )
 
             bundle = build_reporting_tables(run)
             timing = bundle["timing_summary"].set_index("category")
-            self.assertEqual(timing.loc["raw_inference", "unit"], "seconds_per_response")
-            self.assertEqual(timing.loc["qp_deployment", "unit"], "seconds_per_response")
-            self.assertAlmostEqual(timing.loc["raw_inference", "total"], 0.04)
-            self.assertAlmostEqual(timing.loc["raw_inference", "mean"], 0.02)
-            self.assertAlmostEqual(timing.loc["qp_deployment", "total"], 0.06)
-            self.assertAlmostEqual(timing.loc["qp_deployment", "mean"], 0.03)
-            self.assertAlmostEqual(timing.loc["mechanistic_generation", "total"], 24.0)
-            self.assertEqual(timing.loc["mechanistic_generation", "count"], 2)
-            self.assertAlmostEqual(timing.loc["training", "total"], 17.0)
-            self.assertEqual(timing.loc["training", "count"], 1)
-            self.assertAlmostEqual(timing.loc["fixed_input_equivalence", "total"], 101.0)
-            self.assertAlmostEqual(timing.loc["reference_replay", "total"], 7.0)
-            self.assertNotEqual(
-                timing.loc["reference_replay", "total"],
-                timing.loc["fixed_input_equivalence", "total"],
+            self.assertEqual(
+                timing.loc["surrogate_complete_optimization", "unit"],
+                "seconds_per_robustness_case",
             )
+            self.assertAlmostEqual(
+                timing.loc["surrogate_complete_optimization", "mean"], 22.0,
+            )
+            self.assertAlmostEqual(
+                timing.loc["direct_complete_optimization", "mean"], 15.0,
+            )
+            self.assertAlmostEqual(
+                timing.loc["surrogate_local_certification", "mean"], 7.0,
+            )
+            self.assertNotIn("raw_inference", timing.index)
+            self.assertNotIn("qp_deployment", timing.index)
             workload = bundle["timing_workload"].set_index("route")
             self.assertAlmostEqual(
                 workload.loc["direct", "reference_validation_time_seconds"],
-                7.0,
+                8.0,
             )
 
     def test_incomplete_cases_and_zero_count_failure_classes_are_retained(self) -> None:
@@ -473,7 +453,10 @@ class ReportingSnapshotTests(unittest.TestCase):
                 3,
             )
             self.assertEqual(
-                physical.loc[("selected_decisions", "reference"), "availability"],
+                physical.loc[
+                    ("selected_decision_common_reference", "exact_mechanistic_start_1"),
+                    "availability",
+                ],
                 "not_available",
             )
 
@@ -491,19 +474,39 @@ class ReportingSnapshotTests(unittest.TestCase):
                 response=response,
                 state=np.ones(105),
             )
+            pd.DataFrame([{
+                "case": "nominal:direct",
+                "method": "optimizer_native",
+                "decision_route": "direct",
+                "response_source": "optimizer_native",
+                "audit_available": True,
+                "mass_conservation_violation_max": 1.0e-9,
+                "mass_conservation_violation_count": 0,
+                "nonnegativity_violation_max": 0.0,
+                "nonnegativity_violation_count": 0,
+            }]).to_csv(
+                run / "metrics" / "selected_response_physical_audit.csv",
+                index=False,
+            )
 
             bundle = build_reporting_tables(run)
             detail = bundle["physical_violation_detail"]
             selected = detail[
-                (detail["analysis_scope"] == "selected_decisions")
-                & (detail["method"] == "smooth")
+                (detail["analysis_scope"] == "selected_decision_common_reference")
+                & (detail["method"] == "optimizer_native")
             ]
             self.assertEqual(len(selected), 1)
             self.assertTrue(np.isfinite(selected.iloc[0]["mass_conservation_violation_max"]))
             summary = bundle["physical_violation_summary"].set_index(
                 ["analysis_scope", "method"]
             )
-            self.assertEqual(summary.loc[("selected_decisions", "smooth"), "availability"], "available")
+            self.assertEqual(
+                summary.loc[
+                    ("selected_decision_common_reference", "optimizer_native"),
+                    "availability",
+                ],
+                "available",
+            )
             self.assertEqual(len(bundle["process_profiles"]), 37)
 
             output = Path(temporary) / "report"

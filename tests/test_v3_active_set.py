@@ -26,11 +26,13 @@ from closed_loop.v3_active_set import (
 from closed_loop.v3_surrogate_nlp import (
     EXACT_QP_CENTER_START,
     EXACT_QP_SINGLE_START_PROTOCOL,
+    LOCAL_CONVERGENCE_PROTOCOL,
     EngineeringLimits,
     ContinuationStageRecord,
     OuterRefinementRecord,
     StationarityRecord,
     SurrogateCase,
+    SurrogateCertificationSettings,
     SurrogateNLPAssets,
     SurrogateSolverSettings,
     SurrogateStartResult,
@@ -38,6 +40,7 @@ from closed_loop.v3_surrogate_nlp import (
     _outer_refine,
     audit_exact_candidate,
     build_surrogate_nlp,
+    certify_surrogate_local_convergence,
     cold_reproject,
     ordered_normalized_starts,
     solve_surrogate_exact_qp_local,
@@ -805,6 +808,381 @@ class ExactQPActiveSetTests(unittest.TestCase):
         self.assertEqual(result.status, "validated_feasible_stationarity_unresolved")
         self.assertEqual(result.outer_refinement.status, "unexpected_refinement_exception")
         self.assertIn("unit linear algebra failure", result.error)
+
+    def test_degenerate_endpoint_passes_complete_two_scale_poll(self) -> None:
+        assets, case = _toy_assets()
+        problem = build_surrogate_nlp(
+            assets, 1.0e-8, compile_solver=False, name="certificate_flat"
+        )
+        controls = np.full(7, 0.5)
+        initial = audit_exact_candidate(problem, case, controls)
+
+        def exact_candidate(
+            _problem: object,
+            _case: object,
+            normalized: np.ndarray,
+            **_kwargs: object,
+        ):
+            value = np.asarray(normalized, dtype=float)
+            feasible = bool(np.all(value[1:] == controls[1:]))
+            return replace(
+                initial,
+                normalized_controls=value.copy(),
+                theta=assets.theta_lower + assets.theta_span * value,
+                objective=float(np.sum((value - controls) ** 2)),
+                feasibility=replace(initial.feasibility, feasible=feasible),
+            )
+
+        class DegenerateRefiner:
+            def __init__(self, *_args: object, **_kwargs: object) -> None:
+                self.cold_qp_resolutions = 0
+
+            def evaluate(self, *_args: object, **_kwargs: object) -> object:
+                raise ActiveSetDerivativeError("unit degenerate active set")
+
+        with (
+            patch(
+                "closed_loop.v3_surrogate_nlp.audit_exact_candidate",
+                side_effect=exact_candidate,
+            ),
+            patch(
+                "closed_loop.v3_active_set.ExactQPActiveSetRefiner",
+                DegenerateRefiner,
+            ),
+        ):
+            result = certify_surrogate_local_convergence(
+                assets,
+                case,
+                initial,
+                problem=problem,
+            )
+
+        certificate = result.certificate
+        self.assertEqual(certificate.protocol, LOCAL_CONVERGENCE_PROTOCOL)
+        self.assertEqual(
+            certificate.protocol,
+            "exact_qp_two_scale_accelerated_feasible_poll_v3",
+        )
+        self.assertEqual(SurrogateCertificationSettings().maximum_evaluations, 10_000)
+        self.assertEqual(SurrogateCertificationSettings().acceleration_growth_factor, 2.0)
+        self.assertEqual(SurrogateCertificationSettings().maximum_acceleration_probes, 16)
+        self.assertEqual(
+            certificate.classification, "finite_resolution_feasible_poll"
+        )
+        self.assertTrue(certificate.locally_converged)
+        self.assertFalse(certificate.first_order_certified)
+        self.assertFalse(certificate.stationarity_resolved)
+        self.assertEqual(certificate.accepted_improvements, 0)
+        self.assertEqual(len(certificate.poll_levels), 2)
+        self.assertEqual(
+            [level["direction_count"] for level in certificate.poll_levels],
+            [14, 106],
+        )
+        self.assertTrue(all(level["passed"] for level in certificate.poll_levels))
+        self.assertTrue(
+            all(level["feasible_direction_rank"] == 1 for level in certificate.poll_levels)
+        )
+        self.assertTrue(
+            all(level["required_direction_rank"] is None for level in certificate.poll_levels)
+        )
+        self.assertTrue(
+            all(level["rank_is_diagnostic_only"] for level in certificate.poll_levels)
+        )
+        self.assertTrue(
+            all(
+                level["feasible_direction_coverage_passed"]
+                for level in certificate.poll_levels
+            )
+        )
+        self.assertTrue(
+            all(level["acceleration_evaluation_requests"] == 0 for level in certificate.poll_levels)
+        )
+        self.assertTrue(
+            all(level["acceleration_accepted_improvements"] == 0 for level in certificate.poll_levels)
+        )
+        self.assertIsNotNone(result.candidate)
+        assert result.candidate is not None
+        self.assertEqual(
+            result.candidate.status,
+            "validated_feasible_poll_converged_stationarity_unresolved",
+        )
+        self.assertFalse(result.candidate.stationarity.resolved)
+
+    def test_poll_accepts_improvements_and_repeats_radius_before_passing(self) -> None:
+        assets, case = _toy_assets()
+        problem = build_surrogate_nlp(
+            assets, 1.0e-8, compile_solver=False, name="certificate_repeat"
+        )
+        controls = np.full(7, 0.5)
+        optimum = controls.copy()
+        optimum[0] = 0.502
+        initial = audit_exact_candidate(problem, case, controls)
+
+        def exact_candidate(
+            _problem: object,
+            _case: object,
+            normalized: np.ndarray,
+            **_kwargs: object,
+        ):
+            value = np.asarray(normalized, dtype=float)
+            return replace(
+                initial,
+                normalized_controls=value.copy(),
+                theta=assets.theta_lower + assets.theta_span * value,
+                objective=float(np.sum((value - optimum) ** 2)),
+            )
+
+        class DegenerateRefiner:
+            def __init__(self, *_args: object, **_kwargs: object) -> None:
+                self.cold_qp_resolutions = 0
+
+            def evaluate(self, *_args: object, **_kwargs: object) -> object:
+                raise ActiveSetDerivativeError("unit nonsmooth endpoint")
+
+        settings = SurrogateCertificationSettings(
+            poll_radii=(1.0e-3,),
+            maximum_evaluations=1_000,
+        )
+        with (
+            patch(
+                "closed_loop.v3_surrogate_nlp.audit_exact_candidate",
+                side_effect=exact_candidate,
+            ),
+            patch(
+                "closed_loop.v3_active_set.ExactQPActiveSetRefiner",
+                DegenerateRefiner,
+            ),
+        ):
+            result = certify_surrogate_local_convergence(
+                assets,
+                case,
+                initial,
+                settings=settings,
+                problem=problem,
+            )
+
+        self.assertEqual(
+            result.certificate.classification, "finite_resolution_feasible_poll"
+        )
+        self.assertEqual(result.certificate.accepted_improvements, 2)
+        level = result.certificate.poll_levels[0]
+        self.assertEqual(level["accepted_improvements"], 2)
+        self.assertEqual(level["poll_accepted_improvements"], 1)
+        self.assertEqual(level["acceleration_accepted_improvements"], 1)
+        self.assertEqual(level["acceleration_evaluation_requests"], 2)
+        self.assertEqual(level["acceleration_unique_evaluations"], 2)
+        self.assertEqual(level["acceleration_maximum_accepted_multiplier"], 2.0)
+        self.assertEqual(level["acceleration_stops"], {"no_sufficient_descent": 1})
+        self.assertEqual(level["direction_count"], 106)
+        # Acceleration only locates a better center. Certification still comes
+        # from the fresh, complete no-descent sweep recorded at that center.
+        self.assertTrue(level["complete_no_descent_poll"])
+        np.testing.assert_allclose(
+            result.certificate.final_normalized_controls, optimum, atol=1.0e-14
+        )
+
+    def test_fine_scale_improvement_revalidates_the_coarse_scale(self) -> None:
+        assets, case = _toy_assets()
+        problem = build_surrogate_nlp(
+            assets, 1.0e-8, compile_solver=False, name="certificate_revalidate"
+        )
+        controls = np.full(7, 0.5)
+        optimum = controls.copy()
+        optimum[0] += 1.0e-4
+        initial = audit_exact_candidate(problem, case, controls)
+
+        def exact_candidate(
+            _problem: object,
+            _case: object,
+            normalized: np.ndarray,
+            **_kwargs: object,
+        ):
+            value = np.asarray(normalized, dtype=float)
+            return replace(
+                initial,
+                normalized_controls=value.copy(),
+                theta=assets.theta_lower + assets.theta_span * value,
+                objective=float(np.sum((value - optimum) ** 2)),
+            )
+
+        class DegenerateRefiner:
+            def __init__(self, *_args: object, **_kwargs: object) -> None:
+                self.cold_qp_resolutions = 0
+
+            def evaluate(self, *_args: object, **_kwargs: object) -> object:
+                raise ActiveSetDerivativeError("unit nonsmooth endpoint")
+
+        settings = SurrogateCertificationSettings(
+            absolute_decrease_tolerance=1.0e-12,
+            relative_decrease_tolerance=1.0e-12,
+        )
+        with (
+            patch(
+                "closed_loop.v3_surrogate_nlp.audit_exact_candidate",
+                side_effect=exact_candidate,
+            ),
+            patch(
+                "closed_loop.v3_active_set.ExactQPActiveSetRefiner",
+                DegenerateRefiner,
+            ),
+        ):
+            result = certify_surrogate_local_convergence(
+                assets,
+                case,
+                initial,
+                settings=settings,
+                problem=problem,
+            )
+
+        self.assertTrue(result.certificate.locally_converged)
+        self.assertEqual(result.certificate.accepted_improvements, 1)
+        levels = result.certificate.poll_levels
+        self.assertEqual(
+            [(level["validation_round"], level["radius"]) for level in levels],
+            [
+                (0, 1.0e-3),
+                (0, 1.0e-4),
+                (1, 1.0e-3),
+                (1, 1.0e-4),
+            ],
+        )
+        self.assertEqual(
+            [level["accepted_improvements"] for level in levels], [0, 1, 0, 0]
+        )
+        self.assertTrue(all(level["passed"] for level in levels))
+        np.testing.assert_allclose(
+            result.certificate.final_normalized_controls, optimum, atol=1.0e-14
+        )
+
+    def test_cached_revalidation_completes_at_the_exact_evaluation_cap(self) -> None:
+        assets, case = _toy_assets()
+        problem = build_surrogate_nlp(
+            assets, 1.0e-8, compile_solver=False, name="certificate_cached_cap"
+        )
+        controls = np.full(7, 0.5)
+        optimum = controls.copy()
+        optimum[0] += 1.0e-4
+        initial = audit_exact_candidate(problem, case, controls)
+
+        def exact_candidate(
+            _problem: object,
+            _case: object,
+            normalized: np.ndarray,
+            **_kwargs: object,
+        ):
+            value = np.asarray(normalized, dtype=float)
+            return replace(
+                initial,
+                normalized_controls=value.copy(),
+                theta=assets.theta_lower + assets.theta_span * value,
+                objective=float(np.sum((value - optimum) ** 2)),
+            )
+
+        class DegenerateRefiner:
+            def __init__(self, *_args: object, **_kwargs: object) -> None:
+                self.cold_qp_resolutions = 0
+
+            def evaluate(self, *_args: object, **_kwargs: object) -> object:
+                raise ActiveSetDerivativeError("unit nonsmooth endpoint")
+
+        axis = np.zeros(7)
+        axis[0] = 1.0
+        settings = SurrogateCertificationSettings(
+            poll_radii=(2.0e-4, 1.0e-4),
+            absolute_decrease_tolerance=1.0e-12,
+            relative_decrease_tolerance=1.0e-12,
+            maximum_evaluations=6,
+        )
+        with (
+            patch(
+                "closed_loop.v3_surrogate_nlp.audit_exact_candidate",
+                side_effect=exact_candidate,
+            ),
+            patch(
+                "closed_loop.v3_surrogate_nlp._local_poll_directions",
+                return_value=np.vstack((axis, -axis)),
+            ),
+            patch(
+                "closed_loop.v3_active_set.ExactQPActiveSetRefiner",
+                DegenerateRefiner,
+            ),
+        ):
+            result = certify_surrogate_local_convergence(
+                assets,
+                case,
+                initial,
+                settings=settings,
+                problem=problem,
+            )
+
+        self.assertEqual(result.certificate.evaluations, settings.maximum_evaluations)
+        self.assertEqual(
+            result.certificate.classification, "finite_resolution_feasible_poll"
+        )
+        self.assertTrue(result.certificate.locally_converged)
+        self.assertNotIn("budget", result.certificate.termination_reason)
+        self.assertEqual(
+            [level["validation_round"] for level in result.certificate.poll_levels],
+            [0, 0, 1, 1],
+        )
+        self.assertTrue(all(level["passed"] for level in result.certificate.poll_levels))
+
+    def test_poll_budget_exhaustion_is_explicit_and_not_certified(self) -> None:
+        assets, case = _toy_assets()
+        problem = build_surrogate_nlp(
+            assets, 1.0e-8, compile_solver=False, name="certificate_budget"
+        )
+        controls = np.full(7, 0.5)
+        initial = audit_exact_candidate(problem, case, controls)
+
+        def exact_candidate(
+            _problem: object,
+            _case: object,
+            normalized: np.ndarray,
+            **_kwargs: object,
+        ):
+            value = np.asarray(normalized, dtype=float)
+            return replace(
+                initial,
+                normalized_controls=value.copy(),
+                theta=assets.theta_lower + assets.theta_span * value,
+                objective=1.0,
+            )
+
+        class DegenerateRefiner:
+            def __init__(self, *_args: object, **_kwargs: object) -> None:
+                self.cold_qp_resolutions = 0
+
+            def evaluate(self, *_args: object, **_kwargs: object) -> object:
+                raise ActiveSetDerivativeError("unit degenerate active set")
+
+        with (
+            patch(
+                "closed_loop.v3_surrogate_nlp.audit_exact_candidate",
+                side_effect=exact_candidate,
+            ),
+            patch(
+                "closed_loop.v3_active_set.ExactQPActiveSetRefiner",
+                DegenerateRefiner,
+            ),
+        ):
+            result = certify_surrogate_local_convergence(
+                assets,
+                case,
+                initial,
+                settings=SurrogateCertificationSettings(maximum_evaluations=2),
+                problem=problem,
+            )
+
+        self.assertEqual(result.certificate.classification, "poll_budget_limited")
+        self.assertFalse(result.certificate.locally_converged)
+        self.assertFalse(result.certificate.first_order_certified)
+        self.assertEqual(result.certificate.evaluations, 2)
+        self.assertIn("budget", result.certificate.termination_reason)
+        self.assertIsNotNone(result.candidate)
+        assert result.candidate is not None
+        self.assertTrue(result.candidate.feasibility.feasible)
+        self.assertIn("poll_budget_limited", result.candidate.status)
 
 
 if __name__ == "__main__":

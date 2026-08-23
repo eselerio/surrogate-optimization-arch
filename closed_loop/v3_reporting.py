@@ -21,6 +21,7 @@ artifacts when replacement generation has been activated.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from hashlib import sha256
 import json
 import math
 from pathlib import Path
@@ -127,6 +128,9 @@ class RouteSnapshot:
     selected_arrays: Mapping[str, np.ndarray]
     equivalence: Mapping[str, Any] | None
     reference_arrays: Mapping[str, np.ndarray]
+    casewise_reference: Mapping[str, Any] | None
+    certification: Mapping[str, Any] | None
+    recovery: Mapping[str, Any] | None
 
 
 @dataclass(frozen=True)
@@ -228,6 +232,44 @@ def _safe_json_list(path: Path, warnings: list[str]) -> tuple[Mapping[str, Any],
         warnings.append(f"Could not read {path}: {type(exc).__name__}: {exc}")
         return ()
     return _mapping_sequence(value)
+
+
+def _validated_stage_payload(
+    directory: Path,
+    *,
+    marker_name: str,
+    payload_name: str,
+    contract_key: str,
+    warnings: list[str],
+) -> Mapping[str, Any] | None:
+    """Load an atomic sidecar only when its completion marker is intact."""
+
+    marker = _safe_json(directory / marker_name, warnings)
+    if marker is None:
+        return None
+    artifacts = _mapping(marker.get("artifacts"))
+    if not artifacts:
+        warnings.append(f"Ignored incomplete stage marker {directory / marker_name}.")
+        return None
+    root = directory.resolve()
+    for relative, expected in artifacts.items():
+        path = (directory / str(relative)).resolve()
+        if root != path and root not in path.parents:
+            warnings.append(f"Ignored unsafe artifact path in {directory / marker_name}.")
+            return None
+        try:
+            observed = sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            warnings.append(f"Ignored incomplete artifact set in {directory / marker_name}.")
+            return None
+        if observed != str(expected):
+            warnings.append(f"Ignored changed artifact set in {directory / marker_name}.")
+            return None
+    payload = _safe_json(directory / payload_name, warnings)
+    if payload is None or payload.get(contract_key) != marker.get(contract_key):
+        warnings.append(f"Ignored inconsistent stage payload {directory / payload_name}.")
+        return None
+    return payload
 
 
 def _safe_npz(path: Path, warnings: list[str]) -> dict[str, np.ndarray]:
@@ -391,6 +433,67 @@ def _route_snapshot(
     selected_arrays = _safe_npz(directory / f"{route}_selected.npz", warnings)
     equivalence = _safe_json(directory / f"{route}_equivalence.json", warnings)
     reference_arrays = _safe_npz(directory / f"{route}_reference.npz", warnings)
+    casewise_reference = _validated_stage_payload(
+        directory,
+        marker_name=f"{route}_casewise_reference_complete.json",
+        payload_name=f"{route}_casewise_reference.json",
+        contract_key="reference_contract",
+        warnings=warnings,
+    )
+    casewise_arrays = (
+        _safe_npz(directory / f"{route}_casewise_reference.npz", warnings)
+        if casewise_reference is not None
+        and casewise_reference.get("candidate_available") is True
+        else {}
+    )
+    certification = (
+        _validated_stage_payload(
+            directory,
+            marker_name="surrogate_local_convergence_complete.json",
+            payload_name="surrogate_local_convergence.json",
+            contract_key="certification_contract",
+            warnings=warnings,
+        )
+        if route == "surrogate" else None
+    )
+    recovery = (
+        _validated_stage_payload(
+            directory,
+            marker_name="direct_recovery_complete.json",
+            payload_name="direct_recovery.json",
+            contract_key="recovery_contract",
+            warnings=warnings,
+        )
+        if route == "direct" else None
+    )
+    recovery_outcome: str | None = None
+    if route == "surrogate" and certification is not None:
+        certified = _mapping(certification.get("candidate"))
+        if certified is not None:
+            selected = {
+                "start_index": selected_index if selected_index is not None else 0,
+                "final": certified,
+            }
+    elif route == "direct" and recovery is not None and recovery.get("attempted") is True:
+        recovery_result = _mapping(recovery.get("result"))
+        if recovery_result is not None:
+            recovered_index, recovered_selected, _ = _selected_start(recovery_result)
+            if recovered_selected is not None:
+                selected_index = recovered_index
+                selected = recovered_selected
+                recovery_outcome = str(recovery_result.get("status", "recovered"))
+    if casewise_arrays:
+        normalized_arrays = dict(casewise_arrays)
+        if "exact_reference" in casewise_arrays:
+            normalized_arrays["reference"] = casewise_arrays["exact_reference"]
+            reference_arrays = {"response": casewise_arrays["exact_reference"]}
+        if "optimizer_native" in casewise_arrays:
+            if route == "surrogate":
+                normalized_arrays["projected"] = casewise_arrays["optimizer_native"]
+            else:
+                normalized_arrays["response"] = casewise_arrays["optimizer_native"]
+                normalized_arrays["smooth"] = casewise_arrays["optimizer_native"]
+        selected_arrays = normalized_arrays
     if payload is not None:
         artifact_state = "complete"
         outcome = str(payload.get("status", "status_unavailable"))
@@ -400,6 +503,8 @@ def _route_snapshot(
     else:
         artifact_state = "absent"
         outcome = "not_attempted"
+    if recovery_outcome is not None:
+        outcome = recovery_outcome
     if selected_index is None and selected_arrays:
         # The selected NPZ is an authoritative endpoint artifact even if the
         # JSON snapshot was not visible during this read.
@@ -416,6 +521,9 @@ def _route_snapshot(
         selected_arrays=selected_arrays,
         equivalence=equivalence,
         reference_arrays=reference_arrays,
+        casewise_reference=casewise_reference,
+        certification=certification,
+        recovery=recovery,
     )
 
 
@@ -502,7 +610,24 @@ def _route_elapsed(snapshot: RouteSnapshot) -> float:
     if snapshot.payload is not None:
         elapsed = _as_float(snapshot.payload.get("elapsed_seconds"))
         if math.isfinite(elapsed):
-            return elapsed
+            recovery = _as_float(
+                snapshot.recovery.get("elapsed_seconds")
+                if snapshot.recovery is not None
+                and snapshot.recovery.get("attempted") is True
+                else None
+            )
+            certificate = (
+                _mapping(snapshot.certification.get("certificate"))
+                if snapshot.certification is not None else None
+            )
+            certification = _as_float(
+                certificate.get("elapsed_seconds") if certificate is not None else None
+            )
+            return (
+                elapsed
+                + (recovery if math.isfinite(recovery) else 0.0)
+                + (certification if math.isfinite(certification) else 0.0)
+            )
     values = [
         _as_float(stage.get("elapsed_seconds"))
         for start in snapshot.starts
@@ -525,6 +650,14 @@ def _selected_active_constraints(snapshot: RouteSnapshot) -> int | None:
 
 
 def _replay_status(snapshot: RouteSnapshot) -> str:
+    if snapshot.casewise_reference is not None:
+        if snapshot.casewise_reference.get("candidate_available") is not True:
+            return "not_applicable"
+        return (
+            "accepted"
+            if snapshot.casewise_reference.get("comparison_valid") is True
+            else "failed"
+        )
     if snapshot.equivalence is not None:
         replay = _mapping(snapshot.equivalence.get("reference_replay"))
         accepted = _as_bool(
@@ -572,6 +705,16 @@ def _route_status_table(snapshots: Sequence[RouteSnapshot]) -> pd.DataFrame:
             "selected_start": snapshot.selected_start,
             "selected_feasible": _selected_feasible(snapshot),
             "selected_stationary": _selected_stationary(snapshot),
+            "local_convergence_certified": (
+                snapshot.certification.get("locally_converged")
+                if snapshot.certification is not None
+                else _selected_stationary(snapshot)
+            ),
+            "first_order_stationarity_certified": (
+                snapshot.certification.get("first_order_certified")
+                if snapshot.certification is not None
+                else _selected_stationary(snapshot)
+            ),
             "starts_attempted": len(snapshot.starts),
             "starts_expected": expected_starts,
             "feasible_starts": feasible,
@@ -581,6 +724,10 @@ def _route_status_table(snapshots: Sequence[RouteSnapshot]) -> pd.DataFrame:
             "iterations": sum(iterations),
             "active_constraint_count": _selected_active_constraints(snapshot),
             "elapsed_seconds": _route_elapsed(snapshot),
+            "recovery_attempted": bool(
+                snapshot.recovery is not None
+                and snapshot.recovery.get("attempted") is True
+            ),
             "preflight_stage_wall_time_seconds": _as_float(
                 snapshot.payload.get("preflight_stage_wall_time_seconds")
                 if snapshot.payload is not None else None
@@ -1083,27 +1230,22 @@ def _physical_detail(
     if not combined.empty:
         return combined
     assessment = _safe_csv(run_directory / "metrics" / "physical_violations_assessment.csv", warnings)
-    equivalence = _safe_csv(
-        run_directory / "metrics" / "physical_violations_equivalence_test.csv",
+    selected = _safe_csv(
+        run_directory / "metrics" / "selected_response_physical_audit.csv",
         warnings,
     )
-    selected = _safe_csv(run_directory / "metrics" / "physical_violations_selected_cases.csv", warnings)
     frames: list[pd.DataFrame] = []
     if not assessment.empty:
         item = assessment.copy()
         item.insert(0, "analysis_scope", "untouched_test")
         frames.append(item)
-    if not equivalence.empty:
-        item = equivalence.copy()
-        item.insert(0, "analysis_scope", "untouched_test_equivalence")
-        frames.append(item)
     if not selected.empty:
         item = selected.copy()
-        item.insert(0, "analysis_scope", "selected_decisions")
+        item.insert(0, "analysis_scope", "selected_decision_common_reference")
         frames.append(item)
     if not reconstructed.empty:
         item = reconstructed.copy()
-        item.insert(0, "analysis_scope", "selected_decisions")
+        item.insert(0, "analysis_scope", "selected_decision_common_reference")
         if frames:
             existing = pd.concat(frames, ignore_index=True)
             keys = set(zip(existing.get("case", []), existing.get("method", []), strict=False))
@@ -1182,8 +1324,10 @@ def _physical_summary(detail: pd.DataFrame) -> pd.DataFrame:
     )
     required = {
         "untouched_test": ("raw", "projected", "mechanistic"),
-        "untouched_test_equivalence": ("smooth", "reference"),
-        "selected_decisions": ("raw", "projected", "smooth", "reference"),
+        "selected_decision_common_reference": (
+            "raw", "projected", "optimizer_native",
+            "exact_mechanistic_start_1", "exact_mechanistic_start_2",
+        ),
     }
     rows: list[dict[str, Any]] = []
     for scope, methods in required.items():
@@ -1347,6 +1491,21 @@ def _disposition(snapshot: RouteSnapshot) -> str:
         return "no accepted optimization start"
     if _projection_failed(snapshot):
         return "projection failure"
+    if snapshot.casewise_reference is not None:
+        if snapshot.casewise_reference.get("comparison_valid") is not True:
+            status = str(snapshot.casewise_reference.get("status", ""))
+            reference = _mapping(snapshot.casewise_reference.get("reference"))
+            if reference is not None and reference.get("engineering_feasible") is False:
+                return "engineering infeasibility"
+            if "physical" in status or "stability" in status or "root_disagreement" in status:
+                return "residual or reduced-stability failure"
+            return "reference integration failure"
+        if snapshot.route == "surrogate" and snapshot.certification is not None:
+            if snapshot.certification.get("locally_converged") is not True:
+                return "upper-stationarity failure"
+        elif _selected_stationary(snapshot) is False:
+            return "upper-stationarity failure"
+        return "validated result"
     equivalence = snapshot.equivalence
     if equivalence is None:
         return PENDING_CLASS
@@ -1627,113 +1786,71 @@ def _timing_tables(
     snapshots: Sequence[RouteSnapshot],
     warnings: list[str],
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    categories: dict[str, list[float]] = {
-        "raw_inference": [],
-        "qp_deployment": [],
-        "surrogate_optimization": [],
-        "smooth_mechanistic_nlp": [],
-        "reference_replay": [],
-        "fixed_input_equivalence": [],
-        "mechanistic_generation": [],
-        "training": [],
-    }
-    attempt_ledgers_found = False
-    for block in GENERATION_BLOCKS:
-        path = run_directory / "datasets" / block / "all_attempts.csv"
-        if not path.is_file():
-            continue
-        attempt_ledgers_found = True
-        attempts = _safe_csv(path, warnings)
-        if "elapsed_seconds" in attempts:
-            categories["mechanistic_generation"].extend(
-                pd.to_numeric(attempts["elapsed_seconds"], errors="coerce").tolist()
-            )
-    if not attempt_ledgers_found:
-        generation_path = run_directory / "metrics" / "mechanistic_generation_summary.csv"
-        if not generation_path.is_file():
-            generation_path = run_directory / "metrics" / "mechanistic_generation_audit.csv"
-        generation = _safe_csv(generation_path, warnings)
-        if "elapsed_seconds" in generation:
-            categories["mechanistic_generation"].extend(
-                pd.to_numeric(generation["elapsed_seconds"], errors="coerce").tolist()
-            )
-    ridge = _safe_npz(run_directory / "models" / "ridge_surrogate.npz", warnings)
-    if "elapsed_seconds" in ridge:
-        categories["training"].extend(
-            np.asarray(ridge["elapsed_seconds"], dtype=float).reshape(-1).tolist()
-        )
-    benchmark_path = run_directory / "metrics" / "inference_timing_batches.csv"
-    external = _safe_csv(
-        benchmark_path
-        if benchmark_path.is_file()
-        else run_directory / "metrics" / "timing_events.csv",
-        warnings,
+    del snapshots
+    ledger = _safe_csv(
+        run_directory / "metrics" / "robustness_case_timing.csv", warnings,
     )
-    if {"category", "elapsed_seconds"}.issubset(external.columns):
-        for category, group in external.groupby("category"):
-            # The inference protocol reports latency per test response; all
-            # optimization/generation events remain complete-event seconds.
-            value_column = (
-                "per_response_latency_seconds"
-                if str(category) in {"raw_inference", "qp_deployment"}
-                and "per_response_latency_seconds" in group.columns
-                else "elapsed_seconds"
-            )
-            categories.setdefault(str(category), []).extend(
-                pd.to_numeric(group[value_column], errors="coerce").tolist()
-            )
-    start_times: dict[str, list[float]] = {"surrogate": [], "direct": []}
-    case_times: dict[str, list[float]] = {"surrogate": [], "direct": []}
-    reference_times: dict[str, list[float]] = {"surrogate": [], "direct": []}
-    for snapshot in snapshots:
-        elapsed = _route_elapsed(snapshot)
-        if math.isfinite(elapsed):
-            case_times[snapshot.route].append(elapsed)
-            category = "surrogate_optimization" if snapshot.route == "surrogate" else "smooth_mechanistic_nlp"
-            categories[category].append(elapsed)
-        for start in snapshot.starts:
-            value = sum(
-                time for time in (_as_float(stage.get("elapsed_seconds")) for stage in _stages(start))
-                if math.isfinite(time)
-            )
-            if _stages(start):
-                start_times[snapshot.route].append(value)
-        if snapshot.equivalence is not None:
-            comparison = _as_float(snapshot.equivalence.get("elapsed_seconds"))
-            if math.isfinite(comparison):
-                categories["fixed_input_equivalence"].append(comparison)
-            replay_payload = _mapping(snapshot.equivalence.get("reference_replay"))
-            replay = _as_float(
-                None if replay_payload is None else replay_payload.get("elapsed_seconds")
-            )
-            if math.isfinite(replay):
-                reference_times[snapshot.route].append(replay)
-                categories["reference_replay"].append(replay)
+    required = {
+        "case", "route", "primary_optimization_seconds",
+        "complete_optimization_seconds", "exact_reference_seconds",
+    }
+    if not required.issubset(ledger.columns):
+        warnings.append(
+            "Robustness-case timing ledger is missing required columns; timing "
+            "tables are incomplete."
+        )
+        return pd.DataFrame(), pd.DataFrame()
+    ledger = ledger.loc[
+        ledger["case"].astype(str).str.startswith("robustness_")
+    ].copy()
+    categories: dict[str, list[float]] = {}
+    category_columns = {
+        "surrogate_primary_optimization": ("surrogate", "primary_optimization_seconds"),
+        "surrogate_complete_optimization": ("surrogate", "complete_optimization_seconds"),
+        "surrogate_local_certification": ("surrogate", "certification_seconds"),
+        "surrogate_exact_reference": ("surrogate", "exact_reference_seconds"),
+        "direct_primary_optimization": ("direct", "primary_optimization_seconds"),
+        "direct_complete_optimization": ("direct", "complete_optimization_seconds"),
+        "direct_failure_recovery": ("direct", "recovery_seconds"),
+        "direct_exact_reference": ("direct", "exact_reference_seconds"),
+    }
+    for category, (route, column) in category_columns.items():
+        if column not in ledger:
+            categories[category] = []
+            continue
+        values = pd.to_numeric(
+            ledger.loc[ledger["route"].eq(route), column], errors="coerce",
+        )
+        categories[category] = values[np.isfinite(values)].tolist()
     summary = pd.DataFrame([
         {
             "category": category,
-            "unit": (
-                "seconds_per_response"
-                if category in {"raw_inference", "qp_deployment"}
-                else "seconds"
-            ),
+            "unit": "seconds_per_robustness_case",
+            "source_scope": "robustness_01 through robustness_10",
             **_finite_summary(values),
         }
         for category, values in categories.items()
     ])
     workload: list[dict[str, Any]] = []
     for route in ("surrogate", "direct"):
-        route_snapshots = [item for item in snapshots if item.route == route]
-        attempted = sum(len(item.starts) for item in route_snapshots)
-        accepted = sum(sum(_start_feasible(item, start) for start in item.starts) for item in route_snapshots)
+        route_rows = ledger.loc[ledger["route"].eq(route)]
+        complete = pd.to_numeric(
+            route_rows["complete_optimization_seconds"], errors="coerce",
+        )
+        reference = pd.to_numeric(
+            route_rows["exact_reference_seconds"], errors="coerce",
+        )
         workload.append({
             "route": route,
-            "median_start_time_seconds": _finite_summary(start_times[route])["median"],
-            "median_complete_case_time_seconds": _finite_summary(case_times[route])["median"],
-            "p95_complete_case_time_seconds": _finite_summary(case_times[route])["p95_nearest_rank"],
-            "accepted_starts": accepted,
-            "attempted_starts": attempted,
-            "reference_validation_time_seconds": _finite_summary(reference_times[route])["total"],
+            "robustness_case_count": int(len(route_rows)),
+            "mean_complete_case_time_seconds": _finite_summary(complete.tolist())["mean"],
+            "median_complete_case_time_seconds": _finite_summary(complete.tolist())["median"],
+            "p95_complete_case_time_seconds": _finite_summary(complete.tolist())["p95_nearest_rank"],
+            "candidate_available_count": int(
+                route_rows.get("candidate_available", pd.Series(dtype=bool))
+                .fillna(False).astype(bool).sum()
+            ),
+            "reference_validation_time_seconds": _finite_summary(reference.tolist())["total"],
         })
     return summary, pd.DataFrame(workload)
 
@@ -1839,15 +1956,21 @@ def build_reporting_tables(
     ridge = _safe_csv(run / "metrics" / "ridge_cross_validation.csv", warnings)
     prediction = _safe_csv(run / "metrics" / "untouched_prediction_metrics.csv", warnings)
     projection = _safe_csv(run / "metrics" / "projection_qp_diagnostics.csv", warnings)
-    test_equivalence = _safe_csv(
-        run / "metrics" / "smooth_reference_equivalence_test.csv", warnings,
+    reference_evaluation = _safe_csv(
+        run / "metrics" / "selected_candidate_reference_evaluation.csv", warnings,
     )
+    common_reference = _safe_csv(
+        run / "metrics" / "case_common_reference_comparison.csv", warnings,
+    )
+    if not common_reference.empty:
+        comparison = common_reference
     tables: dict[str, pd.DataFrame] = {
         **generation,
         "ridge_selection": ridge,
         "prediction_metrics": prediction,
         "projection_diagnostics": projection,
-        "smooth_reference_equivalence_test": test_equivalence,
+        "selected_candidate_reference_evaluation": reference_evaluation,
+        "case_common_reference_comparison": common_reference,
         "trust_diagnostics": _trust_table(run, snapshots, warnings),
         "route_status": _route_status_table(snapshots),
         "active_constraints": _active_constraint_table(snapshots),
@@ -1861,7 +1984,6 @@ def build_reporting_tables(
         "scenario_quality": quality[quality["case"] != "nominal"].reset_index(drop=True),
         "process_profiles": profiles,
         "nominal_profiles": profiles[profiles["case"] == "nominal"].reset_index(drop=True),
-        "smooth_reference_equivalence": _equivalence_table(snapshots),
         "nominal_comparison": comparison[comparison["case"] == "nominal"].reset_index(drop=True),
         "scenario_comparison": comparison[comparison["case"] != "nominal"].reset_index(drop=True),
         "case_status": case_status,

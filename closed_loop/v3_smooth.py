@@ -2091,17 +2091,38 @@ def compare_smooth_reference(
     )
 
 
-def _engineering_feasible(theta: FloatArray, response: FloatArray, assets: DirectAssets) -> bool:
-    reported, raw, _ = _engineering_values(theta, response, assets)
+def engineering_feasible(
+    theta: npt.ArrayLike,
+    response: npt.ArrayLike,
+    assets: DirectAssets,
+    *,
+    tolerance: float = 1.0e-6,
+    nonnegativity_tolerance: float = 1.0e-10,
+) -> bool:
+    """Evaluate the declared engineering constraints on any complete response."""
+
+    controls = _finite_vector(theta, 7, "theta")
+    complete = _finite_vector(response, assets.response_count, "response")
+    if not np.isfinite(tolerance) or tolerance <= 0.0:
+        raise ValueError("tolerance must be finite and positive.")
+    if not np.isfinite(nonnegativity_tolerance) or nonnegativity_tolerance <= 0.0:
+        raise ValueError("nonnegativity_tolerance must be finite and positive.")
+    reported, raw, _ = _engineering_values(controls, complete, assets)
     layer_start = (N_STAGES + 3) * N_COMPONENTS
-    layers = response[layer_start:]
+    layers = complete[layer_start:]
     envelope = np.concatenate((layers[0] - layers[1:-1], layers[1:-1] - layers[-1]))
     return bool(
-        np.max(np.asarray(raw), initial=-np.inf) <= 1.0e-6
-        and np.max(envelope, initial=-np.inf) <= 1.0e-6
-        and np.min(response) >= -1.0e-10
-        and float(np.asarray(reported)[6]) >= 1.0 - 1.0e-6
+        np.max(np.asarray(raw), initial=-np.inf) <= tolerance
+        and np.max(envelope, initial=-np.inf) <= tolerance
+        and np.min(complete) >= -nonnegativity_tolerance
+        and float(np.asarray(reported)[6]) >= 1.0 - tolerance
     )
+
+
+def _engineering_feasible(theta: FloatArray, response: FloatArray, assets: DirectAssets) -> bool:
+    """Backward-compatible internal alias for the public feasibility audit."""
+
+    return engineering_feasible(theta, response, assets)
 
 
 __all__ = [
@@ -2113,7 +2134,7 @@ __all__ = [
     "build_direct_nlp", "classify_branches", "compare_smooth_reference",
     "branches_match",
     "direct_initial_point", "direct_start_resume_contract",
-    "engineering_quantities", "evaluate_direct",
+    "engineering_feasible", "engineering_quantities", "evaluate_direct",
     "evaluate_smooth_response", "extract_reduced_states", "fit_direct_assets",
     "independent_kkt_diagnostics", "nearest_development_index", "objective_components",
     "ordered_normalized_starts", "receiver_transition", "smooth_clarifier_fluxes",

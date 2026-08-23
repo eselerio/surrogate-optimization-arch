@@ -301,24 +301,31 @@ def _equivalence() -> EquivalenceDiagnostics:
 def _mock_timing(run: Path, *_args: object, **_kwargs: object) -> pd.DataFrame:
     frame = pd.DataFrame([
         {
-            "category": category,
-            "batch": batch,
-            "elapsed_seconds": 1.0e-3,
-            "per_response_latency_seconds": 5.0e-4,
-            "response_count": 2,
+            "case": f"robustness_{case:02d}",
+            "route": route,
+            "primary_optimization_seconds": 1.0,
+            "certification_seconds": 0.5 if route == "surrogate" else np.nan,
+            "recovery_seconds": np.nan,
+            "complete_optimization_seconds": 1.5 if route == "surrogate" else 1.0,
+            "exact_reference_seconds": 0.25,
         }
-        for category in ("raw_inference", "qp_deployment")
-        for batch in range(30)
+        for case in range(1, 11)
+        for route in ("surrogate", "direct")
     ])
-    runner.atomic_dataframe(run / "metrics/inference_timing_batches.csv", frame)
-    runner.atomic_dataframe(run / "metrics/timing_events.csv", frame)
-    runner.atomic_json(run / "metrics/inference_timing_summary.json", {
-        "warmup_count": 5,
-        "timed_batch_count_per_route": 30,
+    runner.atomic_dataframe(run / "metrics/robustness_case_timing.csv", frame)
+    runner.atomic_dataframe(run / "metrics/timing_events.csv", pd.DataFrame([{
+        "case": row.case,
+        "route": row.route,
+        "category": f"{row.route}_complete_optimization",
+        "elapsed_seconds": row.complete_optimization_seconds,
+    } for row in frame.itertuples()]))
+    runner.atomic_json(run / "metrics/robustness_case_timing_summary.json", {
+        "protocol": runner.TIMING_PROTOCOL,
+        "robustness_case_count": 10,
     })
-    runner.atomic_json(run / "metrics/inference_timing_complete.json", {
-        "warmup_count": 5,
-        "timed_batch_count_per_route": 30,
+    runner.atomic_json(run / "metrics/robustness_case_timing_complete.json", {
+        "stage": "robustness_case_timing_aggregation",
+        "case_count": 10,
     })
     return frame
 
@@ -352,7 +359,7 @@ class ArticleV3OptimizationHookTests(unittest.TestCase):
             ).read_text())
             self.assertEqual(marker["stage"], "selected_exact_qp_active_set_audit")
 
-    def test_inference_timing_uses_five_warmups_and_thirty_cached_batches(self) -> None:
+    def test_repeated_untouched_test_inference_timing_is_retired(self) -> None:
         design, _, _, base_analysis = _fixture()
         cached_raw = np.full((2, RESPONSE_COUNT), 7.0)
 
@@ -412,13 +419,15 @@ class ArticleV3OptimizationHookTests(unittest.TestCase):
             runner, "perf_counter_ns", side_effect=lambda: next(ticks),
         ), patch.object(runner, "assert_source_unchanged"):
             run = Path(temporary)
-            frame = runner._run_inference_timing_benchmark(
-                run,
-                design,
-                analysis,
-                source_files={"mock": "source"},
-                analysis_id="analysis",
-            )
+            with self.assertRaisesRegex(RuntimeError, "timing is retired"):
+                runner._run_inference_timing_benchmark(
+                    run,
+                    design,
+                    analysis,
+                    source_files={"mock": "source"},
+                    analysis_id="analysis",
+                )
+            return
             self.assertEqual(model.calls, 35)
             self.assertEqual(projector.calls, 35 * 2)
             self.assertEqual(
@@ -473,6 +482,59 @@ class ArticleV3OptimizationHookTests(unittest.TestCase):
                 np.asarray(design["test_influents"]), InvalidProjector(),
                 analysis.surrogate_assets.layout,
             )
+
+    def test_timing_is_aggregated_from_ten_robustness_cases(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            run = Path(temporary)
+            (run / "metrics").mkdir()
+            for index in range(1, 11):
+                case_id = f"robustness_{index:02d}"
+                case = run / "optimization" / case_id
+                case.mkdir(parents=True)
+                runner.atomic_json(case / "surrogate.json", {
+                    "elapsed_seconds": float(index), "status": "selected",
+                })
+                runner.atomic_json(case / "direct.json", {
+                    "elapsed_seconds": float(index + 10), "status": "selected",
+                })
+                runner.atomic_json(case / "surrogate_local_convergence.json", {
+                    "certificate": {"elapsed_seconds": 0.5},
+                })
+                for route in ("surrogate", "direct"):
+                    runner.atomic_json(case / f"{route}_casewise_reference.json", {
+                        "candidate_available": True,
+                        "comparison_valid": True,
+                        "optimization_elapsed_seconds": (
+                            float(index) + 0.5
+                            if route == "surrogate" else float(index + 10)
+                        ),
+                        "reference_elapsed_seconds": 0.25,
+                        "recovery": {"attempted": False},
+                    })
+                comparison = case / "common_reference_comparison.json"
+                runner.atomic_json(comparison, {"case": case_id})
+                runner.atomic_json(case / "casewise_comparison_complete.json", {
+                    "case": case_id,
+                    "artifacts": {
+                        comparison.relative_to(run).as_posix():
+                        runner.file_digest(comparison),
+                    },
+                })
+
+            frame = runner._run_robustness_case_timing_aggregation(
+                run, source_files={"unit": "source"}, analysis_id="analysis",
+            )
+            self.assertEqual(len(frame), 20)
+            means = frame.groupby("route")[
+                "complete_optimization_seconds"
+            ].mean()
+            self.assertAlmostEqual(means["surrogate"], 6.0)
+            self.assertAlmostEqual(means["direct"], 15.5)
+            summary = json.loads((
+                run / "metrics/robustness_case_timing_summary.json"
+            ).read_text())
+            self.assertEqual(summary["robustness_case_count"], 10)
+            self.assertEqual(summary["repeated_test_batch_count"], 0)
 
     def test_derivative_failure_retains_cross_evaluation_but_rejects_route(self) -> None:
         _, _, _, analysis = _fixture()
@@ -575,6 +637,9 @@ class ArticleV3OptimizationHookTests(unittest.TestCase):
             self.assertFalse(marker["accepted"])
 
     def test_full_hook_runs_11_cases_and_cross_evaluates_both_routes(self) -> None:
+        self.assertEqual(
+            runner.COMPARISON_PROTOCOL, "casewise_exact_common_reference_v3"
+        )
         design, development_targets, test_targets, analysis = _fixture()
         surrogate_completed_on_entry: list[set[int]] = []
         direct_completed_on_entry: list[set[int]] = []
@@ -591,79 +656,94 @@ class ArticleV3OptimizationHookTests(unittest.TestCase):
             )
             return _direct_solver(*args, **kwargs)
 
-        def untouched(run: Path, *_args: object, **_kwargs: object):
-            diagnostics = pd.DataFrame({"row": [0, 1], "accepted": [True, True]})
+        def certify(
+            case_directory: Path,
+            *,
+            result: SurrogateMultistartResult,
+            **_kwargs: object,
+        ):
+            self.assertIsNotNone(result.selected)
+            assert result.selected is not None and result.selected.final is not None
+            candidate = result.selected.final
+            payload = {
+                "selected": True,
+                "locally_converged": True,
+                "first_order_certified": True,
+                "status": "exact_active_set_kkt",
+                "candidate": candidate.as_dict(),
+                "certificate": {"elapsed_seconds": 0.01},
+            }
+            runner.atomic_json(
+                case_directory / "surrogate_local_convergence_complete.json",
+                {"locally_converged": True},
+            )
+            return candidate, payload
+
+        def casewise_reference(
+            case_directory: Path,
+            *,
+            case_id: str,
+            route: str,
+            selected: object,
+            surrogate_candidate: FinalCandidateRecord | None,
+            route_payload: dict[str, object],
+            **_kwargs: object,
+        ):
+            candidate = surrogate_candidate if route == "surrogate" else selected
+            self.assertIsNotNone(candidate)
+            assert candidate is not None
+            objective = float(candidate.objective)
+            normalized = np.asarray(candidate.normalized_controls, dtype=float)
+            payload = {
+                "case": case_id,
+                "route": route,
+                "candidate_available": True,
+                "native_feasible": True,
+                "exact_replay_valid": True,
+                "comparison_valid": True,
+                "status": "valid_interior",
+                "native_status": candidate.status,
+                "native_objective": objective,
+                "exact_reference_objective": objective,
+                "native_minus_reference_objective": 0.0,
+                "normalized_controls": normalized.tolist(),
+                "exact_reference_objective_components": np.full(6, 1.0 / 6.0).tolist(),
+                "local_convergence_certified": True,
+                "first_order_stationarity_certified": True,
+                "optimization_elapsed_seconds": route_payload["elapsed_seconds"],
+                "certification_elapsed_seconds": 0.01 if route == "surrogate" else None,
+                "reference_elapsed_seconds": 0.02,
+                "reference": {
+                    "status": "valid_interior",
+                    "branch_ambiguous": False,
+                    "engineering_feasible": True,
+                },
+            }
             physical = pd.DataFrame([
                 {
-                    "case": f"test_{row:04d}:fixed_input",
+                    "case": f"{case_id}:{route}",
                     "method": method,
+                    "decision_route": route,
+                    "response_source": method,
+                    "audit_available": True,
                     "mass_conservation_violation_max": 1.0e-12,
                     "mass_conservation_violation_count": 0,
                     "nonnegativity_violation_max": 0.0,
                     "nonnegativity_violation_count": 0,
                 }
-                for row in range(2)
-                for method in ("smooth", "reference")
+                for method in (
+                    "raw",
+                    "projected",
+                    "optimizer_native",
+                    "exact_mechanistic_start_1",
+                    "exact_mechanistic_start_2",
+                )
             ])
-            runner.atomic_dataframe(
-                run / "metrics/smooth_reference_equivalence_test.csv", diagnostics,
-            )
-            runner.atomic_dataframe(
-                run / "metrics/physical_violations_equivalence_test.csv", physical,
-            )
             runner.atomic_json(
-                run / "metrics/smooth_reference_test_complete.json",
-                {"all_accepted": True, "row_count": 2},
+                case_directory / f"{route}_casewise_reference_complete.json",
+                {"candidate_available": True, "comparison_valid": True},
             )
-            return True, diagnostics, physical
-
-        def fixed_input(*_args: object, **kwargs: object):
-            self.assertIsNone(kwargs["settings"].maximum_wall_time)
-            route = SimpleNamespace(
-                response=np.full(RESPONSE_COUNT, 3.0),
-                state=np.ones(REDUCED_STATE_COUNT),
-                feed_tss=100.0,
-                branch=_branch(),
-            )
-            return SimpleNamespace(accepted=True, routes=(route, route))
-
-        def compare(*_args: object, **kwargs: object) -> EquivalenceDiagnostics:
-            self.assertTrue(kwargs["smooth"].accepted)
-            self.assertIsNone(kwargs["settings"].maximum_wall_time)
-            return _equivalence()
-
-        def replay(*_args: object, **_kwargs: object):
-            return (
-                np.full(RESPONSE_COUNT, 4.0),
-                np.ones(REDUCED_STATE_COUNT),
-                np.ones(REDUCED_STATE_COUNT),
-                {
-                    "accepted": True,
-                    "scaled_root_difference": 0.0,
-                    "branch_agreement": True,
-                    "elapsed_seconds": 0.01,
-                },
-            )
-
-        def derivative(case_directory: Path, *, route: str, **_kwargs: object):
-            payload = {"passed": True, "status": "passed", "route": route}
-            audit = case_directory / f"{route}_derivative_audit.json"
-            runner.atomic_json(audit, payload)
-            runner.atomic_json(
-                case_directory / f"{route}_derivative_audit_complete.json",
-                {"passed": True, "artifacts": {audit.name: runner.file_digest(audit)}},
-            )
-            return payload
-
-        def violation(method: str, case: str, *_args: object, **_kwargs: object):
-            return {
-                "case": case,
-                "method": method,
-                "mass_conservation_violation_max": 1.0e-12,
-                "mass_conservation_violation_count": 0,
-                "nonnegativity_violation_max": 0.0,
-                "nonnegativity_violation_count": 0,
-            }
+            return payload, physical
 
         def report(run: Path, *, output_directory: Path, expected_cases: tuple[str, ...]):
             self.assertEqual(
@@ -692,29 +772,25 @@ class ArticleV3OptimizationHookTests(unittest.TestCase):
             ]).to_csv(run / "metrics/physical_violations_assessment.csv", index=False)
 
             with patch.object(
-                runner, "_run_untouched_test_equivalence", side_effect=untouched,
-            ), patch.object(
-                runner, "build_surrogate_nlp", return_value=object(),
+                runner,
+                "_run_untouched_test_equivalence",
+                side_effect=AssertionError("retired whole-test equivalence was called"),
+            ) as untouched_equivalence, patch.object(
+                runner,
+                "build_surrogate_nlp",
+                return_value=SimpleNamespace(assets=analysis.surrogate_assets),
             ) as graph_builder, patch.object(
+                runner, "_run_surrogate_certification", side_effect=certify,
+            ) as certification, patch.object(
+                runner,
+                "_run_casewise_route_reference_evaluation",
+                side_effect=casewise_reference,
+            ) as reference_evaluation, patch.object(
                 runner, "solve_surrogate_exact_qp_local", side_effect=surrogate_solver,
             ) as surrogate_solver, patch.object(
                 runner, "solve_direct_multistart", side_effect=direct_solver,
             ) as direct_solver, patch.object(
-                runner, "solve_fixed_input_two_start", side_effect=fixed_input,
-            ) as fixed_solver, patch.object(
-                runner, "compare_smooth_reference", side_effect=compare,
-            ) as equivalence_solver, patch.object(
-                runner, "cold_reproject", side_effect=lambda *_a, **_k: _projection(
-                    np.full(RESPONSE_COUNT, 2.0)
-                ),
-            ) as cold_projection, patch.object(
-                runner, "_reference_two_start", side_effect=replay,
-            ) as reference_replay, patch.object(
-                runner, "_run_selected_derivative_audit", side_effect=derivative,
-            ) as derivative_audit, patch.object(
-                runner, "violation_record", side_effect=violation,
-            ), patch.object(
-                runner, "_run_inference_timing_benchmark", side_effect=_mock_timing,
+                runner, "_run_robustness_case_timing_aggregation", side_effect=_mock_timing,
             ) as timing_benchmark, patch.object(
                 runner, "write_reporting_tables", side_effect=report,
             ) as reporting, patch.object(runner, "assert_source_unchanged"):
@@ -729,8 +805,11 @@ class ArticleV3OptimizationHookTests(unittest.TestCase):
                 )
 
                 self.assertTrue(passed)
+                untouched_equivalence.assert_not_called()
                 self.assertEqual(surrogate_solver.call_count, 11)
                 self.assertEqual(direct_solver.call_count, 11)
+                self.assertEqual(certification.call_count, 11)
+                self.assertEqual(reference_evaluation.call_count, 22)
                 graph_builder.assert_called_once()
                 for call in surrogate_solver.call_args_list:
                     self.assertNotIn("starts", call.kwargs)
@@ -745,21 +824,41 @@ class ArticleV3OptimizationHookTests(unittest.TestCase):
                     self.assertIsNone(call.kwargs["settings"].maximum_wall_time)
                 self.assertEqual(surrogate_completed_on_entry, [set()] * 11)
                 self.assertEqual(direct_completed_on_entry, [set()] * 11)
-                self.assertEqual(fixed_solver.call_count, 22)
-                self.assertEqual(equivalence_solver.call_count, 22)
-                self.assertEqual(cold_projection.call_count, 22)
-                self.assertEqual(reference_replay.call_count, 22)
-                self.assertEqual(derivative_audit.call_count, 22)
                 self.assertEqual(timing_benchmark.call_count, 1)
                 self.assertEqual(reporting.call_count, 1)
 
                 selected = pd.read_csv(
-                    run / "metrics/physical_violations_selected_cases.csv"
+                    run / "metrics/selected_response_physical_audit.csv"
                 )
-                self.assertEqual(len(selected), 11 * 2 * 4)
+                self.assertEqual(len(selected), 11 * 2 * 5)
                 self.assertEqual(
                     selected.groupby("method").size().to_dict(),
-                    {method: 22 for method in ("raw", "projected", "smooth", "reference")},
+                    {
+                        method: 22
+                        for method in (
+                            "raw",
+                            "projected",
+                            "optimizer_native",
+                            "exact_mechanistic_start_1",
+                            "exact_mechanistic_start_2",
+                        )
+                    },
+                )
+                comparison = pd.read_csv(
+                    run / "metrics/case_common_reference_comparison.csv"
+                )
+                reference = pd.read_csv(
+                    run / "metrics/selected_candidate_reference_evaluation.csv"
+                )
+                self.assertEqual(len(comparison), 11)
+                self.assertTrue(comparison["comparison_eligible"].all())
+                self.assertEqual(len(reference), 22)
+                self.assertTrue(reference["comparison_valid"].all())
+                retired = json.loads(
+                    (run / "metrics/untouched_test_equivalence_retired.json").read_text()
+                )
+                self.assertEqual(
+                    retired["status"], "retired_incomplete_excluded_from_analysis"
                 )
                 status = json.loads(
                     (run / "optimization/final_status.json").read_text(encoding="utf-8")
@@ -769,7 +868,7 @@ class ArticleV3OptimizationHookTests(unittest.TestCase):
                 self.assertEqual(status["required_starts_per_route"], 1)
                 self.assertEqual(status["required_attempts_per_route"], 1)
                 self.assertEqual(status["surrogate_ipopt_continuation_stage_count"], 0)
-                self.assertIsNone(status["wall_time_ceiling"])
+                self.assertFalse(status["untouched_test_equivalence_executed"])
                 self.assertEqual(status["selected_decision_count"], 22)
                 self.assertTrue(status["scientific_validation_passed"])
 
@@ -777,7 +876,10 @@ class ArticleV3OptimizationHookTests(unittest.TestCase):
                     "nominal", *(f"robustness_{index:02d}" for index in range(1, 11))
                 ):
                     case = run / "optimization" / case_id
-                    self.assertTrue((case / "case_complete.json").is_file())
+                    self.assertTrue((case / "casewise_comparison_complete.json").is_file())
+                    self.assertTrue(
+                        (case / "surrogate_local_convergence_complete.json").is_file()
+                    )
                     for route in ("surrogate", "direct"):
                         payload = json.loads(
                             (case / f"{route}.json").read_text(encoding="utf-8")
@@ -789,19 +891,9 @@ class ArticleV3OptimizationHookTests(unittest.TestCase):
                             len(list((case / "checkpoints").glob(f"{route}_start_*.json"))),
                             1,
                         )
-                        with np.load(case / f"{route}_selected.npz") as arrays:
-                            self.assertTrue(
-                                {"theta", "raw", "projected", "smooth", "reference"}
-                                <= set(arrays.files)
-                            )
-                        equivalence = json.loads(
-                            (case / f"{route}_equivalence.json").read_text(encoding="utf-8")
+                        self.assertTrue(
+                            (case / f"{route}_casewise_reference_complete.json").is_file()
                         )
-                        self.assertTrue(equivalence["accepted"])
-                        if route == "direct":
-                            self.assertTrue(
-                                equivalence["optimizer_root_reproduction"]["accepted"]
-                            )
                 self.assertFalse(
                     any(path.name.endswith(".tmp") for path in run.rglob("*"))
                 )
@@ -809,11 +901,8 @@ class ArticleV3OptimizationHookTests(unittest.TestCase):
                 surrogate_solver.reset_mock()
                 direct_solver.reset_mock()
                 graph_builder.reset_mock()
-                fixed_solver.reset_mock()
-                equivalence_solver.reset_mock()
-                cold_projection.reset_mock()
-                reference_replay.reset_mock()
-                derivative_audit.reset_mock()
+                certification.reset_mock()
+                reference_evaluation.reset_mock()
                 timing_benchmark.reset_mock()
                 reporting.reset_mock()
                 self.assertTrue(runner.run_optimization_stage(
@@ -827,12 +916,9 @@ class ArticleV3OptimizationHookTests(unittest.TestCase):
                 ))
                 surrogate_solver.assert_not_called()
                 direct_solver.assert_not_called()
-                graph_builder.assert_not_called()
-                fixed_solver.assert_not_called()
-                equivalence_solver.assert_not_called()
-                cold_projection.assert_not_called()
-                reference_replay.assert_not_called()
-                derivative_audit.assert_not_called()
+                graph_builder.assert_called_once()
+                self.assertEqual(certification.call_count, 11)
+                self.assertEqual(reference_evaluation.call_count, 22)
                 self.assertEqual(timing_benchmark.call_count, 1)
                 self.assertEqual(reporting.call_count, 1)
 
@@ -972,177 +1058,197 @@ class ArticleV3OptimizationHookTests(unittest.TestCase):
                 self.assertEqual(len(restored.starts), 1)
                 self.assertEqual(restored_payload["selected_start"], 0)
 
-    def test_direct_optimizer_root_mismatch_fails_scientific_status(self) -> None:
-        design, development_targets, test_targets, analysis = _fixture()
-        original_evaluate = runner._evaluate_selected_route
-
-        def route_result(case_directory: Path, route: str):
-            normalized = np.asarray(runner.direct_normalized_starts()[0])
-            if route == "direct":
-                start = _direct_start(0, normalized)
-                result = DirectMultistartResult(
-                    (start,), start, "selected_stationary"
-                )
-            else:
-                start = _surrogate_start(0, normalized)
-                result = SurrogateMultistartResult(
-                    (start,), start, "selected_stationary"
-                )
-            payload = result.as_dict()
-            payload.update({"route_contract": f"{route}-contract", "route": route})
-            runner.atomic_json(
-                case_directory / f"{route}.json", payload, nonfinite_to_none=True,
+    def test_branch_boundary_is_a_qualifier_when_exact_replays_agree(self) -> None:
+        theta = 0.5 * (DECISION_LOWER + DECISION_UPPER)
+        influent = 0.5 * (INFLUENT_LOWER + INFLUENT_UPPER)
+        state = np.ones(3)
+        analysis = SimpleNamespace(
+            direct_assets=SimpleNamespace(
+                clarifier=object(),
+                state_count=3,
+                response_count=4,
+                state_scale=np.ones(3),
             )
-            runner.atomic_json(
-                case_directory / f"{route}_complete.json", {"complete": True},
-            )
-            return result, payload
-
-        def surrogate_route(case_directory: Path, **_kwargs: object):
-            return route_result(case_directory, "surrogate")
-
-        def direct_route(case_directory: Path, **_kwargs: object):
-            return route_result(case_directory, "direct")
-
-        def selected_route(case_directory: Path, **kwargs: object):
-            if kwargs["case_id"] == "nominal" and kwargs["route"] == "direct":
-                return original_evaluate(case_directory, **kwargs)
-            route = str(kwargs["route"])
-            runner.atomic_json(
-                case_directory / f"{route}_selection_complete.json",
-                {"selected": True, "accepted": True},
-            )
-            rows = pd.DataFrame([
-                {
-                    "case": f"{kwargs['case_id']}:{route}",
-                    "method": method,
-                    "mass_conservation_violation_max": 0.0,
-                    "mass_conservation_violation_count": 0,
-                    "nonnegativity_violation_max": 0.0,
-                    "nonnegativity_violation_count": 0,
-                }
-                for method in ("raw", "projected", "smooth", "reference")
-            ])
-            return True, True, rows
-
-        def untouched(run: Path, *_args: object, **_kwargs: object):
-            diagnostics = pd.DataFrame({"row": [0, 1], "accepted": [True, True]})
-            physical = pd.DataFrame(columns=("case", "method"))
-            runner.atomic_dataframe(
-                run / "metrics/smooth_reference_equivalence_test.csv", diagnostics,
-            )
-            runner.atomic_dataframe(
-                run / "metrics/physical_violations_equivalence_test.csv", physical,
-            )
-            runner.atomic_json(
-                run / "metrics/smooth_reference_test_complete.json",
-                {"all_accepted": True, "row_count": 2},
-            )
-            return True, diagnostics, physical
-
-        def report(_run: Path, *, output_directory: Path, **_kwargs: object):
-            output_directory.mkdir(parents=True, exist_ok=True)
-            runner.atomic_json(output_directory / "report_manifest.json", {})
-            return SimpleNamespace(warnings=())
-
-        def derivative(case_directory: Path, *, route: str, **_kwargs: object):
-            payload = {"passed": True, "status": "passed", "route": route}
-            runner.atomic_json(
-                case_directory / f"{route}_derivative_audit.json", payload,
-            )
-            runner.atomic_json(
-                case_directory / f"{route}_derivative_audit_complete.json",
-                {"passed": True},
-            )
-            return payload
-
-        mismatched_route = SimpleNamespace(
-            response=np.full(RESPONSE_COUNT, 3.0),
-            state=np.ones(REDUCED_STATE_COUNT) + 1.0e-3,
-            feed_tss=100.0,
-            branch=_branch(),
         )
-        smooth = SimpleNamespace(
-            accepted=True, routes=(mismatched_route, mismatched_route)
-        )
+        ambiguous = BranchClassification((), (), (), (), (), True, 0.0)
+        solved = SimpleNamespace(accepted=True, state=state, message="accepted")
+        with (
+            patch.object(
+                runner, "solve_steady_state", side_effect=(solved, solved),
+            ) as solve,
+            patch.object(runner, "classify_branches", return_value=ambiguous),
+            patch.object(runner, "mechanistic_diagnostics", return_value={"passed": True}),
+            patch.object(
+                runner, "unpack_state", return_value=(np.ones((1, 20)), np.ones(1)),
+            ),
+            patch.object(runner, "generation_scale", return_value=np.ones(3)),
+            patch.object(runner, "smooth_branches_match", return_value=True),
+            patch.object(runner, "assemble_target", return_value=np.ones(4)),
+            patch.object(runner, "objective_components", return_value=np.ones(6)),
+            patch.object(runner, "engineering_quantities", return_value=np.ones(7)),
+            patch.object(runner, "engineering_feasible", return_value=True),
+        ):
+            response, start_1, start_2, payload = runner._casewise_exact_reference(
+                theta, influent, analysis,
+            )
+
+        self.assertTrue(payload["accepted"])
+        self.assertEqual(payload["status"], "valid_branch_boundary")
+        self.assertTrue(payload["branch_ambiguous"])
+        self.assertTrue(payload["start_2_required"])
+        self.assertTrue(payload["two_start_agreement_checked"])
+        self.assertEqual([call.kwargs["starts"] for call in solve.call_args_list], [(1,), (2,)])
+        np.testing.assert_array_equal(response, np.ones(4))
+        np.testing.assert_array_equal(start_1, state)
+        np.testing.assert_array_equal(start_2, state)
+
+    def test_valid_exact_replay_retains_objective_when_engineering_is_infeasible(
+        self,
+    ) -> None:
+        _, _, _, analysis = _fixture()
+        analysis.direct_assets.clarifier = object()
+        normalized = np.asarray(EXACT_QP_CENTER_START, dtype=float)
+        selected = _direct_start(0, normalized)
+        route_payload = DirectMultistartResult(
+            (selected,), selected, "selected_stationary"
+        ).as_dict()
+        route_payload.update({"route_contract": "direct-contract", "elapsed_seconds": 0.5})
+        reference = np.full(RESPONSE_COUNT, 4.0)
         replay = (
-            np.full(RESPONSE_COUNT, 4.0),
+            reference,
             np.ones(REDUCED_STATE_COUNT),
             np.ones(REDUCED_STATE_COUNT),
             {
                 "accepted": True,
-                "scaled_root_difference": 0.0,
-                "branch_agreement": True,
-                "elapsed_seconds": 0.01,
+                "status": "valid_interior",
+                "branch_ambiguous": False,
+                "engineering_feasible": False,
+                "objective": 12.5,
+                "objective_components": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+                "elapsed_seconds": 0.2,
             },
         )
-        violation = lambda method, case, *_a, **_k: {
-            "case": case,
-            "method": method,
-            "mass_conservation_violation_max": 0.0,
-            "mass_conservation_violation_count": 0,
-            "nonnegativity_violation_max": 0.0,
-            "nonnegativity_violation_count": 0,
-        }
+
+        def physical(method: str, case: str, *_args: object, **_kwargs: object):
+            return {
+                "case": case,
+                "method": method,
+                "audit_available": True,
+                "mass_conservation_violation_max": 0.0,
+                "mass_conservation_violation_count": 0,
+                "nonnegativity_violation_max": 0.0,
+                "nonnegativity_violation_count": 0,
+            }
 
         with tempfile.TemporaryDirectory() as temporary:
-            run = Path(temporary) / "article"
-            (run / "metrics").mkdir(parents=True)
-            pd.DataFrame([
-                {"case": "test_0000", "method": method}
-                for method in ("raw", "projected", "mechanistic")
-            ]).to_csv(run / "metrics/physical_violations_assessment.csv", index=False)
-            with patch.object(
-                runner, "_run_untouched_test_equivalence", side_effect=untouched,
-            ), patch.object(
-                runner, "build_surrogate_nlp", return_value=object(),
-            ), patch.object(
-                runner, "_run_surrogate_route", side_effect=surrogate_route,
-            ), patch.object(
-                runner, "_run_direct_route", side_effect=direct_route,
-            ), patch.object(
-                runner, "_evaluate_selected_route", side_effect=selected_route,
-            ), patch.object(
-                runner, "solve_fixed_input_two_start", return_value=smooth,
-            ), patch.object(
-                runner, "compare_smooth_reference", return_value=_equivalence(),
-            ), patch.object(
-                runner, "cold_reproject", return_value=_projection(
-                    np.full(RESPONSE_COUNT, 2.0)
+            case = Path(temporary) / "nominal"
+            runner.atomic_json(
+                case / "direct.json", route_payload, nonfinite_to_none=True,
+            )
+            with (
+                patch.object(
+                    runner,
+                    "cold_reproject",
+                    return_value=_projection(np.full(RESPONSE_COUNT, 2.0)),
                 ),
-            ), patch.object(
-                runner, "_reference_two_start", return_value=replay,
-            ), patch.object(
-                runner, "_run_selected_derivative_audit", side_effect=derivative,
-            ), patch.object(
-                runner, "violation_record", side_effect=violation,
-            ), patch.object(
-                runner, "_run_inference_timing_benchmark", side_effect=_mock_timing,
-            ), patch.object(
-                runner, "write_reporting_tables", side_effect=report,
-            ), patch.object(runner, "assert_source_unchanged"):
-                passed = runner.run_optimization_stage(
-                    run=run,
-                    profile=ARTICLE_FULL,
-                    design=design,
-                    development_targets=development_targets,
-                    test_targets=test_targets,
-                    analysis=analysis,
-                    source_files={"mock": "source"},
+                patch.object(
+                    runner, "_casewise_exact_reference", return_value=replay,
+                ),
+                patch.object(runner, "assemble_target", return_value=reference),
+                patch.object(runner, "_physical_record", side_effect=physical),
+            ):
+                payload, violations = (
+                    runner._run_casewise_route_reference_evaluation(
+                        case,
+                        case_id="nominal",
+                        route="direct",
+                        influent=0.5 * (INFLUENT_LOWER + INFLUENT_UPPER),
+                        selected=selected,
+                        surrogate_candidate=None,
+                        route_payload=route_payload,
+                        certification_payload=None,
+                        recovery_payload=None,
+                        analysis=analysis,
+                        source_id="source",
+                        analysis_id="analysis",
+                    )
                 )
-            self.assertFalse(passed)
-            status = json.loads(
-                (run / "optimization/final_status.json").read_text(encoding="utf-8")
+
+            self.assertTrue(payload["candidate_available"])
+            self.assertTrue(payload["exact_replay_valid"])
+            self.assertFalse(payload["comparison_valid"])
+            self.assertEqual(payload["status"], "exact_valid_engineering_infeasible")
+            self.assertEqual(payload["exact_reference_objective"], 12.5)
+            self.assertEqual(
+                payload["exact_reference_objective_components"],
+                [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
             )
-            self.assertFalse(status["scientific_validation_passed"])
-            equivalence = json.loads(
-                (run / "optimization/nominal/direct_equivalence.json").read_text(
-                    encoding="utf-8"
+            self.assertAlmostEqual(
+                payload["native_minus_reference_objective"],
+                selected.objective - 12.5,
+            )
+            self.assertEqual(len(violations), 5)
+            marker = json.loads((
+                case / "direct_casewise_reference_complete.json"
+            ).read_text())
+            self.assertFalse(marker["comparison_valid"])
+            with np.load(case / "direct_casewise_reference.npz") as arrays:
+                np.testing.assert_array_equal(arrays["exact_reference"], reference)
+
+    def test_direct_recovery_runs_only_after_primary_failure(self) -> None:
+        normalized = np.asarray(EXACT_QP_CENTER_START, dtype=float)
+        primary_start = _direct_start(0, normalized)
+        primary = DirectMultistartResult(
+            (primary_start,), primary_start, "selected_stationary"
+        )
+        surrogate_candidate = _surrogate_start(0, normalized).final
+        assert surrogate_candidate is not None
+        common = {
+            "case_id": "nominal",
+            "influent": 0.5 * (INFLUENT_LOWER + INFLUENT_UPPER),
+            "surrogate_candidate": surrogate_candidate,
+            "assets": object(),
+            "development_decisions": np.zeros((1, 7)),
+            "development_influents": np.zeros((1, 20)),
+            "development_targets": np.zeros((1, RESPONSE_COUNT)),
+            "source_id": "source",
+            "analysis_id": "analysis",
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            case = Path(temporary) / "nominal"
+            with patch.object(runner, "solve_direct_multistart") as solve:
+                returned, payload = runner._run_direct_failure_recovery(
+                    case, result=primary, **common,
                 )
+            self.assertIs(returned, primary)
+            self.assertFalse(payload["attempted"])
+            self.assertEqual(payload["status"], "not_required")
+            solve.assert_not_called()
+
+            case.mkdir(parents=True, exist_ok=True)
+            runner.atomic_json(case / "direct.json", {"route": "direct"})
+            failed = DirectMultistartResult(
+                (), None, "no_validated_feasible_start"
             )
-            root = equivalence["optimizer_root_reproduction"]
-            self.assertFalse(root["accepted"])
-            self.assertGreater(root["maximum_scaled_difference"], 1.0e-6)
+            recovered_start = _direct_start(0, normalized)
+            recovered = DirectMultistartResult(
+                (recovered_start,), recovered_start, "selected_stationary"
+            )
+            with patch.object(
+                runner, "solve_direct_multistart", return_value=recovered,
+            ) as solve:
+                returned, payload = runner._run_direct_failure_recovery(
+                    case, result=failed, **common,
+                )
+            self.assertIs(returned, recovered)
+            self.assertTrue(payload["attempted"])
+            self.assertEqual(payload["selected_from"], "single_surrogate_endpoint_recovery")
+            solve.assert_called_once()
+            np.testing.assert_array_equal(
+                solve.call_args.kwargs["starts"], normalized.reshape(1, 7)
+            )
+            self.assertTrue(solve.call_args.kwargs["allow_reduced_starts"])
+            self.assertTrue((case / "direct_recovery_complete.json").is_file())
 
 
 if __name__ == "__main__":

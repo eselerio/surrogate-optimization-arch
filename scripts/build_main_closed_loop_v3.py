@@ -29,8 +29,9 @@ This notebook is the canonical, resumable interface to
 `scripts/run_article_v3_5000.py`. The production driver, rather than duplicated
 notebook code, owns candidate generation and deterministic replacement, two-start
 mechanistic acceptance, ridge selection,
-untouched-test assessment, scientific admission gates, paired optimization, independent
-replay, derivative and physical audits, and Results/Discussion tables.
+untouched-test surrogate assessment, scientific admission gates, paired optimization,
+casewise exact-reference replay, convergence and physical audits, and
+Results/Discussion tables.
 
 The full model-function workload is fixed at **5,000 accepted datasets**: 4,000
 development inputs and 1,000 untouched test inputs. Rejected mechanistic
@@ -42,7 +43,10 @@ route primarily runs the seven-variable exact-QP active-set optimizer. If
 exact active-set derivatives are unavailable, deterministic value-only COBYQA
 cold-solves the unchanged projection QP at every distinct fallback trial and
 retains the best feasible visited incumbent. A budget-limited or
-stationarity-unresolved incumbent is not called a local optimum. The surrogate
+stationarity-unresolved incumbent is not called a local optimum. Each selected
+surrogate endpoint then receives a bounded two-scale exact-QP feasible poll;
+this can support a finite-direction, finite-resolution convergence
+qualification without claiming differentiable KKT stationarity. The surrogate
 route does not execute the retired embedded-KKT IPOPT problem or any of its
 seven gap-continuation stages. The direct smooth-mechanistic route retains its
 separate three-stage smoothing continuation. There is no wall-time ceiling in
@@ -96,6 +100,7 @@ from IPython.display import display
 from closed_loop.manuscript_v3 import ARTICLE_FULL
 from scripts.run_article_v3_5000 import (
     DEFAULT_RUN_ID,
+    LEGACY_RUN_ID,
     OPTIMIZATION_PROTOCOL,
     RUN_ID_PATTERN,
     main as run_article,
@@ -108,19 +113,17 @@ if not (ROOT / "scripts" / "run_article_v3_5000.py").is_file():
         "Run this notebook from the surrogate-optimization-arch repository root."
     )
 
-# Configure with ARTICLE_V3_RUN_ID before starting, or edit this assignment.
+# Every rerun gets its own directory. Configure the target and optional source
+# with environment variables before starting, or edit these assignments.
 RUN_ID = os.environ.get("ARTICLE_V3_RUN_ID", DEFAULT_RUN_ID)
 if RUN_ID_PATTERN.fullmatch(RUN_ID) is None or ".." in RUN_ID:
     raise ValueError(
         "ARTICLE_V3_RUN_ID must match article_full_5000_<identifier>."
     )
 RUN_ROOT = resolve_run_directory(RUN_ID)
-
-# This explicit flag authorizes only the runner's pinned, one-time migration of
-# the already-started article_full_5000_001 optimization contract. Generation,
-# fitting, and assessment remain byte-verified and are reused. The runner
-# refuses the migration for any other run or predecessor contract.
-AUTHORIZE_SINGLE_START_EXACT_QP_MIGRATION = RUN_ID == DEFAULT_RUN_ID
+REUSE_FROM_RUN_ID = os.environ.get("ARTICLE_V3_REUSE_FROM_RUN_ID", LEGACY_RUN_ID)
+if REUSE_FROM_RUN_ID == RUN_ID:
+    raise ValueError("The rerun source and target run IDs must differ.")
 
 profile = asdict(ARTICLE_FULL)
 expected_profile = {
@@ -193,10 +196,38 @@ for field, expected in required_fallback.items():
             f"Surrogate fallback contract mismatch for {field}: "
             f"{fallback.get(field)!r} != {expected!r}"
         )
+certification = optimization.get("surrogate_local_convergence_certification", {})
+required_certification = {
+    "protocol": "exact_qp_two_scale_accelerated_feasible_poll_v3",
+    "poll_radii_normalized": [1e-3, 1e-4],
+    "maximum_exact_qp_evaluations": 10_000,
+    "acceleration_growth_factor": 2.0,
+    "maximum_acceleration_probes_per_winning_ray": 16,
+    "final_certificate_requires_fresh_unaccelerated_poll": True,
+    "finite_poll_claims_classical_stationarity": False,
+}
+for field, expected in required_certification.items():
+    if certification.get(field) != expected:
+        raise RuntimeError(
+            f"Surrogate certification contract mismatch for {field}: "
+            f"{certification.get(field)!r} != {expected!r}"
+        )
+reporting_contract = contract_config["reporting"]
+if reporting_contract.get("validation_protocol") != "casewise_exact_common_reference_v3":
+    raise RuntimeError("The casewise exact common-reference protocol is required.")
+if reporting_contract.get("untouched_test_smooth_reference_equivalence_executed") is not False:
+    raise RuntimeError("Test-set-wide smooth/reference equivalence must remain retired.")
+if reporting_contract.get("common_reference_start_count_per_decision") != 2:
+    raise RuntimeError("Every selected decision requires a two-start exact replay.")
+if reporting_contract.get("timing_protocol") != "robustness_casewise_aggregate_v1":
+    raise RuntimeError("Timing must be aggregated from the ten robustness cases.")
+if reporting_contract.get("untouched_test_repeated_inference_benchmark_executed") is not False:
+    raise RuntimeError("Repeated untouched-test timing must remain retired.")
 
 display(pd.Series({
     "run_id": RUN_ID,
     "run_directory": str(RUN_ROOT),
+    "reused_from_run_id": REUSE_FROM_RUN_ID,
     "accepted_dataset_target": 5_000,
     "accepted_development_target": profile["development_count"],
     "accepted_untouched_test_target": profile["test_count"],
@@ -214,6 +245,11 @@ display(pd.Series({
     "direct_optimization": optimization["direct_protocol"],
     "direct_smoothing_stages": len(optimization["smooth_sequence"]),
     "local_optimum_label_requires": fallback["local_optimum_label_requires"],
+    "surrogate_local_certification": certification["protocol"],
+    "casewise_validation": reporting_contract["validation_protocol"],
+    "timing_protocol": reporting_contract["timing_protocol"],
+    "timing_cases": reporting_contract["timing_case_count"],
+    "test_set_smooth_reference_equivalence": "retired",
     "unresolved_incumbent_is_called_local_optimum": False,
     "global_optimality_claimed": False,
     "full_run_wall_time_ceiling": None,
@@ -236,6 +272,13 @@ STAGE_ARTIFACTS = {
         "inputs/contract_migrations/article-v3-generation-replacement-v1.json",
         "inputs/contract_migrations/article-v3-projection-audit-v1.json",
         "inputs/contract_migrations/article-v3-direct-active-set-v1.json",
+        "inputs/contract_migrations/article-v3-casewise-common-reference-v1.json",
+        "inputs/contract_migrations/article-v3-convergence-poll-refinement-v1.json",
+        "inputs/contract_migrations/article-v3-poll-linesearch-v1.json",
+        "inputs/contract_migrations/article-v3-poll-linesearch-v1-retained.json",
+        "inputs/contract_migrations/article-v3-poll-linesearch-v1-reused-files.json",
+        "inputs/contract_migrations/article-v3-casewise-timing-v1.json",
+        "inputs/contract_migrations/article-v3-casewise-timing-v1-retained.json",
         "datasets/design.npz",
         "datasets/development/all_attempts.csv",
         "datasets/development/accepted_provenance.csv",
@@ -263,8 +306,15 @@ STAGE_ARTIFACTS = {
     ),
     "complete": (
         "optimization/optimization_complete.json",
-        "metrics/smooth_reference_test_complete.json",
+        "metrics/untouched_test_equivalence_retired.json",
+        "metrics/convergence_poll_refinement.json",
+        "metrics/selected_candidate_reference_evaluation.csv",
+        "metrics/case_common_reference_comparison.csv",
+        "metrics/selected_response_physical_audit.csv",
         "metrics/physical_violations_all_analysis.csv",
+        "metrics/robustness_case_timing.csv",
+        "metrics/robustness_case_timing_summary.json",
+        "metrics/robustness_case_timing_complete.json",
         "report/tables/report_manifest.json",
     ),
 }
@@ -310,9 +360,7 @@ def invoke_stage(through: str) -> None:
         run_article(
             run_id=RUN_ID,
             through=through,
-            authorize_single_start_exact_qp_migration=(
-                AUTHORIZE_SINGLE_START_EXACT_QP_MIGRATION
-            ),
+            reuse_from_run_id=(None if RUN_ROOT.exists() else REUSE_FROM_RUN_ID),
         )
     finally:
         show_status(through)
@@ -335,10 +383,12 @@ candidate denominator from the accepted-row denominator and retain every
 candidate-to-final-slot mapping. The phrase "untouched test" means untouched by
 fitting and tuning, not unconditional sampling from the entire input box.
 
-For the already-started default run, the runner verifies the complete migration
-chain and preserves the accepted generation, fitted surrogate, and assessment
-artifacts. The newest pinned migration changes only the optimization protocol;
-it does not regenerate data or refit the surrogate.
+For every rerun, the runner first creates a new self-contained run directory.
+It byte-copies and hash-verifies the accepted generation, fitted surrogate,
+assessment, and completed primary case-search artifacts from the declared
+source run, records their provenance, and generates all corrected downstream
+artifacts in the new directory. It does not regenerate data, refit the
+surrogate, or repeat a completed primary case search.
 """),
     code(r"""
 invoke_stage("generation")
@@ -421,12 +471,24 @@ the same problem, cold-solving the unchanged projection QP at every distinct
 trial. The best feasible visited point is cold-replayed; a budget-limited or
 stationarity-unresolved result remains an incumbent, not a claimed optimum.
 The direct route retains only its separate three-stage smoothing continuation.
-The driver then performs fixed-input smooth/nonsmooth replay,
-derivative and root-reproduction checks, and raw/projected/smooth/reference
-mass-conservation and non-negativity accounting before writing all article
-tables. A failed or unresolved case remains in the denominator and does not
-suppress subsequent cases or downstream audits. There is no 10-minute ceiling
-in this phase.
+Each retained surrogate endpoint is then certified either by its exact active-
+set KKT audit or by a deterministic two-scale feasible poll; the latter
+supports only finite-direction, finite-resolution convergence, not
+mathematical stationarity. A
+failed direct route receives at most one recovery solve initialized from the
+certified surrogate decision.
+
+Both returned decisions are evaluated on the same exact, nonsmooth two-start
+mechanistic model in each case. Branch-boundary ambiguity is reported as a
+qualifier instead of being mistaken for solver failure. This casewise replay
+replaces the retired 1,000-row smooth/reference equivalence sweep. The driver
+records raw, projected, optimizer-native, and exact-reference mass-conservation
+and non-negativity audits before writing all article tables. A failed or
+unresolved case remains in the denominator and does not suppress subsequent
+cases or downstream audits. Runtime summaries are calculated only from the
+durations recorded in robustness cases 01--10; no repeated timing benchmark is
+run over the 1,000-row untouched test block. There is no 10-minute ceiling in
+this phase.
 """),
     code(r"""
 invoke_stage("complete")
@@ -465,15 +527,15 @@ display(pd.DataFrame(
     markdown(r"""
 ## Resumption
 
-If execution is interrupted, rerun the setup and helper cells, then rerun the
-cell for the desired terminal stage. Calling `complete` is sufficient to
-resume every missing prerequisite. The production driver accepts candidate and
-accepted-row checkpoints only when their source, profile, input, stream-state,
-and provenance bindings match. Its pinned migration chain preserves the
-generation-replacement and projection-audit history, verifies all reusable
-generation, fit, and assessment artifacts, and starts the revised optimization
-without accepting a partial result from the retired protocol. Any other
-mismatch is a run-integrity failure and is not hidden by regeneration.
+If execution is interrupted, rerun the setup and helper cells with the same
+target and source IDs, then rerun the cell for the desired terminal stage.
+Calling `complete` is sufficient to resume every missing prerequisite in that
+target directory. A later rerun must use a new target ID and name its prior run
+with `ARTICLE_V3_REUSE_FROM_RUN_ID`; the driver creates another self-contained,
+hash-pinned copy rather than overwriting the earlier run. Candidate and
+accepted-row checkpoints are accepted only when their source, profile, input,
+stream-state, and provenance bindings match. Any mismatch is a run-integrity
+failure and is not hidden by regeneration.
 """),
 ]
 

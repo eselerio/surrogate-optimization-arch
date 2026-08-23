@@ -6,15 +6,17 @@ preflight artifact. Expensive stages finish with atomic manifests.
 
 Optimization enters through :func:`run_optimization_stage`, which evaluates
 one deterministic local attempt for each route in each of eleven article
-cases and publishes independent replay, equivalence, physical-audit, and
-reporting checkpoints.
+cases and publishes convergence certification, exact common-reference replay,
+physical-audit, and reporting checkpoints.  The former untouched-test-wide
+smooth/reference equivalence sweep is retained only as legacy code and is not
+executed by the article workflow.
 """
 
 from __future__ import annotations
 
 import argparse
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from hashlib import sha256
 from importlib.metadata import PackageNotFoundError, version
@@ -23,6 +25,7 @@ import os
 from pathlib import Path
 import platform
 import re
+import shutil
 import tempfile
 from time import perf_counter, perf_counter_ns, sleep
 from typing import Any, Mapping
@@ -56,6 +59,7 @@ from closed_loop.model import (
     TSS_VECTOR,
     assemble_target,
     branch_classification,
+    diagnostics as mechanistic_diagnostics,
     generation_scale,
     solve_steady_state,
     unpack_state,
@@ -68,7 +72,7 @@ from closed_loop.projection import (
     QuadraticSurrogate,
     build_network_operators,
 )
-from closed_loop.v3_reporting import write_reporting_tables
+from closed_loop.v3_reporting import OBJECTIVE_COMPONENT_NAMES, write_reporting_tables
 from closed_loop.v3_derivative_audit import audit_casadi_nlp_derivatives
 from closed_loop.v3_replacement_generation import (
     MechanisticBlockResult,
@@ -76,14 +80,19 @@ from closed_loop.v3_replacement_generation import (
 )
 from closed_loop.v3_smooth import (
     CONTINUATION_SCHEDULE,
+    DEFAULT_OBJECTIVE_WEIGHTS,
     DirectCase,
     DirectMultistartResult,
     DirectStartResult,
     SolverSettings,
     build_direct_nlp,
     branches_match as smooth_branches_match,
+    classify_branches,
     compare_smooth_reference,
+    engineering_feasible,
+    engineering_quantities,
     fit_direct_assets,
+    objective_components,
     ordered_normalized_starts as direct_normalized_starts,
     solve_direct_multistart,
     solve_fixed_input_two_start,
@@ -91,13 +100,16 @@ from closed_loop.v3_smooth import (
 from closed_loop.v3_surrogate_nlp import (
     EXACT_QP_CENTER_START,
     EXACT_QP_SINGLE_START_PROTOCOL,
+    FinalCandidateRecord,
     GAP_CONTINUATION,
     SurrogateCase,
+    SurrogateCertificationSettings,
     SurrogateMultistartResult,
     SurrogateSolverSettings,
     SurrogateStartResult,
     build_surrogate_nlp,
     build_surrogate_assets,
+    certify_surrogate_local_convergence,
     cold_reproject,
     solve_surrogate_exact_qp_local,
 )
@@ -106,11 +118,14 @@ from closed_loop.v3_trust import calibrate_trust_diagnostics
 
 ROOT = Path(__file__).resolve().parents[1]
 RESULTS_ROOT = ROOT / "results" / "article_v3"
-DEFAULT_RUN_ID = "article_full_5000_001"
-RUNNER_SCHEMA = 5
+LEGACY_RUN_ID = "article_full_5000_001"
+DEFAULT_RUN_ID = "article_full_5000_002"
+RUNNER_SCHEMA = 9
 ASSESSMENT_GATE_EXECUTION_POLICY = "advisory_continue"
 DIRECT_SINGLE_CENTER_PROTOCOL = "smooth_direct_single_center_v1"
 OPTIMIZATION_PROTOCOL = "single_center_local_exact_qp_v1"
+COMPARISON_PROTOCOL = "casewise_exact_common_reference_v3"
+TIMING_PROTOCOL = "robustness_casewise_aggregate_v1"
 RUN_ID_PATTERN = re.compile(r"^article_full_5000_[A-Za-z0-9][A-Za-z0-9_-]*$")
 
 SOURCE_FILES = (
@@ -140,8 +155,6 @@ DESIGN_ARRAYS = (
     "test_influents",
     "robustness_influents",
 )
-INFERENCE_TIMING_WARMUPS = 5
-INFERENCE_TIMING_BATCHES = 30
 
 
 @dataclass(frozen=True)
@@ -204,9 +217,30 @@ class OptimizationProtocolMigrationAuthorization:
     expected_assessment_input_digest: str
 
 
+@dataclass(frozen=True)
+class CasewiseComparisonMigrationAuthorization:
+    """Pinned migration retaining completed searches for casewise validation."""
+
+    migration_id: str
+    run_id: str
+    authorized_date: str
+    reason: str
+    predecessor_runner_schema: int
+    successor_runner_schema: int
+    predecessor_source_digest: str
+    predecessor_contract_file_digest: str
+    required_prior_migration_ids: tuple[str, ...]
+    predecessor_source_snapshot: str
+    allowed_changed_source_files: frozenset[str]
+    required_changed_source_files: frozenset[str]
+    required_artifact_digests: Mapping[str, str]
+    expected_case_marker_set_digest: str
+    retired_casewise_snapshot: str | None = None
+
+
 GENERATION_REPLACEMENT_MIGRATION = SourceContractMigrationAuthorization(
     migration_id="article-v3-generation-replacement-v1",
-    run_id=DEFAULT_RUN_ID,
+    run_id=LEGACY_RUN_ID,
     authorized_date="2026-08-23",
     reason=(
         "User-authorized replacement of rejected mechanistic generation attempts "
@@ -255,7 +289,7 @@ GENERATION_REPLACEMENT_MIGRATION = SourceContractMigrationAuthorization(
 
 ASSESSMENT_RECOVERY_MIGRATION = AssessmentRecoveryMigrationAuthorization(
     migration_id="article-v3-projection-audit-v1",
-    run_id=DEFAULT_RUN_ID,
+    run_id=LEGACY_RUN_ID,
     authorized_date="2026-08-23",
     reason=(
         "User-authorized repair of the projection audit and continuation after "
@@ -336,7 +370,7 @@ ASSESSMENT_RECOVERY_MIGRATION = AssessmentRecoveryMigrationAuthorization(
 
 SINGLE_START_EXACT_QP_MIGRATION = OptimizationProtocolMigrationAuthorization(
     migration_id="article-v3-direct-active-set-v1",
-    run_id=DEFAULT_RUN_ID,
+    run_id=LEGACY_RUN_ID,
     authorized_date="2026-08-23",
     reason=(
         "User-authorized replacement of the unfinished nine-start embedded-KKT "
@@ -413,6 +447,339 @@ SINGLE_START_EXACT_QP_MIGRATION = OptimizationProtocolMigrationAuthorization(
     },
     expected_assessment_input_digest=(
         "49bc1639cfd85e0864dc07d16f33959e5b11c132ef7f1a95b9d89908f8d13323"
+    ),
+)
+
+
+CASEWISE_COMMON_REFERENCE_MIGRATION = CasewiseComparisonMigrationAuthorization(
+    migration_id="article-v3-casewise-common-reference-v1",
+    run_id=LEGACY_RUN_ID,
+    authorized_date="2026-08-24",
+    reason=(
+        "User-authorized retirement of the unfinished 1,000-row smooth/reference "
+        "equivalence stage in favor of convergence-qualified, exact nonsmooth "
+        "common-reference evaluation of the nominal and robustness decisions."
+    ),
+    predecessor_runner_schema=5,
+    successor_runner_schema=6,
+    predecessor_source_digest=(
+        "85c1d10cb7c9ffac4291bff3f2e681670fb5f0fe7e6a0935ef898539f9efc445"
+    ),
+    predecessor_contract_file_digest=(
+        "a4a761d1744bb58a21611ccf6029faaca6c1ef43b73d71d31848d81d3f2b8a1e"
+    ),
+    required_prior_migration_ids=(
+        "article-v3-generation-replacement-v1",
+        "article-v3-projection-audit-v1",
+        "article-v3-direct-active-set-v1",
+    ),
+    predecessor_source_snapshot=(
+        "inputs/contract_migrations/"
+        "article-v3-casewise-common-reference-v1-predecessor-source"
+    ),
+    allowed_changed_source_files=frozenset({
+        "scripts/run_article_v3_5000.py",
+        "closed_loop/v3_smooth.py",
+        "closed_loop/v3_surrogate_nlp.py",
+        "closed_loop/v3_reporting.py",
+        "scripts/build_main_closed_loop_v3.py",
+        "main_closed_loop.ipynb",
+        "config/params_manuscript_v3.json",
+        "article/wip_v3/manuscript.tex",
+        "article/wip_v3/supplementary_material.tex",
+    }),
+    required_changed_source_files=frozenset({
+        "scripts/run_article_v3_5000.py",
+        "closed_loop/v3_smooth.py",
+        "closed_loop/v3_surrogate_nlp.py",
+        "closed_loop/v3_reporting.py",
+        "scripts/build_main_closed_loop_v3.py",
+        "main_closed_loop.ipynb",
+        "config/params_manuscript_v3.json",
+        "article/wip_v3/manuscript.tex",
+        "article/wip_v3/supplementary_material.tex",
+    }),
+    required_artifact_digests={
+        "metrics/assessment_complete.json": (
+            "2c0c9e37f539868e52b9ecd9f0f387f81f5a6e0d6d90ae9c46016bb74fc3fd3a"
+        ),
+        "optimization/nominal/case_complete.json": (
+            "826f8d9e4624749840508b661e15c143ed640ffd16f00df037b7ade4714a6d4f"
+        ),
+        "optimization/robustness_01/case_complete.json": (
+            "116e0675cde324792d06e9ff5e9a2aea2ca36d0622dfcaea1d1cd2209854a560"
+        ),
+        "optimization/robustness_02/case_complete.json": (
+            "cdc0f43e4df66239154d95666e476824bef5c4b90d39277b1cb57638a8364eab"
+        ),
+        "optimization/robustness_03/case_complete.json": (
+            "91b80ee4cddcba698205d653aeeba9c7fae6b40f818f9ae5b5803357dbf18af9"
+        ),
+        "optimization/robustness_04/case_complete.json": (
+            "f017043c80e9a5b799852926c420f5c67fe20e0e13b687eb49d451f68bcb86bb"
+        ),
+        "optimization/robustness_05/case_complete.json": (
+            "2584eb58a045d8ba260613db200693e3b82999861d06437f1041bc99c6d9184c"
+        ),
+        "optimization/robustness_06/case_complete.json": (
+            "564c13c8a31210b2e666fdaf0881d23bba859268bfd59f731580ce8b08eb3dfa"
+        ),
+        "optimization/robustness_07/case_complete.json": (
+            "75505371a14f6d797131feecb1cd2ef5e24687cb34369060d91015aa694e0491"
+        ),
+        "optimization/robustness_08/case_complete.json": (
+            "0b402375e75ff8dbb62647eb2b71bc56848caae5599c1f99b5c52ea693696735"
+        ),
+        "optimization/robustness_09/case_complete.json": (
+            "f3b6856d3894e03393d3ba93d1d7c512d6ab9677d8b762b1ba497f2da77389a9"
+        ),
+        "optimization/robustness_10/case_complete.json": (
+            "dee22ab590a32b96a9e43abd703bb7b897d1f3567985d38e3e188ad33377b45a"
+        ),
+    },
+    expected_case_marker_set_digest=(
+        "4f45fb0014b2c0de559bdd9f8530cfa5622d6aafa8c85856cd747ae0a8fb047f"
+    ),
+)
+
+
+CONVERGENCE_POLL_REFINEMENT_MIGRATION = CasewiseComparisonMigrationAuthorization(
+    migration_id="article-v3-convergence-poll-refinement-v1",
+    run_id=LEGACY_RUN_ID,
+    authorized_date="2026-08-24",
+    reason=(
+        "Outcome-aware correction after the first casewise pass showed that a "
+        "full-rank feasible-direction requirement was mathematically invalid at "
+        "constrained endpoints and the 120-evaluation poll cap was insufficient. "
+        "The preliminary casewise outputs are archived; completed primary searches "
+        "and every upstream scientific artifact remain unchanged."
+    ),
+    predecessor_runner_schema=6,
+    successor_runner_schema=7,
+    predecessor_source_digest=(
+        "a598aaa531f6d5fdd0de477ff5c91699abc1c7d56f52f58b4a7f893c0fd9fc88"
+    ),
+    predecessor_contract_file_digest=(
+        "9cfa88c0a2aa8703182d29b059b5993efd59d5f473d86b26ee0f9bf6978bad1e"
+    ),
+    required_prior_migration_ids=(
+        "article-v3-generation-replacement-v1",
+        "article-v3-projection-audit-v1",
+        "article-v3-direct-active-set-v1",
+        "article-v3-casewise-common-reference-v1",
+    ),
+    predecessor_source_snapshot=(
+        "inputs/contract_migrations/"
+        "article-v3-convergence-poll-refinement-v1-predecessor-source"
+    ),
+    allowed_changed_source_files=frozenset({
+        "scripts/run_article_v3_5000.py",
+        "closed_loop/v3_surrogate_nlp.py",
+        "scripts/build_main_closed_loop_v3.py",
+        "main_closed_loop.ipynb",
+        "config/params_manuscript_v3.json",
+        "article/wip_v3/manuscript.tex",
+        "article/wip_v3/supplementary_material.tex",
+    }),
+    required_changed_source_files=frozenset({
+        "scripts/run_article_v3_5000.py",
+        "closed_loop/v3_surrogate_nlp.py",
+        "scripts/build_main_closed_loop_v3.py",
+        "main_closed_loop.ipynb",
+        "config/params_manuscript_v3.json",
+        "article/wip_v3/manuscript.tex",
+        "article/wip_v3/supplementary_material.tex",
+    }),
+    required_artifact_digests={
+        **CASEWISE_COMMON_REFERENCE_MIGRATION.required_artifact_digests,
+        "inputs/contract_migrations/article-v3-casewise-common-reference-v1.json": (
+            "b9331954e41ef2b206c5e6342d6a40685f086594b4aa980d82b49b959f716470"
+        ),
+        "inputs/contract_migrations/"
+        "article-v3-casewise-common-reference-v1-retained.json": (
+            "1b722058973b6fa6820aa1bbd73f412af551e414c061d46f8d9d819d05c0b040"
+        ),
+    },
+    expected_case_marker_set_digest=(
+        "4f45fb0014b2c0de559bdd9f8530cfa5622d6aafa8c85856cd747ae0a8fb047f"
+    ),
+    retired_casewise_snapshot=(
+        "inputs/contract_migrations/"
+        "article-v3-convergence-poll-refinement-v1-predecessor-casewise"
+    ),
+)
+
+
+POLL_LINESEARCH_FORK_MIGRATION = CasewiseComparisonMigrationAuthorization(
+    migration_id="article-v3-poll-linesearch-v1",
+    run_id=LEGACY_RUN_ID,
+    authorized_date="2026-08-24",
+    reason=(
+        "User-authorized rerun in a new self-contained result directory after "
+        "the v2 fine-radius poll made 36 accepted moves and exhausted 2,500 "
+        "exact-QP evaluations in robustness case 05. The v3 search adds exact-QP "
+        "geometric ray acceleration while retaining the same final two-scale "
+        "no-descent audit. All accepted datasets, fitted assets, assessment "
+        "artifacts, and primary optimization searches are copied and hash-pinned."
+    ),
+    predecessor_runner_schema=7,
+    successor_runner_schema=8,
+    predecessor_source_digest=(
+        "d12916000eab67f3d05c9bae4a61358e98411c6eadece4561b80264c1cf02b4d"
+    ),
+    predecessor_contract_file_digest=(
+        "98ba7ce3bed9798dcf5615b5a8cbe9f2f87245a7892bd11750999faf11ac7805"
+    ),
+    required_prior_migration_ids=(
+        "article-v3-generation-replacement-v1",
+        "article-v3-projection-audit-v1",
+        "article-v3-direct-active-set-v1",
+        "article-v3-casewise-common-reference-v1",
+        "article-v3-convergence-poll-refinement-v1",
+    ),
+    predecessor_source_snapshot=(
+        "inputs/contract_migrations/"
+        "article-v3-poll-linesearch-v1-predecessor-source"
+    ),
+    allowed_changed_source_files=frozenset({
+        "scripts/run_article_v3_5000.py",
+        "closed_loop/v3_surrogate_nlp.py",
+        "scripts/build_main_closed_loop_v3.py",
+        "main_closed_loop.ipynb",
+        "config/params_manuscript_v3.json",
+        "article/wip_v3/manuscript.tex",
+        "article/wip_v3/supplementary_material.tex",
+    }),
+    required_changed_source_files=frozenset({
+        "scripts/run_article_v3_5000.py",
+        "closed_loop/v3_surrogate_nlp.py",
+        "scripts/build_main_closed_loop_v3.py",
+        "main_closed_loop.ipynb",
+        "config/params_manuscript_v3.json",
+        "article/wip_v3/manuscript.tex",
+        "article/wip_v3/supplementary_material.tex",
+    }),
+    required_artifact_digests={
+        **CONVERGENCE_POLL_REFINEMENT_MIGRATION.required_artifact_digests,
+        "inputs/contract_migrations/"
+        "article-v3-convergence-poll-refinement-v1.json": (
+            "fd1751ab404f9700856102a7ebaa66b2ba7a9656098c0f916be0ae36e3cb3274"
+        ),
+        "inputs/contract_migrations/"
+        "article-v3-convergence-poll-refinement-v1-retained.json": (
+            "f56c1fd469baec2534357e30d5aa2630460dbd2b117e010ab20ebe45ac44835e"
+        ),
+        "optimization/robustness_05/surrogate_local_convergence.json": (
+            "5a87bbb423117a7288cf3dfb02d348986adf6f4445ee85c75bed43c210545bfd"
+        ),
+        "optimization/robustness_05/surrogate_local_convergence_complete.json": (
+            "2875f44aad41aa7b58cc739caf90ce0b6e825c8acb3ad37cbeb2501cfb0fa946"
+        ),
+        "optimization/robustness_05/surrogate_certified.npz": (
+            "105a8c9c7fe7a1054c85a15eea9cffa8ef9c7e87f642ff6daac95a2c6f47202d"
+        ),
+    },
+    expected_case_marker_set_digest=(
+        "4f45fb0014b2c0de559bdd9f8530cfa5622d6aafa8c85856cd747ae0a8fb047f"
+    ),
+    retired_casewise_snapshot=(
+        "inputs/contract_migrations/"
+        "article-v3-poll-linesearch-v1-predecessor-casewise"
+    ),
+)
+
+
+CASEWISE_TIMING_AGGREGATION_MIGRATION = CasewiseComparisonMigrationAuthorization(
+    migration_id="article-v3-casewise-timing-v1",
+    run_id=DEFAULT_RUN_ID,
+    authorized_date="2026-08-24",
+    reason=(
+        "User-authorized removal of the unfinished 1,000-row repeated inference "
+        "benchmark. Runtime is instead summarized from the ten completed "
+        "robustness-case route, certification, recovery, and exact-replay records; "
+        "all completed scientific casewise artifacts are retained unchanged."
+    ),
+    predecessor_runner_schema=8,
+    successor_runner_schema=9,
+    predecessor_source_digest=(
+        "403b8d96b2b46693456b19d0a7566260748695f2284f949ef0259a39be782657"
+    ),
+    predecessor_contract_file_digest=(
+        "5ce8065e93addd82ef6b92d18e32caaefb430b934393bc888524bd70429a2ab2"
+    ),
+    required_prior_migration_ids=(
+        "article-v3-generation-replacement-v1",
+        "article-v3-projection-audit-v1",
+        "article-v3-direct-active-set-v1",
+        "article-v3-casewise-common-reference-v1",
+        "article-v3-convergence-poll-refinement-v1",
+        "article-v3-poll-linesearch-v1",
+    ),
+    predecessor_source_snapshot=(
+        "inputs/contract_migrations/"
+        "article-v3-casewise-timing-v1-predecessor-source"
+    ),
+    allowed_changed_source_files=frozenset({
+        "scripts/run_article_v3_5000.py",
+        "closed_loop/v3_reporting.py",
+        "scripts/build_main_closed_loop_v3.py",
+        "main_closed_loop.ipynb",
+        "config/params_manuscript_v3.json",
+        "article/wip_v3/manuscript.tex",
+        "article/wip_v3/supplementary_material.tex",
+    }),
+    required_changed_source_files=frozenset({
+        "scripts/run_article_v3_5000.py",
+        "closed_loop/v3_reporting.py",
+        "scripts/build_main_closed_loop_v3.py",
+        "main_closed_loop.ipynb",
+        "config/params_manuscript_v3.json",
+        "article/wip_v3/manuscript.tex",
+        "article/wip_v3/supplementary_material.tex",
+    }),
+    required_artifact_digests={
+        "metrics/case_common_reference_comparison.csv": (
+            "c9a5ba276dad0a056a8677423ac8e611bc9badfb728eda92a90b6d0df08f7bb6"
+        ),
+        "metrics/selected_candidate_reference_evaluation.csv": (
+            "0f6c2457b6a2272a9e32b0a5285e2a7447455c13b01ae149d567aeb17b40bc8d"
+        ),
+        "optimization/nominal/casewise_comparison_complete.json": (
+            "2b192201efa51bfac9d84bf301b331603c8b706acd6144ac7ee390cc0cdec0de"
+        ),
+        "optimization/robustness_01/casewise_comparison_complete.json": (
+            "97a17fc4e28d8220eb5845884224c9b420f4548befecc356f2c112b910304d6f"
+        ),
+        "optimization/robustness_02/casewise_comparison_complete.json": (
+            "d5451187444440731879f5339339a9a8012d59dcf8fefc8fcd0926967c9015c1"
+        ),
+        "optimization/robustness_03/casewise_comparison_complete.json": (
+            "1fe8a5ee1e6cc93bb3bf45af235860fae47a4bf2ff0cff22c6af11a44e976082"
+        ),
+        "optimization/robustness_04/casewise_comparison_complete.json": (
+            "b699d7d353a1219f9363730168ebe287ff61b8eaeab60de82518ffdd18d47dfa"
+        ),
+        "optimization/robustness_05/casewise_comparison_complete.json": (
+            "73af4b986e8e1dd80691f31892f624b5c71ecf6867c32dea123546c559c85d81"
+        ),
+        "optimization/robustness_06/casewise_comparison_complete.json": (
+            "dd65659bd9be9bcef4f611b407924ebb34ae774e9192a3f2b9ab6fa0102f29c6"
+        ),
+        "optimization/robustness_07/casewise_comparison_complete.json": (
+            "f48df365df9d3ea4e79053d58fc4046ecf0a1ec85c879576df9347c43638658e"
+        ),
+        "optimization/robustness_08/casewise_comparison_complete.json": (
+            "3ac569aea33c12e85cbfeeb7ef6b4d1899936b235304948e8cd4056ed5772af5"
+        ),
+        "optimization/robustness_09/casewise_comparison_complete.json": (
+            "2d47ba0b3074f8b75119441b55835d5d469eff2aebc6551dbefc04231045e372"
+        ),
+        "optimization/robustness_10/casewise_comparison_complete.json": (
+            "ff23d396573667b908d7475b4e742819846295ff3b8750542b9f0a0de1301377"
+        ),
+    },
+    expected_case_marker_set_digest=(
+        "4f45fb0014b2c0de559bdd9f8530cfa5622d6aafa8c85856cd747ae0a8fb047f"
     ),
 )
 
@@ -734,6 +1101,8 @@ def _build_contract(
         "runtime_versions": _runtime_versions(),
         "assessment_gate_execution_policy": ASSESSMENT_GATE_EXECUTION_POLICY,
         "optimization_protocol": OPTIMIZATION_PROTOCOL,
+        "validation_protocol": COMPARISON_PROTOCOL,
+        "timing_protocol": TIMING_PROTOCOL,
         "preflight_artifacts_permitted": False,
         "full_run_admission_gate_bypass_permitted": False,
     }
@@ -924,6 +1293,342 @@ def _validate_recorded_source_snapshot(
         raise RuntimeError("recorded predecessor source snapshot is inconsistent")
 
 
+def _artifact_archive_manifest(
+    run: Path,
+    relative_directory: str,
+    *,
+    require_live_match: bool,
+    require_marker_closure: bool = False,
+) -> dict[str, Any]:
+    """Validate an immutable archive of superseded casewise outputs."""
+
+    root = (run / relative_directory).resolve()
+    migrations_root = (run / "inputs" / "contract_migrations").resolve()
+    if migrations_root not in root.parents or not root.is_dir():
+        raise RuntimeError("retired casewise archive is missing or outside migrations")
+    files = {
+        path.relative_to(root).as_posix(): file_digest(path)
+        for path in sorted(root.rglob("*")) if path.is_file()
+    }
+    required = {
+        "metrics/case_common_reference_comparison.csv",
+        "metrics/selected_candidate_reference_evaluation.csv",
+        *(
+            f"optimization/{case_id}/{name}"
+            for case_id in (
+                "nominal", *(f"robustness_{index:02d}" for index in range(1, 11))
+            )
+            for name in (
+                "surrogate_local_convergence.json",
+                "surrogate_local_convergence_complete.json",
+                "surrogate_casewise_reference_complete.json",
+                "direct_casewise_reference_complete.json",
+                "casewise_comparison_complete.json",
+            )
+        ),
+    }
+    missing = required - set(files)
+    if missing:
+        raise RuntimeError(
+            f"retired casewise archive omits required artifacts: {sorted(missing)}"
+        )
+    if require_live_match:
+        for relative, expected_digest in files.items():
+            live = (run / relative).resolve()
+            if (
+                run.resolve() not in live.parents
+                or not live.is_file()
+                or file_digest(live) != expected_digest
+            ):
+                raise RuntimeError(
+                    f"retired casewise archive differs from live predecessor: {relative}"
+                )
+    if require_marker_closure:
+        _validate_artifact_archive_marker_closure(root)
+    manifest = {
+        "directory": relative_directory,
+        "file_count": len(files),
+        "files": files,
+    }
+    if require_marker_closure:
+        manifest["marker_closure_verified"] = True
+    return manifest
+
+
+def _validated_marker_artifact(
+    relative: Any, expected_digest: Any,
+) -> tuple[str, str]:
+    """Normalize one marker edge without permitting path traversal."""
+
+    if not isinstance(relative, str):
+        raise RuntimeError("unsafe artifact reference")
+    parts = relative.split("/")
+    if (
+        not relative
+        or "\\" in relative
+        or relative.startswith("/")
+        or re.match(r"^[A-Za-z]:", relative) is not None
+        or any(part in {"", ".", ".."} for part in parts)
+    ):
+        raise RuntimeError(f"unsafe artifact reference: {relative!r}")
+    if not isinstance(expected_digest, str) or re.fullmatch(
+        r"[0-9a-f]{64}", expected_digest,
+    ) is None:
+        raise RuntimeError("invalid SHA-256 digest")
+    return relative, expected_digest
+
+
+def _archive_artifact_candidates(
+    archive_root: Path,
+    marker_parent: Path,
+    relative: str,
+    expected_digest: str,
+) -> tuple[Path, Path, Path]:
+    candidates = (
+        (archive_root / relative).resolve(),
+        (marker_parent / relative).resolve(),
+        (archive_root / "_artifact_blobs" / expected_digest).resolve(),
+    )
+    if any(archive_root not in candidate.parents for candidate in candidates):
+        raise RuntimeError(f"unsafe artifact reference: {relative!r}")
+    return candidates
+
+
+def _validate_artifact_archive_marker_closure(root: Path) -> None:
+    """Require the transitive artifact closure of every completion marker."""
+
+    archive_root = root.resolve()
+    unresolved: list[str] = []
+    queue = [
+        (marker.resolve(), marker.parent.resolve(), False)
+        for marker in sorted(archive_root.rglob("*complete.json"))
+    ]
+    seen_markers: set[tuple[str, bool, str]] = set()
+    while queue:
+        marker, logical_parent, content_addressed = queue.pop()
+        marker_label = (
+            marker.relative_to(archive_root).as_posix()
+            if archive_root in marker.parents
+            else str(marker)
+        )
+        try:
+            marker_digest = file_digest(marker)
+        except OSError as exc:
+            unresolved.append(f"{marker_label}: {exc}")
+            continue
+        marker_key = (
+            marker_digest,
+            content_addressed,
+            "_artifact_blobs"
+            if content_addressed
+            else logical_parent.relative_to(archive_root).as_posix(),
+        )
+        if marker_key in seen_markers:
+            continue
+        seen_markers.add(marker_key)
+        try:
+            payload = _load_json_object(marker, description="archived completion marker")
+        except RuntimeError as exc:
+            unresolved.append(f"{marker_label}: {exc}")
+            continue
+        artifacts = payload.get("artifacts")
+        if not isinstance(artifacts, Mapping):
+            continue
+        for raw_relative, raw_digest in artifacts.items():
+            try:
+                relative, expected_digest = _validated_marker_artifact(
+                    raw_relative, raw_digest,
+                )
+                normal_root, normal_local, blob = _archive_artifact_candidates(
+                    archive_root, logical_parent, relative, expected_digest,
+                )
+            except RuntimeError as exc:
+                unresolved.append(f"{marker_label} -> {raw_relative}: {exc}")
+                continue
+            candidates = (
+                (blob,) if content_addressed
+                else (normal_root, normal_local, blob)
+            )
+            matched = next((
+                candidate
+                for candidate in candidates
+                if candidate.is_file() and file_digest(candidate) == expected_digest
+            ), None)
+            if matched is None:
+                unresolved.append(f"{marker_label} -> {relative}")
+                continue
+            if relative.endswith("complete.json"):
+                queue.append((
+                    matched,
+                    matched.parent if matched != blob else logical_parent,
+                    matched == blob,
+                ))
+    if unresolved:
+        raise RuntimeError(
+            "retired casewise archive has unresolved completion-marker "
+            f"artifacts: {unresolved[:12]}"
+        )
+
+
+def _copy_artifact_archive_marker_closure(
+    source_run: Path,
+    target_run: Path,
+    relative_directory: str,
+) -> dict[str, str]:
+    """Complete a copied archive from the source run without mutating it."""
+
+    source_archive = (source_run / relative_directory).resolve()
+    target_archive = (target_run / relative_directory).resolve()
+    source_root = source_run.resolve()
+    target_root = target_run.resolve()
+    if (
+        source_root not in source_archive.parents
+        or target_root not in target_archive.parents
+        or not source_archive.is_dir()
+        or not target_archive.is_dir()
+    ):
+        raise RuntimeError("retired marker archive is missing or outside its run")
+    copied: dict[str, str] = {}
+    digest_index: dict[str, Path] | None = None
+    queue = [
+        (
+            marker.resolve(),
+            (
+                target_archive
+                / marker.relative_to(source_archive).parent
+            ).resolve(),
+            False,
+        )
+        for marker in sorted(source_archive.rglob("*complete.json"))
+    ]
+    seen_markers: set[tuple[str, bool, str]] = set()
+    while queue:
+        marker, logical_parent, content_addressed = queue.pop()
+        marker_digest = file_digest(marker)
+        marker_key = (
+            marker_digest,
+            content_addressed,
+            "_artifact_blobs"
+            if content_addressed
+            else logical_parent.relative_to(target_archive).as_posix(),
+        )
+        if marker_key in seen_markers:
+            continue
+        seen_markers.add(marker_key)
+        payload = _load_json_object(marker, description="archived completion marker")
+        artifacts = payload.get("artifacts")
+        if not isinstance(artifacts, Mapping):
+            continue
+        for raw_relative, raw_digest in artifacts.items():
+            relative, expected_digest = _validated_marker_artifact(
+                raw_relative, raw_digest,
+            )
+            normal_root, normal_local, blob = _archive_artifact_candidates(
+                target_archive, logical_parent, relative, expected_digest,
+            )
+            archive_candidates = (
+                (blob,) if content_addressed
+                else (normal_root, normal_local, blob)
+            )
+            matched = next((
+                candidate
+                for candidate in archive_candidates
+                if candidate.is_file() and file_digest(candidate) == expected_digest
+            ), None)
+            if matched is None:
+                source_candidates = [normal_root, normal_local]
+                source_candidates.extend((
+                    (source_run / relative).resolve(),
+                    (marker.parent / relative).resolve(),
+                ))
+                try:
+                    live_parent = (
+                        source_run
+                        / logical_parent.relative_to(target_archive)
+                    ).resolve()
+                except ValueError as exc:
+                    raise RuntimeError(
+                        "retired marker logical parent escaped its archive"
+                    ) from exc
+                source_candidates.append((live_parent / relative).resolve())
+                selected = next((
+                    source
+                    for source in source_candidates
+                    if (
+                        (source_root in source.parents or target_root in source.parents)
+                        and source.is_file()
+                        and file_digest(source) == expected_digest
+                    )
+                ), None)
+                if selected is None:
+                    if digest_index is None:
+                        digest_index = {}
+                        for source in sorted(source_root.rglob("*")):
+                            if source.is_file():
+                                digest_index.setdefault(file_digest(source), source)
+                    selected = digest_index.get(expected_digest)
+                if selected is None:
+                    raise RuntimeError(
+                        "cannot close retired marker artifact from source run: "
+                        f"{relative}"
+                    )
+                blob.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(selected, blob)
+                if file_digest(blob) != expected_digest:
+                    raise RuntimeError("retired marker closure copy failed verification")
+                copied[blob.relative_to(target_run).as_posix()] = expected_digest
+                matched = blob
+            if relative.endswith("complete.json"):
+                queue.append((
+                    matched,
+                    matched.parent if matched != blob else logical_parent,
+                    matched == blob,
+                ))
+    _validate_artifact_archive_marker_closure(target_archive)
+    return copied
+
+
+def _validate_recorded_artifact_archive(run: Path, archive: Any) -> None:
+    if not isinstance(archive, Mapping):
+        raise RuntimeError("recorded retired casewise archive is invalid")
+    observed = _artifact_archive_manifest(
+        run,
+        str(archive.get("directory", "")),
+        require_live_match=False,
+        require_marker_closure=bool(archive.get("marker_closure_verified", False)),
+    )
+    if observed != dict(archive):
+        raise RuntimeError("recorded retired casewise archive is inconsistent")
+
+
+def _file_archive_manifest(run: Path, relative_directory: str) -> dict[str, Any]:
+    """Hash every file in a path-contained archive directory."""
+
+    root = (run / relative_directory).resolve()
+    migrations_root = (run / "inputs" / "contract_migrations").resolve()
+    if migrations_root not in root.parents or not root.is_dir():
+        raise RuntimeError("retired file archive is missing or outside migrations")
+    files = {
+        path.relative_to(root).as_posix(): file_digest(path)
+        for path in sorted(root.rglob("*")) if path.is_file()
+    }
+    if not files:
+        raise RuntimeError("retired file archive is empty")
+    return {
+        "directory": relative_directory,
+        "file_count": len(files),
+        "files": files,
+    }
+
+
+def _validate_recorded_file_archive(run: Path, archive: Any) -> None:
+    if not isinstance(archive, Mapping):
+        raise RuntimeError("recorded retired file archive is invalid")
+    observed = _file_archive_manifest(run, str(archive.get("directory", "")))
+    if observed != dict(archive):
+        raise RuntimeError("recorded retired file archive is inconsistent")
+
+
 def _validate_migration_history(run: Path, contract: Mapping[str, Any]) -> None:
     history = contract.get("contract_migrations")
     if not isinstance(history, list) or not history:
@@ -1012,7 +1717,17 @@ def _validate_migration_history(run: Path, contract: Mapping[str, Any]) -> None:
         snapshot = record.get("predecessor_source_snapshot")
         if snapshot is not None:
             _validate_recorded_source_snapshot(run, snapshot)
-        for manifest_key in ("retained_checkpoint_manifest", "retained_stage_manifest"):
+        retired_archive = record.get("retired_casewise_snapshot")
+        if retired_archive is not None:
+            _validate_recorded_artifact_archive(run, retired_archive)
+        retired_timing = record.get("retired_inference_timing_snapshot")
+        if retired_timing is not None:
+            _validate_recorded_file_archive(run, retired_timing)
+        for manifest_key in (
+            "retained_checkpoint_manifest",
+            "retained_stage_manifest",
+            "reused_artifact_manifest",
+        ):
             manifest_reference = record.get(manifest_key)
             if manifest_reference is None:
                 continue
@@ -1681,6 +2396,336 @@ def _migrate_optimization_protocol_contract(
     _validate_migration_history(run, migrated)
 
 
+def _validate_retained_casewise_comparison_checkpoints(
+    run: Path,
+    previous: Mapping[str, Any],
+    authorization: CasewiseComparisonMigrationAuthorization,
+) -> dict[str, Any]:
+    """Prove that all completed searches can be reused without recomputation."""
+
+    pinned = _validate_pinned_artifacts(run, authorization.required_artifact_digests)
+    history = previous.get("contract_migrations")
+    if not isinstance(history, list) or not history:
+        raise RuntimeError("casewise migration requires prior migration history")
+    latest = history[-1]
+    latest_record = _load_json_object(
+        run / str(latest.get("record", "")),
+        description="predecessor migration record",
+    )
+    retained_reference = latest_record.get("retained_stage_manifest")
+    if not isinstance(retained_reference, Mapping):
+        raise RuntimeError("predecessor migration omits its retained-stage manifest")
+    retained_path = (run / str(retained_reference.get("path", ""))).resolve()
+    migrations_root = (run / "inputs" / "contract_migrations").resolve()
+    if (
+        migrations_root not in retained_path.parents
+        or not retained_path.is_file()
+        or file_digest(retained_path) != retained_reference.get("sha256")
+    ):
+        raise RuntimeError("predecessor retained-stage manifest changed")
+    prior_retention = _load_json_object(
+        retained_path, description="predecessor retained-stage manifest",
+    )
+    prior_stages = prior_retention.get("stages")
+    if not isinstance(prior_stages, Mapping):
+        raise RuntimeError("predecessor retained-stage manifest omits stages")
+    stages = {str(key): dict(value) for key, value in prior_stages.items()}
+
+    cases = ("nominal", *(f"robustness_{index:02d}" for index in range(1, 11)))
+    marker_records: list[dict[str, Any]] = []
+    for case_id in cases:
+        case_directory = run / "optimization" / case_id
+        marker_path = case_directory / "case_complete.json"
+        marker = _load_json_object(marker_path, description=f"{case_id} case marker")
+        if (
+            marker.get("stage") != "optimization_case"
+            or marker.get("case") != case_id
+            or int(marker.get("selected_decision_count", -1)) not in (1, 2)
+            or not _artifacts_match(run, marker.get("artifacts", {}))
+        ):
+            raise RuntimeError(f"completed optimization case changed: {case_id}")
+        routes = marker.get("routes")
+        if not isinstance(routes, list) or len(routes) != 2:
+            raise RuntimeError(f"completed optimization case omits routes: {case_id}")
+        route_lookup = {str(item.get("route")): item for item in routes}
+        if set(route_lookup) != {"surrogate", "direct"}:
+            raise RuntimeError(f"completed optimization case has invalid routes: {case_id}")
+        if route_lookup["surrogate"].get("protocol") != EXACT_QP_SINGLE_START_PROTOCOL:
+            raise RuntimeError(f"retained surrogate protocol changed: {case_id}")
+        if route_lookup["direct"].get("protocol") != DIRECT_SINGLE_CENTER_PROTOCOL:
+            raise RuntimeError(f"retained direct protocol changed: {case_id}")
+        for route, protocol in (
+            ("surrogate", EXACT_QP_SINGLE_START_PROTOCOL),
+            ("direct", DIRECT_SINGLE_CENTER_PROTOCOL),
+        ):
+            route_marker = _load_json_object(
+                case_directory / f"{route}_complete.json",
+                description=f"{case_id} {route} completion marker",
+            )
+            if (
+                route_marker.get("protocol") != protocol
+                or int(route_marker.get("start_count", -1)) != 1
+                or not _artifacts_match(case_directory, route_marker.get("artifacts", {}))
+            ):
+                raise RuntimeError(f"retained {case_id} {route} route changed")
+        relative_marker = marker_path.relative_to(run).as_posix()
+        marker_records.append({
+            "case": case_id,
+            "sha256": file_digest(marker_path),
+            "artifact_count": len(marker["artifacts"]),
+            "artifacts_match": True,
+        })
+        stage_name = f"optimization/{case_id}"
+        existing_stage = stages.get(stage_name)
+        if isinstance(existing_stage, Mapping):
+            if (
+                existing_stage.get("checkpoint") != relative_marker
+                or existing_stage.get("checkpoint_sha256") != file_digest(marker_path)
+                or existing_stage.get("artifacts") != dict(marker["artifacts"])
+            ):
+                raise RuntimeError(f"retained optimization stage changed: {case_id}")
+            stages[stage_name] = dict(existing_stage)
+        else:
+            stages[stage_name] = {
+                "checkpoint": relative_marker,
+                "checkpoint_sha256": file_digest(marker_path),
+                "artifact_source_digest": authorization.predecessor_source_digest,
+                "artifacts": dict(marker["artifacts"]),
+            }
+    marker_set_digest = _canonical_json_digest(marker_records)
+    if marker_set_digest != authorization.expected_case_marker_set_digest:
+        raise RuntimeError(
+            "completed optimization case-marker set differs from the pinned predecessor"
+        )
+    return {
+        "schema": 3,
+        "predecessor_source_digest": authorization.predecessor_source_digest,
+        "effective_design_digest": prior_retention.get("effective_design_digest"),
+        "ridge_input_digest": prior_retention.get("ridge_input_digest"),
+        "assessment_input_digest": prior_retention.get("assessment_input_digest"),
+        "case_marker_set_digest": marker_set_digest,
+        "pinned_artifacts": pinned,
+        "retired_unfinished_stage": "validation/untouched_test_equivalence",
+        "stages": stages,
+    }
+
+
+def _migrate_casewise_comparison_contract(
+    run: Path,
+    previous: Mapping[str, Any],
+    successor: Mapping[str, Any],
+    authorization: CasewiseComparisonMigrationAuthorization,
+) -> None:
+    """Append the casewise exact-reference comparison migration in place."""
+
+    contract_path = run / "inputs" / "contract.json"
+    history = previous.get("contract_migrations")
+    if str(previous.get("run_id")) != authorization.run_id:
+        raise RuntimeError("casewise migration is not authorized for this run id")
+    if not isinstance(history, list):
+        raise RuntimeError("casewise migration requires prior migration history")
+    history_ids = tuple(str(entry.get("migration_id", "")) for entry in history)
+    if history_ids != authorization.required_prior_migration_ids:
+        raise RuntimeError("casewise migration has unexpected prior history")
+    _validate_migration_history(run, previous)
+    if (
+        int(previous.get("runner_schema", -1))
+        != authorization.predecessor_runner_schema
+        or int(successor.get("runner_schema", -1))
+        != authorization.successor_runner_schema
+        or previous.get("source_digest") != authorization.predecessor_source_digest
+        or file_digest(contract_path) != authorization.predecessor_contract_file_digest
+    ):
+        raise RuntimeError("existing contract is not the pinned casewise predecessor")
+    old_files = previous.get("source_files")
+    new_files = successor.get("source_files")
+    if not isinstance(old_files, Mapping) or not isinstance(new_files, Mapping):
+        raise RuntimeError("casewise migration requires source manifests")
+    if source_digest(old_files) != previous.get("source_digest"):
+        raise RuntimeError("predecessor source manifest is internally inconsistent")
+    if source_digest(new_files) != successor.get("source_digest"):
+        raise RuntimeError("successor source manifest is internally inconsistent")
+    changed = {
+        name for name in set(old_files) | set(new_files)
+        if old_files.get(name) != new_files.get(name)
+    }
+    unauthorized = changed - authorization.allowed_changed_source_files
+    missing_required = authorization.required_changed_source_files - changed
+    if unauthorized or missing_required:
+        raise RuntimeError(
+            "casewise migration refused arbitrary source drift; "
+            f"unauthorized={sorted(unauthorized)}, missing_required={sorted(missing_required)}"
+        )
+    ignored = {
+        "runner_schema", "source_digest", "source_files", "contract_migrations",
+        "validation_protocol", "timing_protocol",
+    }
+    old_invariants = {key: value for key, value in previous.items() if key not in ignored}
+    new_invariants = {key: value for key, value in successor.items() if key not in ignored}
+    if old_invariants != new_invariants:
+        raise RuntimeError("casewise migration cannot change run/profile data")
+    if (
+        authorization.migration_id
+        == CASEWISE_TIMING_AGGREGATION_MIGRATION.migration_id
+    ):
+        expected_predecessor_protocol = COMPARISON_PROTOCOL
+        target_protocol = COMPARISON_PROTOCOL
+        if (
+            previous.get("timing_protocol") is not None
+            or successor.get("timing_protocol") != TIMING_PROTOCOL
+        ):
+            raise RuntimeError("casewise timing-protocol transition is invalid")
+    elif (
+        authorization.migration_id
+        == CONVERGENCE_POLL_REFINEMENT_MIGRATION.migration_id
+    ):
+        expected_predecessor_protocol = "casewise_exact_common_reference_v1"
+        target_protocol = "casewise_exact_common_reference_v2"
+    else:
+        expected_predecessor_protocol = None
+        target_protocol = "casewise_exact_common_reference_v1"
+    if (
+        previous.get("validation_protocol") != expected_predecessor_protocol
+        or successor.get("validation_protocol") != target_protocol
+    ):
+        raise RuntimeError("casewise validation-protocol transition is invalid")
+
+    source_snapshot = _source_snapshot_manifest(
+        run, authorization.predecessor_source_snapshot, old_files,
+    )
+    if source_snapshot["source_digest"] != authorization.predecessor_source_digest:
+        raise RuntimeError("predecessor source snapshot has the wrong aggregate digest")
+    retention = _validate_retained_casewise_comparison_checkpoints(
+        run, previous, authorization,
+    )
+    if (
+        authorization.migration_id
+        == CASEWISE_TIMING_AGGREGATION_MIGRATION.migration_id
+    ):
+        retention["retired_unfinished_stage"] = "inference_timing"
+        retention["retained_casewise_source_digest"] = previous["source_digest"]
+    retired_casewise_snapshot = (
+        None
+        if authorization.retired_casewise_snapshot is None
+        else _artifact_archive_manifest(
+            run,
+            authorization.retired_casewise_snapshot,
+            require_live_match=True,
+        )
+    )
+    retired_timing_snapshot = None
+    live_timing_directory = run / "timing"
+    if (
+        authorization.migration_id
+        == CASEWISE_TIMING_AGGREGATION_MIGRATION.migration_id
+    ):
+        retired_timing_relative = (
+            "inputs/contract_migrations/"
+            "article-v3-casewise-timing-v1-retired-inference-timing"
+        )
+        retired_timing_directory = run / retired_timing_relative
+        if live_timing_directory.is_dir() and not retired_timing_directory.exists():
+            shutil.copytree(live_timing_directory, retired_timing_directory)
+        if retired_timing_directory.is_dir():
+            retired_timing_snapshot = _file_archive_manifest(
+                run, retired_timing_relative,
+            )
+    migrations_directory = run / "inputs" / "contract_migrations"
+    predecessor_archive = (
+        migrations_directory / f"{authorization.migration_id}-predecessor-contract.json"
+    )
+    retention_path = migrations_directory / f"{authorization.migration_id}-retained.json"
+    record_path = migrations_directory / f"{authorization.migration_id}.json"
+    predecessor_bytes = contract_path.read_bytes()
+    if sha256(predecessor_bytes).hexdigest() != authorization.predecessor_contract_file_digest:
+        raise RuntimeError("predecessor contract bytes changed during migration validation")
+    if predecessor_archive.is_file():
+        if predecessor_archive.read_bytes() != predecessor_bytes:
+            raise RuntimeError("archived predecessor contract bytes are inconsistent")
+    else:
+        atomic_bytes(predecessor_archive, predecessor_bytes)
+    normalized_retention = _json_ready(retention)
+    if retention_path.is_file():
+        if _load_json_object(
+            retention_path, description="retained-stage manifest",
+        ) != normalized_retention:
+            raise RuntimeError("existing casewise retention manifest is inconsistent")
+    else:
+        atomic_json(retention_path, normalized_retention)
+    record_core = {
+        "schema": 1,
+        "migration_id": authorization.migration_id,
+        "authorized_date": authorization.authorized_date,
+        "reason": authorization.reason,
+        "predecessor": {
+            "runner_schema": previous["runner_schema"],
+            "source_digest": previous["source_digest"],
+            "source_files": dict(old_files),
+            "contract_file_digest": authorization.predecessor_contract_file_digest,
+            "archived_contract": predecessor_archive.relative_to(run).as_posix(),
+            "archived_contract_digest": file_digest(predecessor_archive),
+        },
+        "predecessor_source_snapshot": source_snapshot,
+        "retired_casewise_snapshot": retired_casewise_snapshot,
+        **(
+            {"retired_inference_timing_snapshot": retired_timing_snapshot}
+            if retired_timing_snapshot is not None else {}
+        ),
+        "successor": {
+            "runner_schema": successor["runner_schema"],
+            "source_digest": successor["source_digest"],
+            "source_files": dict(new_files),
+            "optimization_protocol": OPTIMIZATION_PROTOCOL,
+            "validation_protocol": target_protocol,
+            **(
+                {"timing_protocol": successor.get("timing_protocol")}
+                if authorization.migration_id
+                == CASEWISE_TIMING_AGGREGATION_MIGRATION.migration_id
+                else {}
+            ),
+        },
+        "changed_source_files": {
+            name: {"old": old_files.get(name), "new": new_files.get(name)}
+            for name in sorted(changed)
+        },
+        "retained_stage_manifest": {
+            "path": retention_path.relative_to(run).as_posix(),
+            "sha256": file_digest(retention_path),
+            "predecessor_source_digest": retention["predecessor_source_digest"],
+            "assessment_input_digest": retention["assessment_input_digest"],
+            "case_marker_set_digest": retention["case_marker_set_digest"],
+        },
+    }
+    if record_path.is_file():
+        record = _load_json_object(record_path, description="contract migration record")
+        without_time = dict(record)
+        without_time.pop("applied_at_utc", None)
+        if without_time != record_core or "applied_at_utc" not in record:
+            raise RuntimeError("existing casewise migration journal is inconsistent")
+    else:
+        record = {**record_core, "applied_at_utc": datetime.now(timezone.utc).isoformat()}
+        atomic_json(record_path, record)
+    history_entry = {
+        "migration_id": authorization.migration_id,
+        "record": record_path.relative_to(run).as_posix(),
+        "record_digest": file_digest(record_path),
+        "predecessor_contract": predecessor_archive.relative_to(run).as_posix(),
+        "predecessor_contract_digest": file_digest(predecessor_archive),
+        "predecessor_source_digest": previous["source_digest"],
+        "successor_source_digest": successor["source_digest"],
+    }
+    migrated = dict(successor)
+    migrated["contract_migrations"] = [*history, history_entry]
+    atomic_json(contract_path, migrated)
+    _validate_migration_history(run, migrated)
+    if (
+        authorization.migration_id
+        == CASEWISE_TIMING_AGGREGATION_MIGRATION.migration_id
+        and live_timing_directory.is_dir()
+    ):
+        shutil.rmtree(live_timing_directory)
+
+
 def establish_contract(
     run: Path,
     contract: Mapping[str, Any],
@@ -1688,11 +2733,17 @@ def establish_contract(
     authorize_generation_replacement_migration: bool = False,
     authorize_assessment_recovery_migration: bool = False,
     authorize_single_start_exact_qp_migration: bool = False,
+    authorize_casewise_common_reference_migration: bool = False,
+    authorize_convergence_poll_refinement_migration: bool = False,
+    authorize_casewise_timing_migration: bool = False,
 ) -> None:
     if sum(map(bool, (
         authorize_generation_replacement_migration,
         authorize_assessment_recovery_migration,
         authorize_single_start_exact_qp_migration,
+        authorize_casewise_common_reference_migration,
+        authorize_convergence_poll_refinement_migration,
+        authorize_casewise_timing_migration,
     ))) > 1:
         raise ValueError("authorize exactly one source-contract migration at a time")
     path = run / "inputs" / "contract.json"
@@ -1721,12 +2772,463 @@ def establish_contract(
                 run, previous, normalized, SINGLE_START_EXACT_QP_MIGRATION,
             )
             return
+        if authorize_casewise_common_reference_migration:
+            _migrate_casewise_comparison_contract(
+                run, previous, normalized, CASEWISE_COMMON_REFERENCE_MIGRATION,
+            )
+            return
+        if authorize_convergence_poll_refinement_migration:
+            _migrate_casewise_comparison_contract(
+                run,
+                previous,
+                normalized,
+                CONVERGENCE_POLL_REFINEMENT_MIGRATION,
+            )
+            return
+        if authorize_casewise_timing_migration:
+            _migrate_casewise_comparison_contract(
+                run,
+                previous,
+                normalized,
+                CASEWISE_TIMING_AGGREGATION_MIGRATION,
+            )
+            return
         raise RuntimeError(
             "existing full-run contract differs; choose a new run id or provide the "
             "explicit authorized migration flag"
         )
     else:
         atomic_json(path, normalized)
+
+
+def _validate_fork_reuse_manifest(
+    run: Path,
+    reference: Mapping[str, Any],
+    *,
+    verify_files: bool,
+) -> dict[str, Any]:
+    path = (run / str(reference.get("path", ""))).resolve()
+    migrations_root = (run / "inputs" / "contract_migrations").resolve()
+    if (
+        migrations_root not in path.parents
+        or not path.is_file()
+        or file_digest(path) != reference.get("sha256")
+    ):
+        raise RuntimeError("run-reuse manifest is missing or changed")
+    manifest = _load_json_object(path, description="run-reuse manifest")
+    files = manifest.get("files")
+    if not isinstance(files, Mapping) or not files:
+        raise RuntimeError("run-reuse manifest omits its copied-file ledger")
+    if manifest.get("file_set_digest") != _canonical_json_digest(files):
+        raise RuntimeError("run-reuse copied-file ledger digest is inconsistent")
+    if verify_files:
+        for relative, expected_digest in files.items():
+            candidate = (run / str(relative)).resolve()
+            if (
+                run.resolve() not in candidate.parents
+                or not candidate.is_file()
+                or file_digest(candidate) != expected_digest
+            ):
+                raise RuntimeError(f"reused artifact changed or is missing: {relative}")
+    return manifest
+
+
+def _validate_existing_reused_run(
+    run: Path,
+    *,
+    source_run_id: str,
+    expected_contract: Mapping[str, Any],
+) -> None:
+    contract = _load_json_object(
+        run / "inputs" / "contract.json", description="reused run contract",
+    )
+    without_history = dict(contract)
+    without_history.pop("contract_migrations", None)
+    if without_history != dict(expected_contract):
+        raise RuntimeError("existing rerun directory has a different current contract")
+    _validate_migration_history(run, contract)
+    latest = contract["contract_migrations"][-1]
+    record = _load_json_object(
+        run / str(latest["record"]), description="latest run-fork record",
+    )
+    fork = record.get("run_fork")
+    if (
+        not isinstance(fork, Mapping)
+        or fork.get("source_run_id") != source_run_id
+        or fork.get("target_run_id") != run.name
+    ):
+        raise RuntimeError("existing rerun directory has different lineage")
+    reference = record.get("reused_artifact_manifest")
+    if not isinstance(reference, Mapping):
+        raise RuntimeError("existing rerun contract omits its reuse manifest")
+    manifest = _validate_fork_reuse_manifest(run, reference, verify_files=True)
+    if (
+        manifest.get("source_run_id") != source_run_id
+        or manifest.get("target_run_id") != run.name
+        or int(reference.get("file_count", -1)) != int(manifest.get("file_count", -2))
+        or reference.get("file_set_digest") != manifest.get("file_set_digest")
+    ):
+        raise RuntimeError("existing rerun reuse-manifest metadata is inconsistent")
+
+
+def _copy_reusable_files(
+    source_run: Path,
+    target_run: Path,
+    retention: Mapping[str, Any],
+) -> dict[str, str]:
+    """Byte-copy immutable upstream and primary-search artifacts into a rerun."""
+
+    relative_paths: set[str] = set()
+    for top_level in ("datasets", "inputs/contract_migrations"):
+        root = source_run / top_level
+        if not root.is_dir():
+            raise RuntimeError(f"reuse source omits required directory: {top_level}")
+        relative_paths.update(
+            path.relative_to(source_run).as_posix()
+            for path in root.rglob("*") if path.is_file()
+        )
+    relative_paths.add("inputs/generator_records.json")
+    stages = retention.get("stages")
+    if not isinstance(stages, Mapping) or not stages:
+        raise RuntimeError("run reuse requires a nonempty retained-stage manifest")
+    for stage_name, stage in stages.items():
+        if not isinstance(stage, Mapping):
+            raise RuntimeError(f"retained stage is invalid: {stage_name}")
+        checkpoint = str(stage.get("checkpoint", ""))
+        artifacts = stage.get("artifacts", {})
+        if not checkpoint or not isinstance(artifacts, Mapping):
+            raise RuntimeError(f"retained stage is incomplete: {stage_name}")
+        relative_paths.add(checkpoint)
+        relative_paths.update(map(str, artifacts))
+
+    source_root = source_run.resolve()
+    target_root = target_run.resolve()
+    copied: dict[str, str] = {}
+    for relative in sorted(relative_paths):
+        source = (source_run / relative).resolve()
+        target = (target_run / relative).resolve()
+        if (
+            source_root not in source.parents
+            or target_root not in target.parents
+            or not source.is_file()
+        ):
+            raise RuntimeError(f"unsafe or missing reusable artifact: {relative}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+        expected_digest = file_digest(source)
+        if file_digest(target) != expected_digest:
+            raise RuntimeError(f"reused artifact copy verification failed: {relative}")
+        copied[relative] = expected_digest
+    return copied
+
+
+def _validate_all_retained_stages(run: Path, retention: Mapping[str, Any]) -> None:
+    stages = retention.get("stages")
+    if not isinstance(stages, Mapping) or not stages:
+        raise RuntimeError("retained-stage manifest is empty")
+    for stage_name, stage in stages.items():
+        if not isinstance(stage, Mapping):
+            raise RuntimeError(f"retained stage is invalid: {stage_name}")
+        checkpoint = (run / str(stage.get("checkpoint", ""))).resolve()
+        if (
+            run.resolve() not in checkpoint.parents
+            or not checkpoint.is_file()
+            or file_digest(checkpoint) != stage.get("checkpoint_sha256")
+            or (
+                bool(stage.get("artifacts", {}))
+                and not _artifacts_match(run, stage.get("artifacts", {}))
+            )
+        ):
+            raise RuntimeError(f"retained stage changed before reuse: {stage_name}")
+
+
+def initialize_reused_run(
+    run: Path,
+    *,
+    source_run_id: str,
+    successor_contract: Mapping[str, Any],
+) -> None:
+    """Create a self-contained rerun folder from immutable prior checkpoints."""
+
+    if successor_contract.get("run_id") != run.name:
+        raise RuntimeError("successor contract run id does not match the rerun directory")
+    source_run = resolve_run_directory(source_run_id)
+    if source_run == run:
+        raise ValueError("reuse source and target run directories must differ")
+    if run.exists():
+        _validate_existing_reused_run(
+            run,
+            source_run_id=source_run_id,
+            expected_contract=successor_contract,
+        )
+        return
+    source_contract_path = source_run / "inputs" / "contract.json"
+    source_contract = _load_json_object(
+        source_contract_path, description="reuse-source contract",
+    )
+    if source_contract.get("run_id") != source_run_id:
+        raise RuntimeError("reuse-source contract has the wrong run id")
+    _validate_migration_history(source_run, source_contract)
+    old_files = source_contract.get("source_files")
+    new_files = successor_contract.get("source_files")
+    if not isinstance(old_files, Mapping) or not isinstance(new_files, Mapping):
+        raise RuntimeError("run reuse requires complete source manifests")
+    changed = {
+        name for name in set(old_files) | set(new_files)
+        if old_files.get(name) != new_files.get(name)
+    }
+    is_pinned_v2_to_v3 = bool(
+        source_run_id == POLL_LINESEARCH_FORK_MIGRATION.run_id
+        and run.name == DEFAULT_RUN_ID
+        and int(source_contract.get("runner_schema", -1))
+        == POLL_LINESEARCH_FORK_MIGRATION.predecessor_runner_schema
+        and source_contract.get("source_digest")
+        == POLL_LINESEARCH_FORK_MIGRATION.predecessor_source_digest
+        and file_digest(source_contract_path)
+        == POLL_LINESEARCH_FORK_MIGRATION.predecessor_contract_file_digest
+    )
+    is_same_source_rerun = bool(
+        int(source_contract.get("runner_schema", -1)) == RUNNER_SCHEMA
+        and source_contract.get("source_digest") == successor_contract.get("source_digest")
+        and source_contract.get("validation_protocol") == COMPARISON_PROTOCOL
+        and not changed
+    )
+    if not (is_pinned_v2_to_v3 or is_same_source_rerun):
+        raise RuntimeError(
+            "reuse source is neither the pinned v2 predecessor nor a current-contract run"
+        )
+    if is_pinned_v2_to_v3:
+        unauthorized = changed - POLL_LINESEARCH_FORK_MIGRATION.allowed_changed_source_files
+        missing = POLL_LINESEARCH_FORK_MIGRATION.required_changed_source_files - changed
+        if unauthorized or missing:
+            raise RuntimeError(
+                "run-fork migration refused source drift; "
+                f"unauthorized={sorted(unauthorized)}, missing_required={sorted(missing)}"
+            )
+        if tuple(
+            str(entry.get("migration_id", ""))
+            for entry in source_contract.get("contract_migrations", [])
+        ) != POLL_LINESEARCH_FORK_MIGRATION.required_prior_migration_ids:
+            raise RuntimeError("pinned run-fork predecessor has unexpected history")
+        if source_contract.get("validation_protocol") != "casewise_exact_common_reference_v2":
+            raise RuntimeError("pinned run-fork predecessor has the wrong protocol")
+        migration_id = POLL_LINESEARCH_FORK_MIGRATION.migration_id
+        reason = POLL_LINESEARCH_FORK_MIGRATION.reason
+        source_snapshot_relative = POLL_LINESEARCH_FORK_MIGRATION.predecessor_source_snapshot
+        retired_snapshot_relative = POLL_LINESEARCH_FORK_MIGRATION.retired_casewise_snapshot
+        source_snapshot = _source_snapshot_manifest(
+            source_run, source_snapshot_relative, old_files,
+        )
+        if source_snapshot["source_digest"] != source_contract["source_digest"]:
+            raise RuntimeError("pinned rerun source snapshot has the wrong digest")
+        if retired_snapshot_relative is None:
+            raise RuntimeError("pinned rerun omits its predecessor result archive")
+        _artifact_archive_manifest(
+            source_run, retired_snapshot_relative, require_live_match=True,
+        )
+        trigger = _load_json_object(
+            source_run / "optimization" / "robustness_05"
+            / "surrogate_local_convergence.json",
+            description="v2 poll-budget trigger",
+        )
+        trigger_certificate = trigger.get("certificate")
+        if (
+            trigger.get("status") != "poll_budget_limited"
+            or not isinstance(trigger_certificate, Mapping)
+            or trigger_certificate.get("protocol")
+            != "exact_qp_two_scale_feasible_poll_v2"
+            or int(trigger_certificate.get("evaluations", -1)) != 2_500
+            or int(trigger_certificate.get("accepted_improvements", -1)) != 36
+            or float(trigger_certificate.get("initial_objective", float("nan")))
+            != 1.0993998220835606
+            or float(trigger_certificate.get("final_objective", float("nan")))
+            != 1.0992203629252697
+        ):
+            raise RuntimeError("pinned v2 poll-budget trigger evidence changed")
+    else:
+        migration_id = f"article-v3-run-reuse-{run.name}"
+        if migration_id in {
+            str(entry.get("migration_id", ""))
+            for entry in source_contract.get("contract_migrations", [])
+        }:
+            raise RuntimeError("run-reuse migration identifier already exists")
+        reason = (
+            "User-authorized rerun in a new self-contained directory using "
+            "byte-identical upstream and primary-search checkpoints."
+        )
+        source_snapshot_relative = (
+            f"inputs/contract_migrations/{migration_id}-predecessor-source"
+        )
+        retired_snapshot_relative = None
+
+    invariant_keys = (
+        "profile", "fixed_dataset_total", "development_test_split", "python",
+        "platform", "runtime_versions", "assessment_gate_execution_policy",
+        "optimization_protocol", "preflight_artifacts_permitted",
+        "full_run_admission_gate_bypass_permitted",
+    )
+    if any(source_contract.get(key) != successor_contract.get(key) for key in invariant_keys):
+        raise RuntimeError("run reuse cannot change the scientific profile or runtime")
+
+    retention_authorization = replace(
+        POLL_LINESEARCH_FORK_MIGRATION,
+        run_id=source_run_id,
+        predecessor_runner_schema=int(source_contract["runner_schema"]),
+        predecessor_source_digest=str(source_contract["source_digest"]),
+        predecessor_contract_file_digest=file_digest(source_contract_path),
+        required_artifact_digests=(
+            POLL_LINESEARCH_FORK_MIGRATION.required_artifact_digests
+            if is_pinned_v2_to_v3
+            else {
+                path: digest
+                for path, digest in (
+                    POLL_LINESEARCH_FORK_MIGRATION.required_artifact_digests.items()
+                )
+                if not path.startswith(
+                    "optimization/robustness_05/surrogate_local_convergence"
+                )
+                and path
+                != "optimization/robustness_05/surrogate_certified.npz"
+            }
+        ),
+    )
+    retention = _validate_retained_casewise_comparison_checkpoints(
+        source_run, source_contract, retention_authorization,
+    )
+    _validate_all_retained_stages(source_run, retention)
+
+    run.parent.mkdir(parents=True, exist_ok=True)
+    temporary_owner = tempfile.TemporaryDirectory(
+        # Keep the sibling staging name shorter than the final run id.  Some
+        # retained attempt paths are already close to legacy Windows MAX_PATH;
+        # a descriptive temporary prefix would make otherwise valid copies
+        # fail before the final atomic rename.
+        prefix=".r-", dir=run.parent,
+    )
+    temporary = Path(temporary_owner.name).resolve()
+    if temporary.parent != run.parent.resolve():
+        raise RuntimeError("rerun staging directory escaped the results directory")
+    copied = _copy_reusable_files(source_run, temporary, retention)
+    if retired_snapshot_relative is not None:
+        copied.update(_copy_artifact_archive_marker_closure(
+            source_run, temporary, retired_snapshot_relative,
+        ))
+    migrations_directory = temporary / "inputs" / "contract_migrations"
+    migrations_directory.mkdir(parents=True, exist_ok=True)
+
+    if is_same_source_rerun:
+        snapshot_root = temporary / source_snapshot_relative
+        for relative, expected_digest in old_files.items():
+            source = (ROOT / str(relative)).resolve()
+            target = (snapshot_root / str(relative)).resolve()
+            if ROOT.resolve() not in source.parents or not source.is_file():
+                raise RuntimeError(f"cannot snapshot current source file: {relative}")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+            if file_digest(target) != expected_digest:
+                raise RuntimeError(f"current source differs from source-run contract: {relative}")
+    source_snapshot = _source_snapshot_manifest(
+        temporary, source_snapshot_relative, old_files,
+    )
+    retired_snapshot = (
+        None
+        if retired_snapshot_relative is None
+        else _artifact_archive_manifest(
+            temporary,
+            retired_snapshot_relative,
+            require_live_match=False,
+            require_marker_closure=True,
+        )
+    )
+
+    retention_path = migrations_directory / f"{migration_id}-retained.json"
+    atomic_json(retention_path, retention)
+    reuse_path = migrations_directory / f"{migration_id}-reused-files.json"
+    reuse_manifest = {
+        "schema": 1,
+        "copy_mode": "independent_byte_copy",
+        "source_run_id": source_run_id,
+        "target_run_id": run.name,
+        "source_contract_sha256": file_digest(source_contract_path),
+        "file_count": len(copied),
+        "file_set_digest": _canonical_json_digest(copied),
+        "files": copied,
+    }
+    atomic_json(reuse_path, reuse_manifest)
+    predecessor_archive = migrations_directory / f"{migration_id}-predecessor-contract.json"
+    atomic_bytes(predecessor_archive, source_contract_path.read_bytes())
+
+    record_path = migrations_directory / f"{migration_id}.json"
+    record = {
+        "schema": 2,
+        "migration_id": migration_id,
+        "authorized_date": "2026-08-24",
+        "reason": reason,
+        "run_fork": {
+            "source_run_id": source_run_id,
+            "target_run_id": run.name,
+            "self_contained": True,
+            "recomputed_scope": "casewise_certification_reference_timing_reporting",
+        },
+        "predecessor": {
+            "run_id": source_run_id,
+            "runner_schema": source_contract["runner_schema"],
+            "source_digest": source_contract["source_digest"],
+            "source_files": dict(old_files),
+            "contract_file_digest": file_digest(source_contract_path),
+            "archived_contract": predecessor_archive.relative_to(temporary).as_posix(),
+            "archived_contract_digest": file_digest(predecessor_archive),
+        },
+        "predecessor_source_snapshot": source_snapshot,
+        "retired_casewise_snapshot": retired_snapshot,
+        "successor": {
+            "run_id": run.name,
+            "runner_schema": successor_contract["runner_schema"],
+            "source_digest": successor_contract["source_digest"],
+            "source_files": dict(new_files),
+            "optimization_protocol": OPTIMIZATION_PROTOCOL,
+            "validation_protocol": COMPARISON_PROTOCOL,
+        },
+        "changed_source_files": {
+            name: {"old": old_files.get(name), "new": new_files.get(name)}
+            for name in sorted(changed)
+        },
+        "retained_stage_manifest": {
+            "path": retention_path.relative_to(temporary).as_posix(),
+            "sha256": file_digest(retention_path),
+            "predecessor_source_digest": retention["predecessor_source_digest"],
+            "assessment_input_digest": retention["assessment_input_digest"],
+            "case_marker_set_digest": retention["case_marker_set_digest"],
+        },
+        "reused_artifact_manifest": {
+            "path": reuse_path.relative_to(temporary).as_posix(),
+            "sha256": file_digest(reuse_path),
+            "file_count": len(copied),
+            "file_set_digest": reuse_manifest["file_set_digest"],
+        },
+        "applied_at_utc": datetime.now(timezone.utc).isoformat(),
+    }
+    atomic_json(record_path, record)
+    history_entry = {
+        "migration_id": migration_id,
+        "record": record_path.relative_to(temporary).as_posix(),
+        "record_digest": file_digest(record_path),
+        "predecessor_contract": predecessor_archive.relative_to(temporary).as_posix(),
+        "predecessor_contract_digest": file_digest(predecessor_archive),
+        "predecessor_source_digest": source_contract["source_digest"],
+        "successor_source_digest": successor_contract["source_digest"],
+    }
+    migrated = dict(successor_contract)
+    migrated["contract_migrations"] = [
+        *source_contract["contract_migrations"], history_entry,
+    ]
+    atomic_json(temporary / "inputs" / "contract.json", migrated)
+    _validate_migration_history(temporary, migrated)
+    _validate_fork_reuse_manifest(
+        temporary, record["reused_artifact_manifest"], verify_files=True,
+    )
+    os.replace(temporary, run)
+    temporary_owner.cleanup()
 
 
 def _checkpoint_source_is_authorized(
@@ -1780,6 +3282,53 @@ def _checkpoint_source_is_authorized(
         )
     except (OSError, ValueError, KeyError, TypeError, RuntimeError):
         return False
+
+
+def _casewise_artifact_source_id(run: Path, current_source_id: str) -> str:
+    """Return the retained casewise binding after the timing-only migration."""
+
+    if not (run / "inputs" / "contract.json").is_file():
+        return current_source_id
+    contract = _load_json_object(
+        run / "inputs" / "contract.json", description="run contract",
+    )
+    history = contract.get("contract_migrations")
+    if not isinstance(history, list) or not history:
+        return current_source_id
+    latest = history[-1]
+    if latest.get("migration_id") != CASEWISE_TIMING_AGGREGATION_MIGRATION.migration_id:
+        return current_source_id
+    _validate_migration_history(run, contract)
+    record = _load_json_object(
+        run / str(latest["record"]), description="casewise timing migration",
+    )
+    retained_reference = record.get("retained_stage_manifest")
+    if not isinstance(retained_reference, Mapping):
+        raise RuntimeError("casewise timing migration omits retained artifacts")
+    retained_path = (run / str(retained_reference.get("path", ""))).resolve()
+    if (
+        run.resolve() not in retained_path.parents
+        or not retained_path.is_file()
+        or file_digest(retained_path) != retained_reference.get("sha256")
+    ):
+        raise RuntimeError("casewise timing retention manifest changed")
+    retained = _load_json_object(
+        retained_path, description="casewise timing retention manifest",
+    )
+    predecessor_source_id = str(
+        retained.get("retained_casewise_source_digest", "")
+    )
+    if (
+        predecessor_source_id
+        != record.get("predecessor", {}).get("source_digest")
+        or record.get("successor", {}).get("source_digest") != current_source_id
+    ):
+        raise RuntimeError("casewise timing source lineage is inconsistent")
+    pinned = retained.get("pinned_artifacts")
+    if not isinstance(pinned, Mapping):
+        raise RuntimeError("casewise timing migration omits its pinned ledger")
+    _validate_pinned_artifacts(run, pinned)
+    return predecessor_source_id
 
 
 def assert_source_unchanged(expected: Mapping[str, str]) -> None:
@@ -2853,7 +4402,12 @@ def _run_inference_timing_benchmark(
     source_files: Mapping[str, str],
     analysis_id: str,
 ) -> pd.DataFrame:
-    """Run the declared 5-warmup/30-batch inference benchmark resumably."""
+    """Retired: inference timing is not part of the article workflow."""
+
+    raise RuntimeError(
+        "untouched-test repeated inference timing is retired; use the completed "
+        "robustness-case timing aggregation"
+    )
 
     decisions = np.asarray(design["test_decisions"], dtype=float)
     influents = np.asarray(design["test_influents"], dtype=float)
@@ -3140,6 +4694,185 @@ def _run_inference_timing_benchmark(
     return frame
 
 
+def _robustness_timing_summary(values: list[float]) -> dict[str, float | int | None]:
+    finite = np.asarray([value for value in values if np.isfinite(value)], dtype=float)
+    if not len(finite):
+        return {
+            "count": 0, "total": None, "mean": None, "median": None,
+            "q25": None, "q75": None, "p95_nearest_rank": None,
+            "maximum": None,
+        }
+    ordered = np.sort(finite)
+    p95_index = max(0, int(np.ceil(0.95 * len(ordered))) - 1)
+    return {
+        "count": int(len(ordered)),
+        "total": float(np.sum(ordered)),
+        "mean": float(np.mean(ordered)),
+        "median": float(np.median(ordered)),
+        "q25": float(np.quantile(ordered, 0.25)),
+        "q75": float(np.quantile(ordered, 0.75)),
+        "p95_nearest_rank": float(ordered[p95_index]),
+        "maximum": float(ordered[-1]),
+    }
+
+
+def _run_robustness_case_timing_aggregation(
+    run: Path,
+    *,
+    source_files: Mapping[str, str],
+    analysis_id: str,
+) -> pd.DataFrame:
+    """Summarize existing optimization timings over the ten robustness cases."""
+
+    source_id = source_digest(source_files)
+    cases = tuple(f"robustness_{index:02d}" for index in range(1, 11))
+    input_paths: list[Path] = []
+    rows: list[dict[str, Any]] = []
+    for case_id in cases:
+        case_directory = run / "optimization" / case_id
+        comparison_marker = case_directory / "casewise_comparison_complete.json"
+        marker = _load_json_object(
+            comparison_marker, description=f"{case_id} casewise comparison marker",
+        )
+        if (
+            marker.get("case") != case_id
+            or not _artifacts_match(run, marker.get("artifacts", {}))
+        ):
+            raise RuntimeError(f"completed casewise result changed: {case_id}")
+        input_paths.append(comparison_marker)
+        for route in ("surrogate", "direct"):
+            route_path = case_directory / f"{route}.json"
+            reference_path = case_directory / f"{route}_casewise_reference.json"
+            route_payload = _load_json_object(
+                route_path, description=f"{case_id} {route} route timing",
+            )
+            reference_payload = _load_json_object(
+                reference_path, description=f"{case_id} {route} reference timing",
+            )
+            input_paths.extend((route_path, reference_path))
+            primary_seconds = float(route_payload["elapsed_seconds"])
+            certification_seconds = 0.0
+            recovery_seconds = 0.0
+            if route == "surrogate":
+                certification_path = (
+                    case_directory / "surrogate_local_convergence.json"
+                )
+                certification = _load_json_object(
+                    certification_path,
+                    description=f"{case_id} surrogate certification timing",
+                )
+                input_paths.append(certification_path)
+                certificate = certification.get("certificate")
+                if not isinstance(certificate, Mapping):
+                    raise RuntimeError(f"{case_id} omits its certification timing")
+                certification_seconds = float(certificate["elapsed_seconds"])
+            else:
+                recovery = reference_payload.get("recovery")
+                if isinstance(recovery, Mapping) and recovery.get("attempted") is True:
+                    recovery_seconds = float(recovery["elapsed_seconds"])
+            complete_seconds = (
+                primary_seconds + certification_seconds + recovery_seconds
+            )
+            reported_complete = reference_payload.get("optimization_elapsed_seconds")
+            if reported_complete is not None and not np.isclose(
+                complete_seconds, float(reported_complete), rtol=1.0e-12, atol=1.0e-9,
+            ):
+                raise RuntimeError(f"{case_id} {route} timing components disagree")
+            reference_seconds = reference_payload.get("reference_elapsed_seconds")
+            rows.append({
+                "case": case_id,
+                "route": route,
+                "route_status": route_payload.get("status"),
+                "candidate_available": bool(
+                    reference_payload.get("candidate_available")
+                ),
+                "comparison_valid": bool(reference_payload.get("comparison_valid")),
+                "primary_optimization_seconds": primary_seconds,
+                "certification_seconds": (
+                    certification_seconds if route == "surrogate" else None
+                ),
+                "recovery_seconds": recovery_seconds if recovery_seconds else None,
+                "complete_optimization_seconds": complete_seconds,
+                "exact_reference_seconds": (
+                    None if reference_seconds is None else float(reference_seconds)
+                ),
+            })
+
+    input_digests = {
+        path.relative_to(run).as_posix(): file_digest(path)
+        for path in sorted(set(input_paths))
+    }
+    contract = _canonical_json_digest({
+        "protocol": TIMING_PROTOCOL,
+        "source_digest": source_id,
+        "analysis_input_digest": analysis_id,
+        "cases": cases,
+        "inputs": input_digests,
+    })
+    ledger_path = run / "metrics" / "robustness_case_timing.csv"
+    events_path = run / "metrics" / "timing_events.csv"
+    summary_path = run / "metrics" / "robustness_case_timing_summary.json"
+    marker_path = run / "metrics" / "robustness_case_timing_complete.json"
+    if marker_path.is_file():
+        marker = _load_json_object(marker_path, description="robustness timing marker")
+        if (
+            marker.get("timing_contract") == contract
+            and _artifacts_match(run, marker.get("artifacts", {}))
+        ):
+            return pd.read_csv(ledger_path)
+
+    ledger = pd.DataFrame(rows)
+    event_rows: list[dict[str, Any]] = []
+    for row in rows:
+        route = str(row["route"])
+        values = {
+            f"{route}_primary_optimization": row["primary_optimization_seconds"],
+            f"{route}_complete_optimization": row["complete_optimization_seconds"],
+            f"{route}_exact_reference": row["exact_reference_seconds"],
+        }
+        if route == "surrogate":
+            values["surrogate_local_certification"] = row["certification_seconds"]
+        if row["recovery_seconds"] is not None:
+            values["direct_failure_recovery"] = row["recovery_seconds"]
+        for category, value in values.items():
+            if value is not None and np.isfinite(float(value)):
+                event_rows.append({
+                    "case": row["case"], "route": route,
+                    "category": category, "elapsed_seconds": float(value),
+                    "unit": "seconds_per_robustness_case",
+                })
+    events = pd.DataFrame(event_rows)
+    categories = {
+        str(category): _robustness_timing_summary(
+            pd.to_numeric(group["elapsed_seconds"], errors="coerce").tolist()
+        )
+        for category, group in events.groupby("category", sort=True)
+    }
+    atomic_dataframe(ledger_path, ledger)
+    atomic_dataframe(events_path, events)
+    atomic_json(summary_path, {
+        "timing_contract": contract,
+        "protocol": TIMING_PROTOCOL,
+        "source": "completed robustness/sensitivity cases only",
+        "nominal_case_included": False,
+        "robustness_case_count": len(cases),
+        "warmup_count": 0,
+        "repeated_test_batch_count": 0,
+        "categories": categories,
+    })
+    atomic_json(marker_path, {
+        "stage": "robustness_case_timing_aggregation",
+        "timing_contract": contract,
+        "source_digest": source_id,
+        "input_digest": analysis_id,
+        "case_count": len(cases),
+        "artifacts": _artifact_hashes(
+            run, (ledger_path, events_path, summary_path),
+        ),
+    })
+    return ledger
+
+
 def _route_contract_id(
     *,
     source_id: str,
@@ -3341,6 +5074,79 @@ def _load_complete_route(
         raise RuntimeError(f"current {route} completion checkpoint is corrupt") from exc
 
 
+def _load_retained_complete_route(
+    case_directory: Path,
+    *,
+    route: str,
+    route_protocol: str,
+    starts: np.ndarray,
+) -> Any | None:
+    """Load a schema-5 route only when the latest migration pins its case."""
+
+    run = case_directory.parent.parent
+    contract_path = run / "inputs" / "contract.json"
+    if not contract_path.is_file():
+        return None
+    try:
+        contract = _load_json_object(contract_path, description="run contract")
+        if int(contract.get("runner_schema", -1)) != RUNNER_SCHEMA:
+            return None
+        _validate_migration_history(run, contract)
+        history = contract.get("contract_migrations")
+        if not isinstance(history, list) or not history:
+            return None
+        stage: Mapping[str, Any] | None = None
+        for entry in reversed(history):
+            record = _load_json_object(
+                run / str(entry.get("record", "")),
+                description="optimization-retention migration record",
+            )
+            retained_reference = record.get("retained_stage_manifest")
+            if not isinstance(retained_reference, Mapping):
+                continue
+            retained_path = run / str(retained_reference.get("path", ""))
+            if (
+                not retained_path.is_file()
+                or file_digest(retained_path) != retained_reference.get("sha256")
+            ):
+                raise RuntimeError("optimization retained-stage manifest changed")
+            retained = _load_json_object(
+                retained_path, description="optimization retained-stage manifest",
+            )
+            candidate_stage = retained.get("stages", {}).get(
+                f"optimization/{case_directory.name}"
+            )
+            if isinstance(candidate_stage, Mapping):
+                stage = candidate_stage
+                break
+        if stage is None:
+            return None
+        marker_path = run / str(stage.get("checkpoint", ""))
+        if (
+            not marker_path.is_file()
+            or file_digest(marker_path) != stage.get("checkpoint_sha256")
+            or not _artifacts_match(run, stage.get("artifacts", {}))
+        ):
+            raise RuntimeError("retained optimization case changed after migration")
+        payload = _load_json_object(
+            case_directory / f"{route}.json", description=f"retained {route} route",
+        )
+        retained_contract = str(payload.get("route_contract", ""))
+        if not retained_contract:
+            raise RuntimeError("retained route omits its route contract")
+        return _load_complete_route(
+            case_directory,
+            route=route,
+            route_contract=retained_contract,
+            route_protocol=route_protocol,
+            starts=starts,
+        )
+    except RuntimeError:
+        raise
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"retained {route} completion checkpoint is corrupt") from exc
+
+
 def _publish_complete_route(
     case_directory: Path,
     *,
@@ -3408,6 +5214,14 @@ def _run_surrogate_route(
     restored = _load_complete_route(
         case_directory, route="surrogate", route_contract=contract,
         route_protocol=EXACT_QP_SINGLE_START_PROTOCOL, starts=starts,
+    )
+    if restored is not None:
+        return restored
+    restored = _load_retained_complete_route(
+        case_directory,
+        route="surrogate",
+        route_protocol=EXACT_QP_SINGLE_START_PROTOCOL,
+        starts=starts,
     )
     if restored is not None:
         return restored
@@ -3480,6 +5294,14 @@ def _run_direct_route(
     restored = _load_complete_route(
         case_directory, route="direct", route_contract=contract,
         route_protocol=DIRECT_SINGLE_CENTER_PROTOCOL, starts=starts,
+    )
+    if restored is not None:
+        return restored
+    restored = _load_retained_complete_route(
+        case_directory,
+        route="direct",
+        route_protocol=DIRECT_SINGLE_CENTER_PROTOCOL,
+        starts=starts,
     )
     if restored is not None:
         return restored
@@ -3650,6 +5472,8 @@ def _reference_two_start(
     influent: np.ndarray,
     analysis: AnalysisBundle,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, Any]]:
+    """Legacy unconditional two-start replay retained for old artifact readers."""
+
     clarifier = analysis.direct_assets.clarifier
     state_size = analysis.direct_assets.state_count
     response_size = analysis.direct_assets.response_count
@@ -3701,6 +5525,235 @@ def _reference_two_start(
                 "error": f"{type(exc).__name__}: {exc}",
             },
         )
+
+
+def _casewise_exact_reference(
+    theta: np.ndarray,
+    influent: np.ndarray,
+    analysis: AnalysisBundle,
+    *,
+    retained_reference_path: Path | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, Any]]:
+    """Evaluate a decision with the exact nonsmooth reference model."""
+
+    controls = np.asarray(theta, dtype=np.float64)
+    feed = np.asarray(influent, dtype=np.float64)
+    clarifier = analysis.direct_assets.clarifier
+    state_size = analysis.direct_assets.state_count
+    response_size = analysis.direct_assets.response_count
+    started = perf_counter()
+    first_state: np.ndarray | None = None
+    second_state: np.ndarray | None = None
+    first_accepted = False
+    second_accepted: bool | None = None
+    source = "adaptive_exact_solve"
+    errors: list[str] = []
+    retained_original_elapsed_seconds: float | None = None
+
+    if retained_reference_path is not None and retained_reference_path.is_file():
+        try:
+            with np.load(retained_reference_path, allow_pickle=False) as stored:
+                retained_theta = np.asarray(stored["theta"], dtype=np.float64)
+                if np.array_equal(retained_theta, controls):
+                    first_state = np.asarray(stored["state"], dtype=np.float64)
+                    second_state = np.asarray(stored["state_start_2"], dtype=np.float64)
+                    if (
+                        first_state.shape == (state_size,)
+                        and second_state.shape == (state_size,)
+                        and np.all(np.isfinite(first_state))
+                        and np.all(np.isfinite(second_state))
+                    ):
+                        source = "retained_two_start_exact_replay"
+                        equivalence_path = retained_reference_path.with_name(
+                            retained_reference_path.name.replace(
+                                "_reference.npz", "_equivalence.json",
+                            )
+                        )
+                        if equivalence_path.is_file():
+                            equivalence = _load_json_object(
+                                equivalence_path,
+                                description="retained exact-reference timing",
+                            )
+                            replay = equivalence.get("reference_replay")
+                            if isinstance(replay, Mapping):
+                                retained_elapsed = replay.get("elapsed_seconds")
+                                if retained_elapsed is not None:
+                                    retained_original_elapsed_seconds = float(
+                                        retained_elapsed
+                                    )
+                    else:
+                        first_state = second_state = None
+        except (OSError, ValueError, KeyError) as exc:
+            errors.append(f"retained replay: {type(exc).__name__}: {exc}")
+            first_state = second_state = None
+
+    operating = ArticleOperatingPoint(*map(float, controls))
+    if first_state is None:
+        try:
+            first = solve_steady_state(
+                operating, feed, starts=(1,), clarifier=clarifier,
+                logarithmic_only=True, strict_v3=True,
+            )
+            first_accepted = bool(first.accepted)
+            if first.accepted:
+                first_state = np.asarray(first.state, dtype=np.float64)
+            else:
+                errors.append(f"start 1 rejected: {first.message}")
+        except Exception as exc:
+            errors.append(f"start 1: {type(exc).__name__}: {exc}")
+    else:
+        first_accepted = True
+
+    first_branch = (
+        classify_branches(first_state, analysis.direct_assets)
+        if first_state is not None else None
+    )
+    # Both deterministic exact starts are required for every selected decision.
+    # Branch ambiguity is a reported qualifier, but reproducibility across the
+    # two nonsmooth solves remains part of the common-reference validity check.
+    second_required = True
+    if second_state is not None:
+        second_accepted = True
+    elif second_required:
+        try:
+            second = solve_steady_state(
+                operating, feed, starts=(2,), clarifier=clarifier,
+                logarithmic_only=True, strict_v3=True,
+            )
+            second_accepted = bool(second.accepted)
+            if second.accepted:
+                second_state = np.asarray(second.state, dtype=np.float64)
+            else:
+                errors.append(f"start 2 rejected: {second.message}")
+        except Exception as exc:
+            second_accepted = False
+            errors.append(f"start 2: {type(exc).__name__}: {exc}")
+
+    selected_state = first_state if first_state is not None else second_state
+    if selected_state is None:
+        return (
+            np.full(response_size, np.nan), np.full(state_size, np.nan),
+            np.full(state_size, np.nan), {
+                "accepted": False, "status": "solver_failed", "source": source,
+                "start_1_accepted": first_accepted,
+                "start_2_required": second_required,
+                "start_2_accepted": second_accepted,
+                "elapsed_seconds": perf_counter() - started, "errors": errors,
+            },
+        )
+
+    selected_diagnostics = mechanistic_diagnostics(
+        selected_state, operating, feed, clarifier=clarifier, strict_v3=True,
+    )
+    physical_passed = bool(selected_diagnostics.get("passed", False))
+    selected_branch = classify_branches(selected_state, analysis.direct_assets)
+    branch_agreement: bool | None = None
+    generation_difference: float | None = None
+    state_scale_difference: float | None = None
+    first_diagnostics: dict[str, Any] | None = None
+    second_diagnostics: dict[str, Any] | None = None
+    second_branch = None
+    if first_state is not None:
+        first_diagnostics = mechanistic_diagnostics(
+            first_state, operating, feed, clarifier=clarifier, strict_v3=True,
+        )
+    if second_state is not None:
+        second_diagnostics = mechanistic_diagnostics(
+            second_state, operating, feed, clarifier=clarifier, strict_v3=True,
+        )
+        comparison_state = first_state if first_state is not None else selected_state
+        reactors, _ = unpack_state(comparison_state, clarifier)
+        scale = generation_scale(feed, reactors[-1], clarifier)
+        generation_difference = float(np.max(np.abs(comparison_state - second_state) / scale))
+        state_scale_difference = float(np.max(
+            np.abs(comparison_state - second_state) / analysis.direct_assets.state_scale
+        ))
+        first_comparison_branch = classify_branches(
+            comparison_state, analysis.direct_assets,
+        )
+        second_branch = classify_branches(second_state, analysis.direct_assets)
+        branch_agreement = smooth_branches_match(first_comparison_branch, second_branch)
+        physical_passed = bool(physical_passed and second_diagnostics.get("passed", False))
+
+    replay_agreement = bool(
+        (
+            first_accepted
+            and second_accepted is True
+            and second_state is not None
+            and generation_difference is not None and generation_difference <= 1.0e-6
+            and state_scale_difference is not None and state_scale_difference <= 1.0e-6
+            and (
+                branch_agreement is True
+                or selected_branch.ambiguous
+                or (second_branch is not None and second_branch.ambiguous)
+            )
+        )
+    )
+    accepted = bool(first_accepted and physical_passed and replay_agreement)
+    response = assemble_target(selected_state, operating, feed, clarifier)
+    reference_components = objective_components(controls, response, analysis.direct_assets)
+    reference_objective = float(DEFAULT_OBJECTIVE_WEIGHTS @ reference_components)
+    quantities = engineering_quantities(controls, response, analysis.direct_assets)
+    reference_engineering_feasible = engineering_feasible(
+        controls, response, analysis.direct_assets,
+    )
+    boundary_ambiguous = bool(
+        selected_branch.ambiguous
+        or (second_branch is not None and second_branch.ambiguous)
+    )
+    status = (
+        "valid_branch_boundary" if accepted and boundary_ambiguous
+        else "valid_interior" if accepted
+        else "start_1_failed" if not first_accepted
+        else "start_2_failed" if second_accepted is not True
+        else "root_disagreement" if second_state is not None and not replay_agreement
+        else "physical_audit_failed"
+    )
+    current_execution_elapsed_seconds = perf_counter() - started
+    payload = {
+        "accepted": accepted, "status": status, "source": source,
+        "start_1_accepted": first_accepted, "start_2_required": second_required,
+        "start_2_accepted": second_accepted,
+        "two_start_agreement_checked": second_state is not None,
+        "scaled_root_difference_generation": generation_difference,
+        "scaled_root_difference_state": state_scale_difference,
+        "branch_agreement": branch_agreement,
+        "branch_disagreement_excused_by_boundary_ambiguity": bool(
+            branch_agreement is False
+            and (
+                selected_branch.ambiguous
+                or (second_branch is not None and second_branch.ambiguous)
+            )
+        ),
+        "branch_ambiguous": boundary_ambiguous,
+        "minimum_normalized_branch_margin": float(selected_branch.minimum_normalized_margin),
+        "branch_start_1": None if first_branch is None else asdict(first_branch),
+        "branch_start_2": None if second_branch is None else asdict(second_branch),
+        "physical_stability_accepted": physical_passed,
+        "diagnostics_start_1": first_diagnostics,
+        "diagnostics_start_2": second_diagnostics,
+        "engineering_feasible": bool(reference_engineering_feasible),
+        "engineering_quantities": quantities,
+        "objective": reference_objective,
+        "objective_components": reference_components.tolist(),
+        "elapsed_seconds": (
+            retained_original_elapsed_seconds
+            if retained_original_elapsed_seconds is not None
+            else current_execution_elapsed_seconds
+        ),
+        "current_run_reuse_overhead_seconds": current_execution_elapsed_seconds,
+        "retained_original_solve_elapsed_seconds": retained_original_elapsed_seconds,
+        "errors": errors,
+    }
+    return (
+        np.asarray(response, dtype=np.float64),
+        (
+            np.full(state_size, np.nan)
+            if first_state is None else np.asarray(first_state, dtype=np.float64)
+        ),
+        np.full(state_size, np.nan) if second_state is None else np.asarray(second_state, dtype=np.float64),
+        payload,
+    )
 
 
 def _test_equivalence_contract(
@@ -4144,6 +6197,714 @@ def _run_selected_derivative_audit(
     return payload
 
 
+def _surrogate_certification_contract(
+    *,
+    source_id: str,
+    analysis_id: str,
+    case_id: str,
+    influent: np.ndarray,
+    route_artifact_digest: str,
+    settings: SurrogateCertificationSettings,
+) -> str:
+    digest = sha256()
+    digest.update(COMPARISON_PROTOCOL.encode())
+    digest.update(source_id.encode())
+    digest.update(analysis_id.encode())
+    digest.update(case_id.encode())
+    digest.update(route_artifact_digest.encode())
+    digest.update(np.ascontiguousarray(influent, dtype="<f8").tobytes())
+    digest.update(json.dumps(asdict(settings), sort_keys=True).encode())
+    return digest.hexdigest()
+
+
+def _run_surrogate_certification(
+    case_directory: Path,
+    *,
+    case_id: str,
+    influent: np.ndarray,
+    result: SurrogateMultistartResult,
+    analysis: AnalysisBundle,
+    source_id: str,
+    analysis_id: str,
+    problem: Any,
+) -> tuple[FinalCandidateRecord | None, dict[str, Any]]:
+    """Certify/polish one retained surrogate endpoint without rerunning search."""
+
+    settings = SurrogateCertificationSettings()
+    route_path = case_directory / "surrogate.json"
+    contract = _surrogate_certification_contract(
+        source_id=source_id,
+        analysis_id=analysis_id,
+        case_id=case_id,
+        influent=influent,
+        route_artifact_digest=file_digest(route_path),
+        settings=settings,
+    )
+    payload_path = case_directory / "surrogate_local_convergence.json"
+    candidate_path = case_directory / "surrogate_certified.npz"
+    marker_path = case_directory / "surrogate_local_convergence_complete.json"
+    if marker_path.is_file() and payload_path.is_file():
+        marker = _load_json_object(marker_path, description="surrogate certification marker")
+        payload = _load_json_object(payload_path, description="surrogate certification")
+        if (
+            marker.get("certification_contract") == contract
+            and payload.get("certification_contract") == contract
+            and _artifacts_match(case_directory, marker.get("artifacts", {}))
+        ):
+            candidate_value = payload.get("candidate")
+            candidate = (
+                None
+                if candidate_value is None
+                else FinalCandidateRecord.from_dict(candidate_value)
+            )
+            return candidate, payload
+
+    if result.selected is None or result.selected.final is None:
+        candidate_path.unlink(missing_ok=True)
+        payload = {
+            "stage": "surrogate_local_convergence",
+            "case": case_id,
+            "certification_contract": contract,
+            "selected": False,
+            "locally_converged": False,
+            "first_order_certified": False,
+            "status": "no_surrogate_candidate",
+            "settings": asdict(settings),
+            "candidate": None,
+            "certificate": None,
+        }
+        atomic_json(payload_path, payload)
+        atomic_json(marker_path, {
+            "stage": "surrogate_local_convergence",
+            "certification_contract": contract,
+            "selected": False,
+            "artifacts": _artifact_hashes(case_directory, (payload_path, route_path)),
+        })
+        return None, payload
+
+    certification = certify_surrogate_local_convergence(
+        analysis.surrogate_assets,
+        SurrogateCase(influent=influent, case_id=case_id),
+        result.selected.final,
+        settings=settings,
+        problem=problem,
+        name=f"article_surrogate_certificate_{case_id}",
+    )
+    candidate = certification.candidate
+    certificate = certification.certificate
+    payload = {
+        "stage": "surrogate_local_convergence",
+        "case": case_id,
+        "certification_contract": contract,
+        "selected": candidate is not None,
+        "locally_converged": bool(certificate.locally_converged),
+        "first_order_certified": bool(certificate.first_order_certified),
+        "status": certificate.classification,
+        "settings": asdict(settings),
+        "candidate": None if candidate is None else candidate.as_dict(),
+        "certificate": certificate.as_dict(),
+    }
+    atomic_json(payload_path, payload, nonfinite_to_none=True)
+    artifacts: list[Path] = [payload_path, route_path]
+    if candidate is not None:
+        atomic_npz(
+            candidate_path,
+            normalized_controls=candidate.normalized_controls,
+            theta=candidate.theta,
+            raw=candidate.raw,
+            projected=candidate.projected,
+            objective=np.asarray(candidate.objective),
+            objective_components=candidate.objective_components,
+        )
+        artifacts.append(candidate_path)
+    atomic_json(marker_path, {
+        "stage": "surrogate_local_convergence",
+        "certification_contract": contract,
+        "selected": candidate is not None,
+        "locally_converged": bool(certificate.locally_converged),
+        "first_order_certified": bool(certificate.first_order_certified),
+        "artifacts": _artifact_hashes(case_directory, tuple(artifacts)),
+    })
+    return candidate, payload
+
+
+def _direct_recovery_contract(
+    *,
+    source_id: str,
+    analysis_id: str,
+    case_id: str,
+    influent: np.ndarray,
+    recovery_start: np.ndarray,
+    route_artifact_digest: str,
+) -> str:
+    digest = sha256()
+    digest.update(b"smooth-direct-single-failure-recovery-v1\0")
+    digest.update(source_id.encode())
+    digest.update(analysis_id.encode())
+    digest.update(case_id.encode())
+    digest.update(route_artifact_digest.encode())
+    digest.update(np.ascontiguousarray(influent, dtype="<f8").tobytes())
+    digest.update(np.ascontiguousarray(recovery_start, dtype="<f8").tobytes())
+    return digest.hexdigest()
+
+
+def _run_direct_failure_recovery(
+    case_directory: Path,
+    *,
+    case_id: str,
+    influent: np.ndarray,
+    result: DirectMultistartResult,
+    surrogate_candidate: FinalCandidateRecord | None,
+    assets: Any,
+    development_decisions: np.ndarray,
+    development_influents: np.ndarray,
+    development_targets: np.ndarray,
+    source_id: str,
+    analysis_id: str,
+) -> tuple[DirectMultistartResult, dict[str, Any]]:
+    """Permit one declared recovery start only after a primary direct failure."""
+
+    if result.selected is not None:
+        return result, {
+            "attempted": False,
+            "selected_from": "primary_center_start",
+            "status": "not_required",
+        }
+    if surrogate_candidate is None:
+        return result, {
+            "attempted": False,
+            "selected_from": None,
+            "status": "unavailable_without_convergence_certified_surrogate_candidate",
+        }
+    start = np.asarray(surrogate_candidate.normalized_controls, dtype=np.float64)
+    route_path = case_directory / "direct.json"
+    contract = _direct_recovery_contract(
+        source_id=source_id,
+        analysis_id=analysis_id,
+        case_id=case_id,
+        influent=influent,
+        recovery_start=start,
+        route_artifact_digest=file_digest(route_path),
+    )
+    payload_path = case_directory / "direct_recovery.json"
+    marker_path = case_directory / "direct_recovery_complete.json"
+    if marker_path.is_file() and payload_path.is_file():
+        marker = _load_json_object(marker_path, description="direct recovery marker")
+        payload = _load_json_object(payload_path, description="direct recovery")
+        if (
+            marker.get("recovery_contract") == contract
+            and payload.get("recovery_contract") == contract
+            and _artifacts_match(case_directory, marker.get("artifacts", {}))
+        ):
+            stored_result = payload.get("result")
+            if stored_result is None:
+                return result, payload
+            if not isinstance(stored_result, Mapping):
+                raise RuntimeError("cached direct recovery result is malformed")
+            restored = tuple(
+                DirectStartResult.from_dict(item) for item in stored_result["starts"]
+            )
+            if (
+                len(restored) != 1
+                or restored[0].start_index != 0
+                or not np.array_equal(restored[0].initial_normalized_controls, start)
+            ):
+                raise RuntimeError("cached direct recovery violates its one-start contract")
+            for item in restored:
+                _validate_route_result_integrity(item, "direct")
+            selected_index = stored_result.get("selected_start")
+            if selected_index not in (None, 0):
+                raise RuntimeError("cached direct recovery has an invalid selection")
+            selected = None if selected_index is None else restored[int(selected_index)]
+            return (
+                DirectMultistartResult(restored, selected, str(stored_result["status"])),
+                payload,
+            )
+    started = perf_counter()
+    try:
+        recovered = solve_direct_multistart(
+            assets,
+            DirectCase(influent=influent, case_id=case_id),
+            development_decisions,
+            development_influents,
+            development_targets,
+            settings=SolverSettings(maximum_wall_time=None),
+            starts=start.reshape(1, 7),
+            allow_reduced_starts=True,
+        )
+        if (
+            len(recovered.starts) != 1
+            or recovered.starts[0].start_index != 0
+            or not np.array_equal(
+                recovered.starts[0].initial_normalized_controls, start,
+            )
+        ):
+            raise RuntimeError("fresh direct recovery violated its one-start contract")
+        for item in recovered.starts:
+            _validate_route_result_integrity(item, "direct")
+        error = None
+    except Exception as exc:
+        recovered = result
+        error = f"{type(exc).__name__}: {exc}"
+    payload = {
+        "stage": "direct_failure_recovery",
+        "protocol": "smooth_direct_single_failure_recovery_v1",
+        "recovery_contract": contract,
+        "attempted": True,
+        "recovery_start": start.tolist(),
+        "selected_from": (
+            "single_surrogate_endpoint_recovery" if recovered.selected is not None else None
+        ),
+        "status": recovered.status if error is None else "recovery_execution_failed",
+        "elapsed_seconds": perf_counter() - started,
+        "error": error,
+        "result": None if error is not None else recovered.as_dict(),
+    }
+    atomic_json(payload_path, payload, nonfinite_to_none=True)
+    atomic_json(marker_path, {
+        "stage": "direct_failure_recovery",
+        "recovery_contract": contract,
+        "attempted": True,
+        "selected": recovered.selected is not None,
+        "artifacts": _artifact_hashes(case_directory, (payload_path, route_path)),
+    })
+    return recovered, payload
+
+
+def _casewise_reference_contract(
+    *,
+    source_id: str,
+    analysis_id: str,
+    case_id: str,
+    route: str,
+    theta: np.ndarray | None,
+    candidate_source_digest: str,
+) -> str:
+    digest = sha256()
+    digest.update(COMPARISON_PROTOCOL.encode())
+    digest.update(source_id.encode())
+    digest.update(analysis_id.encode())
+    digest.update(case_id.encode())
+    digest.update(route.encode())
+    digest.update(candidate_source_digest.encode())
+    if theta is not None:
+        digest.update(np.ascontiguousarray(theta, dtype="<f8").tobytes())
+    return digest.hexdigest()
+
+
+def _scaled_response_errors(
+    response: np.ndarray,
+    reference: np.ndarray,
+    scale: np.ndarray,
+) -> dict[str, float | None]:
+    if (
+        response.shape != reference.shape
+        or response.shape != scale.shape
+        or not np.all(np.isfinite(response))
+        or not np.all(np.isfinite(reference))
+    ):
+        return {"nrmse": None, "nmae": None, "scaled_inf": None}
+    scaled = (response - reference) / scale
+    return {
+        "nrmse": float(np.sqrt(np.mean(scaled**2))),
+        "nmae": float(np.mean(np.abs(scaled))),
+        "scaled_inf": float(np.max(np.abs(scaled))),
+    }
+
+
+def _run_casewise_route_reference_evaluation(
+    case_directory: Path,
+    *,
+    case_id: str,
+    route: str,
+    influent: np.ndarray,
+    selected: Any | None,
+    surrogate_candidate: FinalCandidateRecord | None,
+    route_payload: Mapping[str, Any],
+    certification_payload: Mapping[str, Any] | None,
+    recovery_payload: Mapping[str, Any] | None,
+    analysis: AnalysisBundle,
+    source_id: str,
+    analysis_id: str,
+) -> tuple[dict[str, Any], pd.DataFrame]:
+    """Evaluate one returned decision with the common exact reference model."""
+
+    if route == "surrogate":
+        final = surrogate_candidate
+    else:
+        final = selected
+    theta = None if final is None else np.asarray(final.theta, dtype=np.float64)
+    candidate_source = case_directory / (
+        "surrogate_local_convergence.json" if route == "surrogate"
+        else "direct_recovery.json"
+        if recovery_payload is not None and recovery_payload.get("attempted")
+        else "direct.json"
+    )
+    if not candidate_source.is_file():
+        candidate_source = case_directory / f"{route}.json"
+    contract = _casewise_reference_contract(
+        source_id=source_id,
+        analysis_id=analysis_id,
+        case_id=case_id,
+        route=route,
+        theta=theta,
+        candidate_source_digest=file_digest(candidate_source),
+    )
+    payload_path = case_directory / f"{route}_casewise_reference.json"
+    arrays_path = case_directory / f"{route}_casewise_reference.npz"
+    physical_path = case_directory / f"{route}_casewise_physical_violations.csv"
+    marker_path = case_directory / f"{route}_casewise_reference_complete.json"
+    if marker_path.is_file() and payload_path.is_file():
+        marker = _load_json_object(marker_path, description="casewise reference marker")
+        payload = _load_json_object(payload_path, description="casewise reference result")
+        if (
+            marker.get("reference_contract") == contract
+            and payload.get("reference_contract") == contract
+            and _artifacts_match(case_directory, marker.get("artifacts", {}))
+        ):
+            physical = (
+                pd.read_csv(physical_path)
+                if physical_path.is_file() else pd.DataFrame()
+            )
+            return payload, physical
+
+    if final is None:
+        arrays_path.unlink(missing_ok=True)
+        physical_path.unlink(missing_ok=True)
+        payload = {
+            "stage": "casewise_exact_common_reference",
+            "reference_contract": contract,
+            "case": case_id,
+            "route": route,
+            "candidate_available": False,
+            "native_feasible": False,
+            "exact_replay_valid": False,
+            "comparison_valid": False,
+            "status": f"unpaired_{route}_no_candidate",
+            "native_status": route_payload.get("status"),
+            "recovery": recovery_payload,
+        }
+        atomic_json(payload_path, payload, nonfinite_to_none=True)
+        atomic_json(marker_path, {
+            "stage": "casewise_exact_common_reference",
+            "reference_contract": contract,
+            "candidate_available": False,
+            "artifacts": _artifact_hashes(case_directory, (payload_path, candidate_source)),
+        })
+        return payload, pd.DataFrame()
+
+    if theta is None or theta.shape != (7,) or not np.all(np.isfinite(theta)):
+        raise RuntimeError(f"{route} selected candidate has invalid controls")
+    normalized = (theta - DECISION_LOWER) / (DECISION_UPPER - DECISION_LOWER)
+    surrogate_case = SurrogateCase(influent=influent, case_id=case_id)
+    raw = np.asarray(analysis.model.predict(theta, influent), dtype=np.float64)
+    projection = cold_reproject(
+        analysis.surrogate_assets,
+        surrogate_case,
+        normalized,
+        raise_on_failure=False,
+    )
+    projected = np.asarray(projection.state, dtype=np.float64)
+    native_response = (
+        np.asarray(final.projected, dtype=np.float64)
+        if route == "surrogate"
+        else np.asarray(final.response, dtype=np.float64)
+    )
+    native_objective = float(final.objective)
+    expected_response_shape = (analysis.direct_assets.response_count,)
+    for label, values in (
+        ("raw", raw), ("projected", projected),
+        ("optimizer-native", native_response),
+    ):
+        if values.shape != expected_response_shape or not np.all(np.isfinite(values)):
+            raise RuntimeError(
+                f"{route} {label} response is non-finite or has the wrong shape"
+            )
+    if not np.isfinite(native_objective):
+        raise RuntimeError(f"{route} selected candidate has a non-finite objective")
+    native_feasible = bool(
+        final.feasibility.feasible
+        if route == "surrogate" else final.feasible
+    )
+    if not native_feasible:
+        raise RuntimeError(f"{route} selected candidate failed its native feasibility audit")
+    retained_reference = case_directory / f"{route}_reference.npz"
+    reference, state_1, state_2, reference_payload = _casewise_exact_reference(
+        theta,
+        influent,
+        analysis,
+        retained_reference_path=retained_reference,
+    )
+    exact_replay_valid = bool(
+        reference_payload.get("accepted") is True
+        and np.all(np.isfinite(reference))
+    )
+    reference_valid = bool(
+        exact_replay_valid
+        and reference_payload.get("engineering_feasible") is True
+    )
+    reference_objective = (
+        float(reference_payload["objective"]) if exact_replay_valid else None
+    )
+    reference_components = (
+        list(reference_payload["objective_components"])
+        if exact_replay_valid else None
+    )
+    response_scale = np.asarray(analysis.model.response_scale, dtype=np.float64)
+    local_converged = (
+        bool(certification_payload.get("locally_converged"))
+        if route == "surrogate" and certification_payload is not None
+        else bool(getattr(final, "stationary", False))
+    )
+    first_order_certified = (
+        bool(certification_payload.get("first_order_certified"))
+        if route == "surrogate" and certification_payload is not None
+        else bool(getattr(final, "stationary", False))
+    )
+    primary_optimization_seconds = float(
+        route_payload.get("elapsed_seconds", np.nan)
+    )
+    recovery_seconds = (
+        float(recovery_payload.get("elapsed_seconds", 0.0))
+        if recovery_payload is not None and recovery_payload.get("attempted")
+        else 0.0
+    )
+    certification_seconds = (
+        float(certification_payload["certificate"].get("elapsed_seconds", 0.0))
+        if certification_payload is not None
+        and certification_payload.get("certificate") is not None
+        else 0.0
+    )
+    total_optimization_seconds = (
+        primary_optimization_seconds + recovery_seconds + certification_seconds
+        if np.isfinite(primary_optimization_seconds) else None
+    )
+    payload = {
+        "stage": "casewise_exact_common_reference",
+        "reference_contract": contract,
+        "case": case_id,
+        "route": route,
+        "candidate_available": True,
+        "native_feasible": native_feasible,
+        "exact_replay_valid": exact_replay_valid,
+        "comparison_valid": reference_valid,
+        "status": (
+            str(reference_payload.get("status")) if reference_valid
+            else "exact_valid_engineering_infeasible" if exact_replay_valid
+            else f"reference_{reference_payload.get('status', 'failed')}"
+        ),
+        "selected_start": int(selected.start_index) if selected is not None else 0,
+        "normalized_controls": normalized.tolist(),
+        "theta": theta.tolist(),
+        "native_status": getattr(final, "status", route_payload.get("status")),
+        "native_objective": native_objective,
+        "exact_reference_objective": reference_objective,
+        "exact_reference_objective_components": reference_components,
+        "native_minus_reference_objective": (
+            None if reference_objective is None else native_objective - reference_objective
+        ),
+        "reference": reference_payload,
+        "local_convergence_certified": local_converged,
+        "first_order_stationarity_certified": first_order_certified,
+        "local_convergence_classification": (
+            certification_payload.get("status")
+            if route == "surrogate" and certification_payload is not None
+            else getattr(final, "status", None)
+        ),
+        "branch_ambiguity_is_qualifier_not_rejection": True,
+        "projection_accepted": bool(projection.accepted),
+        "prediction_error_raw": _scaled_response_errors(raw, reference, response_scale),
+        "prediction_error_projected": _scaled_response_errors(
+            projected, reference, response_scale,
+        ),
+        "native_model_error": _scaled_response_errors(
+            native_response, reference, response_scale,
+        ),
+        "primary_optimization_elapsed_seconds": (
+            primary_optimization_seconds
+            if np.isfinite(primary_optimization_seconds) else None
+        ),
+        "recovery_elapsed_seconds": recovery_seconds if recovery_seconds else None,
+        "optimization_elapsed_seconds": total_optimization_seconds,
+        "certification_elapsed_seconds": (
+            certification_seconds if certification_seconds else None
+        ),
+        "reference_elapsed_seconds": reference_payload.get("elapsed_seconds"),
+        "recovery": recovery_payload,
+    }
+    atomic_json(payload_path, payload, nonfinite_to_none=True)
+    atomic_npz(
+        arrays_path,
+        theta=theta,
+        normalized_controls=normalized,
+        raw=raw,
+        projected=projected,
+        optimizer_native=native_response,
+        exact_reference=reference,
+        exact_state_start_1=state_1,
+        exact_state_start_2=state_2,
+    )
+    operating = ArticleOperatingPoint(*map(float, theta))
+    unavailable_response = np.full(analysis.direct_assets.response_count, np.nan)
+    response_1 = (
+        assemble_target(
+            state_1, operating, influent, analysis.direct_assets.clarifier,
+        )
+        if np.all(np.isfinite(state_1)) else unavailable_response.copy()
+    )
+    response_2 = (
+        assemble_target(
+            state_2, operating, influent, analysis.direct_assets.clarifier,
+        )
+        if np.all(np.isfinite(state_2)) else unavailable_response.copy()
+    )
+    response_rows: list[tuple[str, np.ndarray]] = [
+        ("raw", raw),
+        ("projected", projected),
+        ("optimizer_native", native_response),
+        ("exact_mechanistic_start_1", response_1),
+        ("exact_mechanistic_start_2", response_2),
+    ]
+    physical = pd.DataFrame([
+        {
+            **_physical_record(method, case_id, response, theta, influent, analysis),
+            "decision_route": route,
+            "response_source": method,
+        }
+        for method, response in response_rows
+    ])
+    atomic_dataframe(physical_path, physical)
+    atomic_json(marker_path, {
+        "stage": "casewise_exact_common_reference",
+        "reference_contract": contract,
+        "candidate_available": True,
+        "comparison_valid": reference_valid,
+        "artifacts": _artifact_hashes(
+            case_directory,
+            (payload_path, arrays_path, physical_path, candidate_source),
+        ),
+    })
+    return payload, physical
+
+
+def _casewise_comparison_row(
+    case_id: str,
+    surrogate: Mapping[str, Any],
+    direct: Mapping[str, Any],
+) -> dict[str, Any]:
+    reasons: list[str] = []
+    if not surrogate.get("candidate_available"):
+        reasons.append("surrogate_no_candidate")
+    if not direct.get("candidate_available"):
+        reasons.append("direct_no_candidate")
+    if surrogate.get("candidate_available"):
+        if not surrogate.get("exact_replay_valid"):
+            reasons.append("surrogate_reference_invalid")
+        elif not surrogate.get("comparison_valid"):
+            reasons.append("surrogate_exact_engineering_infeasible")
+    if direct.get("candidate_available"):
+        if not direct.get("exact_replay_valid"):
+            reasons.append("direct_reference_invalid")
+        elif not direct.get("comparison_valid"):
+            reasons.append("direct_exact_engineering_infeasible")
+    if surrogate.get("candidate_available") and not surrogate.get("native_feasible"):
+        reasons.append("surrogate_native_infeasible")
+    if direct.get("candidate_available") and not direct.get("native_feasible"):
+        reasons.append("direct_native_infeasible")
+    eligible = not reasons
+    s_objective = surrogate.get("exact_reference_objective")
+    d_objective = direct.get("exact_reference_objective")
+    delta = (
+        float(s_objective) - float(d_objective)
+        if eligible and s_objective is not None and d_objective is not None else None
+    )
+    symmetric = (
+        delta / max(1.0, abs(float(s_objective)), abs(float(d_objective)))
+        if delta is not None else None
+    )
+    direct_relative = (
+        100.0 * delta / max(abs(float(d_objective)), 1.0e-12)
+        if delta is not None else None
+    )
+    s_controls = surrogate.get("normalized_controls")
+    d_controls = direct.get("normalized_controls")
+    control_difference = None
+    if eligible and isinstance(s_controls, list) and isinstance(d_controls, list):
+        difference = np.asarray(s_controls, dtype=float) - np.asarray(d_controls, dtype=float)
+        control_difference = {
+            "rms": float(np.sqrt(np.mean(difference**2))),
+            "maximum": float(np.max(np.abs(difference))),
+        }
+    component_differences = None
+    s_components = surrogate.get("exact_reference_objective_components")
+    d_components = direct.get("exact_reference_objective_components")
+    if eligible and isinstance(s_components, list) and isinstance(d_components, list):
+        component_differences = (
+            np.asarray(s_components, dtype=float) - np.asarray(d_components, dtype=float)
+        ).tolist()
+    surrogate_seconds = surrogate.get("optimization_elapsed_seconds")
+    direct_seconds = direct.get("optimization_elapsed_seconds")
+    timing_ratio = (
+        float(direct_seconds) / float(surrogate_seconds)
+        if surrogate_seconds is not None
+        and direct_seconds is not None
+        and np.isfinite(float(surrogate_seconds))
+        and np.isfinite(float(direct_seconds))
+        and float(surrogate_seconds) > 0.0
+        else None
+    )
+    row = {
+        "case": case_id,
+        "comparison_eligible": eligible,
+        "ineligibility_reasons": ";".join(reasons) if reasons else None,
+        "surrogate_candidate_available": bool(surrogate.get("candidate_available")),
+        "direct_candidate_available": bool(direct.get("candidate_available")),
+        "surrogate_local_convergence_certified": bool(
+            surrogate.get("local_convergence_certified")
+        ),
+        "direct_first_order_stationarity_certified": bool(
+            direct.get("first_order_stationarity_certified")
+        ),
+        "both_local_convergence_qualified": bool(
+            eligible
+            and surrogate.get("local_convergence_certified")
+            and direct.get("first_order_stationarity_certified")
+        ),
+        "surrogate_reference_status": surrogate.get("status"),
+        "direct_reference_status": direct.get("status"),
+        "surrogate_branch_ambiguous": (
+            surrogate.get("reference", {}).get("branch_ambiguous")
+        ),
+        "direct_branch_ambiguous": direct.get("reference", {}).get("branch_ambiguous"),
+        "J_S_reference": s_objective,
+        "J_M_reference": d_objective,
+        "delta_J_S_minus_M": delta,
+        "symmetric_relative_difference": symmetric,
+        "surrogate_penalty_percent_relative_to_direct": direct_relative,
+        "control_rms_difference": (
+            None if control_difference is None else control_difference["rms"]
+        ),
+        "control_maximum_difference": (
+            None if control_difference is None else control_difference["maximum"]
+        ),
+        "objective_component_differences": component_differences,
+        "surrogate_optimization_seconds": surrogate_seconds,
+        "direct_optimization_seconds": direct_seconds,
+        "mechanistic_surrogate_time_ratio": timing_ratio,
+        "surrogate_certification_seconds": surrogate.get("certification_elapsed_seconds"),
+        "surrogate_reference_seconds": surrogate.get("reference_elapsed_seconds"),
+        "direct_reference_seconds": direct.get("reference_elapsed_seconds"),
+    }
+    if component_differences is not None:
+        row.update({
+            f"delta_component_{name}": value
+            for name, value in zip(
+                OBJECTIVE_COMPONENT_NAMES, component_differences, strict=True,
+            )
+        })
+    return row
+
+
 def _evaluate_selected_route(
     case_directory: Path,
     *,
@@ -4381,14 +7142,14 @@ def run_optimization_stage(
     analysis: AnalysisBundle,
     source_files: Mapping[str, str],
 ) -> bool:
-    """Run all article cases, strict equivalence checks, replays, and reports.
+    """Run searches and compare selected decisions on one exact reference.
 
-    Each route uses one deterministic center start. The surrogate route calls
-    the seven-variable exact-QP active-set optimizer directly, with no IPOPT
-    continuation stages; the direct mechanistic route retains its smoothing
-    continuation inside that one local attempt. Per-attempt and per-case
-    checkpoints permit exact resume, and scientific validation failures are
-    recorded without preventing later cases from running.
+    The untouched-test set remains reserved for surrogate generalization
+    assessment.  Smooth/reference equivalence is not rerun over those 1,000
+    rows.  Instead, every available nominal/robustness decision is evaluated
+    by the same exact nonsmooth mechanistic equations.  Search failures and
+    unresolved convergence certificates are recorded casewise and never stop
+    the remaining scientific comparisons.
     """
 
     if profile != ARTICLE_FULL or profile.robustness_count != 10:
@@ -4396,6 +7157,7 @@ def run_optimization_stage(
     if not assessment_gate_allows_optimization(analysis.passed):
         raise RuntimeError("optimization cannot bypass the enforced admission gate")
     source_id = source_digest(source_files)
+    casewise_source_id = _casewise_artifact_source_id(run, source_id)
     analysis_id = _assessment_binding(design, development_targets, test_targets)
     case_inputs = [
         ("nominal", np.asarray(NOMINAL_INFLUENT, dtype=float)),
@@ -4409,32 +7171,17 @@ def run_optimization_stage(
     development_decisions = np.asarray(design["development_decisions"], dtype=float)
     development_influents = np.asarray(design["development_influents"], dtype=float)
     selected_physical_frames: list[pd.DataFrame] = []
-    selected_count = 0
-    selected_equivalence_passed = True
+    comparison_rows: list[dict[str, Any]] = []
+    reference_rows: list[dict[str, Any]] = []
     route_statuses: list[dict[str, Any]] = []
     shared_surrogate_problem: Any | None = None
     for case_number, (case_id, influent) in enumerate(case_inputs, start=1):
         _write_state(
-            run, "optimization", "running", case=case_id,
+            run, "casewise_common_reference", "running", case=case_id,
             completed_cases=case_number - 1, total_cases=len(case_inputs),
         )
         case_directory = run / "optimization" / case_id
         case_directory.mkdir(parents=True, exist_ok=True)
-        case_contract = _case_contract_id(source_id, analysis_id, case_id, influent)
-        restored = _load_case_checkpoint(
-            run, case_directory, case_contract=case_contract,
-        )
-        if restored is not None:
-            marker, violations = restored
-            if not violations.empty:
-                selected_physical_frames.append(violations)
-            selected_count += int(marker.get("selected_decision_count", 0))
-            selected_equivalence_passed = bool(
-                selected_equivalence_passed
-                and marker.get("all_available_selected_equivalence_accepted", False)
-            )
-            route_statuses.extend(marker.get("routes", []))
-            continue
         if shared_surrogate_problem is None:
             shared_surrogate_problem = build_surrogate_nlp(
                 analysis.surrogate_assets,
@@ -4445,7 +7192,7 @@ def run_optimization_stage(
             )
         surrogate, surrogate_payload = _run_surrogate_route(
             case_directory, case_id=case_id, influent=influent,
-            assets=analysis.surrogate_assets, source_id=source_id,
+            assets=analysis.surrogate_assets, source_id=casewise_source_id,
             analysis_id=analysis_id, problem=shared_surrogate_problem,
         )
         direct, direct_payload = _run_direct_route(
@@ -4454,84 +7201,314 @@ def run_optimization_stage(
             development_decisions=development_decisions,
             development_influents=development_influents,
             development_targets=development_targets,
-            source_id=source_id, analysis_id=analysis_id,
+            source_id=casewise_source_id, analysis_id=analysis_id,
         )
-        route_rows: list[dict[str, Any]] = []
-        case_frames: list[pd.DataFrame] = []
-        case_selected_count = 0
-        case_equivalence_passed = True
-        for route, result, payload in (
-            ("surrogate", surrogate, surrogate_payload),
-            ("direct", direct, direct_payload),
-        ):
-            selected, accepted, violations = _evaluate_selected_route(
-                case_directory, case_id=case_id, route=route,
-                influent=influent, result=result, route_payload=payload,
-                analysis=analysis, source_id=source_id, analysis_id=analysis_id,
+        surrogate_candidate, certification = _run_surrogate_certification(
+            case_directory,
+            case_id=case_id,
+            influent=influent,
+            result=surrogate,
+            analysis=analysis,
+            source_id=casewise_source_id,
+            analysis_id=analysis_id,
+            problem=shared_surrogate_problem,
+        )
+        direct_for_comparison, recovery = _run_direct_failure_recovery(
+            case_directory,
+            case_id=case_id,
+            influent=influent,
+            result=direct,
+            surrogate_candidate=(
+                surrogate_candidate
+                if certification.get("locally_converged") is True else None
+            ),
+            assets=analysis.direct_assets,
+            development_decisions=development_decisions,
+            development_influents=development_influents,
+            development_targets=development_targets,
+            source_id=casewise_source_id,
+            analysis_id=analysis_id,
+        )
+        surrogate_evaluation, surrogate_physical = (
+            _run_casewise_route_reference_evaluation(
+                case_directory,
+                case_id=case_id,
+                route="surrogate",
+                influent=influent,
+                selected=surrogate.selected,
+                surrogate_candidate=surrogate_candidate,
+                route_payload=surrogate_payload,
+                certification_payload=certification,
+                recovery_payload=None,
+                analysis=analysis,
+                source_id=casewise_source_id,
+                analysis_id=analysis_id,
             )
-            if selected:
-                case_selected_count += 1
-                case_equivalence_passed = case_equivalence_passed and accepted
-                case_frames.append(violations)
-            route_rows.append({
+        )
+        direct_evaluation, direct_physical = _run_casewise_route_reference_evaluation(
+            case_directory,
+            case_id=case_id,
+            route="direct",
+            influent=influent,
+            selected=direct_for_comparison.selected,
+            surrogate_candidate=None,
+            route_payload=direct_payload,
+            certification_payload=None,
+            recovery_payload=recovery,
+            analysis=analysis,
+            source_id=casewise_source_id,
+            analysis_id=analysis_id,
+        )
+        for evaluation in (surrogate_evaluation, direct_evaluation):
+            reference = evaluation.get("reference", {})
+            raw_error = evaluation.get("prediction_error_raw", {})
+            projected_error = evaluation.get("prediction_error_projected", {})
+            native_error = evaluation.get("native_model_error", {})
+            normalized_controls = evaluation.get("normalized_controls")
+            theta = evaluation.get("theta")
+            row = {
                 "case": case_id,
-                "route": route,
-                "status": result.status,
-                "starts_attempted": len(result.starts),
-                "optimization_attempts": len(result.starts),
-                "protocol": payload.get("protocol"),
-                "selected": selected,
-                "selected_cross_evaluation_accepted": accepted if selected else None,
-            })
+                "route": evaluation.get("route"),
+                "candidate_available": evaluation.get("candidate_available"),
+                "native_feasible": evaluation.get("native_feasible"),
+                "exact_replay_valid": evaluation.get("exact_replay_valid"),
+                "comparison_valid": evaluation.get("comparison_valid"),
+                "status": evaluation.get("status"),
+                "native_status": evaluation.get("native_status"),
+                "native_objective": evaluation.get("native_objective"),
+                "exact_reference_objective": evaluation.get(
+                    "exact_reference_objective"
+                ),
+                "native_minus_reference_objective": evaluation.get(
+                    "native_minus_reference_objective"
+                ),
+                "local_convergence_certified": evaluation.get(
+                    "local_convergence_certified"
+                ),
+                "first_order_stationarity_certified": evaluation.get(
+                    "first_order_stationarity_certified"
+                ),
+                "local_convergence_classification": evaluation.get(
+                    "local_convergence_classification"
+                ),
+                "reference_status": reference.get("status"),
+                "reference_source": reference.get("source"),
+                "reference_start_1_accepted": reference.get("start_1_accepted"),
+                "reference_start_2_accepted": reference.get("start_2_accepted"),
+                "reference_scaled_root_difference_generation": reference.get(
+                    "scaled_root_difference_generation"
+                ),
+                "reference_scaled_root_difference_state": reference.get(
+                    "scaled_root_difference_state"
+                ),
+                "reference_branch_agreement": reference.get("branch_agreement"),
+                "reference_branch_ambiguous": reference.get("branch_ambiguous"),
+                "reference_minimum_normalized_branch_margin": reference.get(
+                    "minimum_normalized_branch_margin"
+                ),
+                "reference_physical_stability_accepted": reference.get(
+                    "physical_stability_accepted"
+                ),
+                "reference_engineering_feasible": reference.get(
+                    "engineering_feasible"
+                ),
+                "raw_reference_nrmse": raw_error.get("nrmse"),
+                "raw_reference_nmae": raw_error.get("nmae"),
+                "raw_reference_scaled_inf": raw_error.get("scaled_inf"),
+                "projected_reference_nrmse": projected_error.get("nrmse"),
+                "projected_reference_nmae": projected_error.get("nmae"),
+                "projected_reference_scaled_inf": projected_error.get("scaled_inf"),
+                "optimizer_native_reference_nrmse": native_error.get("nrmse"),
+                "optimizer_native_reference_nmae": native_error.get("nmae"),
+                "optimizer_native_reference_scaled_inf": native_error.get("scaled_inf"),
+                "optimization_elapsed_seconds": evaluation.get(
+                    "optimization_elapsed_seconds"
+                ),
+                "primary_optimization_elapsed_seconds": evaluation.get(
+                    "primary_optimization_elapsed_seconds"
+                ),
+                "recovery_elapsed_seconds": evaluation.get("recovery_elapsed_seconds"),
+                "certification_elapsed_seconds": evaluation.get(
+                    "certification_elapsed_seconds"
+                ),
+                "reference_elapsed_seconds": evaluation.get(
+                    "reference_elapsed_seconds"
+                ),
+                "reference_current_run_reuse_overhead_seconds": reference.get(
+                    "current_run_reuse_overhead_seconds"
+                ),
+                "reference_retained_original_solve_elapsed_seconds": reference.get(
+                    "retained_original_solve_elapsed_seconds"
+                ),
+            }
+            if isinstance(normalized_controls, list) and len(normalized_controls) == 7:
+                row.update({
+                    f"normalized_{name}": value
+                    for name, value in zip(DECISION_NAMES, normalized_controls, strict=True)
+                })
+            if isinstance(theta, list) and len(theta) == 7:
+                row.update({
+                    name: value
+                    for name, value in zip(DECISION_NAMES, theta, strict=True)
+                })
+            reference_rows.append(row)
+        comparison = _casewise_comparison_row(
+            case_id, surrogate_evaluation, direct_evaluation,
+        )
+        comparison_rows.append(comparison)
+        case_comparison_path = case_directory / "common_reference_comparison.json"
+        atomic_json(case_comparison_path, comparison, nonfinite_to_none=True)
+        case_frames = [
+            frame for frame in (surrogate_physical, direct_physical) if not frame.empty
+        ]
         case_violations = (
             pd.concat(case_frames, ignore_index=True, sort=False)
             if case_frames else pd.DataFrame()
         )
-        violation_path = case_directory / "physical_violations.csv"
         if not case_violations.empty:
-            atomic_dataframe(violation_path, case_violations)
             selected_physical_frames.append(case_violations)
-        selected_count += case_selected_count
-        selected_equivalence_passed = (
-            selected_equivalence_passed and case_equivalence_passed
+        new_artifacts = (
+            case_directory / "surrogate_local_convergence_complete.json",
+            case_directory / "surrogate_casewise_reference_complete.json",
+            case_directory / "direct_casewise_reference_complete.json",
+            case_comparison_path,
         )
+        case_contract = _case_contract_id(source_id, analysis_id, case_id, influent)
+        route_rows = [
+            {
+                "case": case_id,
+                "route": "surrogate",
+                "primary_status": surrogate.status,
+                "selected": surrogate_evaluation.get("candidate_available"),
+                "comparison_valid": surrogate_evaluation.get("comparison_valid"),
+                "locally_converged": surrogate_evaluation.get(
+                    "local_convergence_certified"
+                ),
+                "first_order_stationary": surrogate_evaluation.get(
+                    "first_order_stationarity_certified"
+                ),
+                "primary_attempts": 1,
+                "recovery_attempts": 0,
+            },
+            {
+                "case": case_id,
+                "route": "direct",
+                "primary_status": direct.status,
+                "selected": direct_evaluation.get("candidate_available"),
+                "comparison_valid": direct_evaluation.get("comparison_valid"),
+                "locally_converged": direct_evaluation.get(
+                    "local_convergence_certified"
+                ),
+                "first_order_stationary": direct_evaluation.get(
+                    "first_order_stationarity_certified"
+                ),
+                "primary_attempts": 1,
+                "recovery_attempts": int(bool(recovery.get("attempted"))),
+            },
+        ]
         route_statuses.extend(route_rows)
         assert_source_unchanged(source_files)
-        artifact_paths = tuple(
-            path for path in sorted(case_directory.rglob("*"))
-            if path.is_file() and path.name != "case_complete.json"
-        )
-        atomic_json(case_directory / "case_complete.json", {
-            "stage": "optimization_case",
+        atomic_json(case_directory / "casewise_comparison_complete.json", {
+            "stage": "casewise_exact_common_reference",
             "case": case_id,
             "case_contract": case_contract,
             "routes": route_rows,
-            "selected_decision_count": case_selected_count,
-            "all_available_selected_equivalence_accepted": case_equivalence_passed,
-            "artifacts": _artifact_hashes(run, artifact_paths),
+            "comparison_eligible": comparison["comparison_eligible"],
+            "artifacts": _artifact_hashes(run, new_artifacts),
         })
+
+    comparison_frame = pd.DataFrame(comparison_rows)
+    reference_frame = pd.DataFrame(reference_rows)
+    atomic_dataframe(
+        run / "metrics" / "case_common_reference_comparison.csv", comparison_frame,
+    )
+    atomic_dataframe(
+        run / "metrics" / "selected_candidate_reference_evaluation.csv",
+        reference_frame,
+    )
+    legacy_rows = run / "validation" / "untouched_test_equivalence" / "rows"
+    retired_count = len(tuple(legacy_rows.glob("row_*.json"))) if legacy_rows.is_dir() else 0
+    retired_path = run / "metrics" / "untouched_test_equivalence_retired.json"
+    atomic_json(retired_path, {
+        "stage": "untouched_test_smooth_reference_equivalence",
+        "status": "retired_incomplete_excluded_from_analysis",
+        "validation_protocol": COMPARISON_PROTOCOL,
+        "partial_legacy_rows_retained_but_unused": retired_count,
+        "replacement_scope": "nominal_plus_ten_robustness_cases",
+        "selected_candidate_count": int(reference_frame["candidate_available"].fillna(False).sum()),
+        "paired_case_count": int(comparison_frame["comparison_eligible"].sum()),
+    })
+    preliminary_v1_archive = (
+        run / str(CONVERGENCE_POLL_REFINEMENT_MIGRATION.retired_casewise_snapshot)
+    )
+    preliminary_v2_archive = (
+        run / str(POLL_LINESEARCH_FORK_MIGRATION.retired_casewise_snapshot)
+    )
+
+    def archived_poll_statuses(archive: Path, protocol: str) -> list[str]:
+        statuses: list[str] = []
+        if not archive.is_dir():
+            return statuses
+        for case_id, _ in case_inputs:
+            archived = archive / "optimization" / case_id / (
+                "surrogate_local_convergence.json"
+            )
+            if archived.is_file():
+                payload = _load_json_object(
+                    archived, description="archived preliminary poll result",
+                )
+                if payload.get("certificate", {}).get("protocol") == protocol:
+                    statuses.append(str(payload.get("status", "unknown")))
+        return statuses
+
+    preliminary_v1_statuses = archived_poll_statuses(
+        preliminary_v1_archive, "exact_qp_two_scale_feasible_poll_v1",
+    )
+    preliminary_v2_statuses = archived_poll_statuses(
+        preliminary_v2_archive, "exact_qp_two_scale_feasible_poll_v2",
+    )
+    refinement_record_path = run / "metrics" / "convergence_poll_refinement.json"
+    atomic_json(refinement_record_path, {
+        "stage": "surrogate_convergence_poll_refinement",
+        "predecessor_protocol": "exact_qp_two_scale_feasible_poll_v1",
+        "intermediate_protocol": "exact_qp_two_scale_feasible_poll_v2",
+        "successor_protocol": "exact_qp_two_scale_accelerated_feasible_poll_v3",
+        "predecessor_case_count": len(preliminary_v1_statuses),
+        "predecessor_status_counts": {
+            status: preliminary_v1_statuses.count(status)
+            for status in sorted(set(preliminary_v1_statuses))
+        },
+        "intermediate_case_count": len(preliminary_v2_statuses),
+        "intermediate_status_counts": {
+            status: preliminary_v2_statuses.count(status)
+            for status in sorted(set(preliminary_v2_statuses))
+        },
+        "reason": (
+            "The full-rank feasible-direction rule is invalid at an active "
+            "constrained endpoint, and the 120-evaluation budget interrupted "
+            "otherwise-progressing v1 polls. The corrected v2 poll then exposed "
+            "a fixed-step fine-radius crawl in robustness case 05. Protocol v3 "
+            "adds exact-QP ray acceleration while preserving fresh final polls. "
+            "Both predecessor result sets are archived and excluded."
+        ),
+        "retired_v1_archive": (
+            None
+            if not preliminary_v1_archive.is_dir()
+            else preliminary_v1_archive.relative_to(run).as_posix()
+        ),
+        "retired_v2_archive": (
+            None
+            if not preliminary_v2_archive.is_dir()
+            else preliminary_v2_archive.relative_to(run).as_posix()
+        ),
+    })
     _write_state(
-        run, "untouched_test_equivalence", "running",
-        completed_cases=len(case_inputs), total_rows=len(test_targets),
+        run, "robustness_timing_aggregation", "running",
+        case_count=profile.robustness_count,
+        nominal_case_included=False,
     )
-    test_equivalence_passed, test_equivalence, test_physical = (
-        _run_untouched_test_equivalence(
-            run, design, test_targets, analysis,
-            source_files=source_files, analysis_id=analysis_id,
-            parallel_workers=profile.parallel_workers,
-        )
-    )
-    del test_equivalence
-    _write_state(
-        run, "inference_timing", "running",
-        warmups=INFERENCE_TIMING_WARMUPS,
-        timed_batches=INFERENCE_TIMING_BATCHES,
-        response_count=len(test_targets),
-    )
-    _run_inference_timing_benchmark(
+    _run_robustness_case_timing_aggregation(
         run,
-        design,
-        analysis,
         source_files=source_files,
         analysis_id=analysis_id,
     )
@@ -4540,19 +7517,18 @@ def run_optimization_stage(
         if selected_physical_frames else pd.DataFrame(columns=("case", "method"))
     )
     atomic_dataframe(
-        run / "metrics" / "physical_violations_selected_cases.csv",
+        run / "metrics" / "selected_response_physical_audit.csv",
         selected_physical,
     )
     # A combined ledger gives the manuscript one explicit location containing
-    # raw/projected/mechanistic assessment rows and smooth/reference validation.
+    # untouched-test prediction audits and casewise decision-response audits.
     assessment_physical = pd.read_csv(
         run / "metrics" / "physical_violations_assessment.csv"
     )
     combined_frames = []
     for scope, frame in (
         ("untouched_test", assessment_physical),
-        ("untouched_test_equivalence", test_physical),
-        ("selected_decisions", selected_physical),
+        ("selected_decision_common_reference", selected_physical),
     ):
         item = frame.copy()
         item.insert(0, "analysis_scope", scope)
@@ -4568,43 +7544,72 @@ def run_optimization_stage(
         expected_cases=expected_cases,
     )
     report_manifest = run / "report" / "tables" / "report_manifest.json"
+    available_reference = reference_frame["candidate_available"].fillna(False)
+    exact_replay_valid = reference_frame.loc[
+        available_reference, "exact_replay_valid"
+    ].fillna(False)
+    reference_valid = reference_frame.loc[
+        available_reference, "comparison_valid"
+    ].fillna(False)
+    surrogate_certified = reference_frame.loc[
+        reference_frame["route"].eq("surrogate") & available_reference,
+        "local_convergence_certified",
+    ].fillna(False)
     scientific_passed = bool(
-        test_equivalence_passed
-        and selected_equivalence_passed
-        and selected_count == 2 * len(case_inputs)
+        len(reference_frame) == 2 * len(case_inputs)
+        and int(available_reference.sum()) == 2 * len(case_inputs)
+        and bool(reference_valid.all())
+        and len(surrogate_certified) == len(case_inputs)
+        and bool(surrogate_certified.all())
+        and int(comparison_frame["comparison_eligible"].sum()) == len(case_inputs)
     )
+    selected_count = int(available_reference.sum())
+    paired_count = int(comparison_frame["comparison_eligible"].sum())
     final_status_path = run / "optimization" / "final_status.json"
     atomic_json(final_status_path, {
         "case_count": len(case_inputs),
         "route_count": len(route_statuses),
         "optimization_protocol": OPTIMIZATION_PROTOCOL,
+        "validation_protocol": COMPARISON_PROTOCOL,
         "required_attempts_per_route": 1,
         "required_starts_per_route": 1,
         "surrogate_ipopt_continuation_stage_count": 0,
         "direct_smoothing_continuation_stage_count": len(CONTINUATION_SCHEDULE),
         "wall_time_ceiling": None,
-        "untouched_test_equivalence_count": len(test_targets),
-        "untouched_test_equivalence_all_accepted": test_equivalence_passed,
+        "untouched_test_equivalence_executed": False,
+        "retired_partial_untouched_test_equivalence_rows": retired_count,
         "selected_decision_count": selected_count,
-        "all_available_selected_equivalence_accepted": selected_equivalence_passed,
+        "exact_reference_valid_selected_decision_count": int(exact_replay_valid.sum()),
+        "exact_reference_engineering_feasible_selected_decision_count": int(
+            reference_valid.sum()
+        ),
+        "paired_common_reference_case_count": paired_count,
+        "surrogate_locally_converged_count": int(surrogate_certified.sum()),
+        "casewise_reference_validation_passed": bool(
+            selected_count == 2 * len(case_inputs)
+            and len(exact_replay_valid) == 2 * len(case_inputs)
+            and exact_replay_valid.all()
+        ),
+        "all_pairs_comparison_eligible": paired_count == len(case_inputs),
         "scientific_validation_passed": scientific_passed,
         "report_warning_count": len(report.warnings),
         "routes": route_statuses,
     }, nonfinite_to_none=True)
     assert_source_unchanged(source_files)
     final_paths = (
-        run / "metrics" / "physical_violations_selected_cases.csv",
+        run / "metrics" / "selected_response_physical_audit.csv",
         run / "metrics" / "physical_violations_all_analysis.csv",
-        run / "metrics" / "smooth_reference_equivalence_test.csv",
-        run / "metrics" / "physical_violations_equivalence_test.csv",
+        run / "metrics" / "case_common_reference_comparison.csv",
+        run / "metrics" / "selected_candidate_reference_evaluation.csv",
+        retired_path,
+        refinement_record_path,
         final_status_path,
         report_manifest,
-        run / "metrics" / "smooth_reference_test_complete.json",
-        run / "metrics" / "inference_timing_complete.json",
-        run / "metrics" / "inference_timing_batches.csv",
+        run / "metrics" / "robustness_case_timing_complete.json",
+        run / "metrics" / "robustness_case_timing.csv",
         run / "metrics" / "timing_events.csv",
-        run / "metrics" / "inference_timing_summary.json",
-        *(run / "optimization" / case_id / "case_complete.json"
+        run / "metrics" / "robustness_case_timing_summary.json",
+        *(run / "optimization" / case_id / "casewise_comparison_complete.json"
           for case_id, _ in case_inputs),
         *(path for path in sorted((run / "report" / "tables").glob("*.csv"))),
     )
@@ -4617,6 +7622,8 @@ def run_optimization_stage(
         "optimization_protocol": OPTIMIZATION_PROTOCOL,
         "required_attempts_per_route": 1,
         "selected_decision_count": selected_count,
+        "paired_common_reference_case_count": paired_count,
+        "untouched_test_equivalence_executed": False,
         "scientific_validation_passed": scientific_passed,
         "artifacts": _artifact_hashes(run, final_paths),
     })
@@ -4641,17 +7648,27 @@ def main(
     run_id: str,
     through: str,
     *,
+    reuse_from_run_id: str | None = None,
     authorize_generation_replacement_migration: bool = False,
     authorize_assessment_recovery_migration: bool = False,
     authorize_single_start_exact_qp_migration: bool = False,
+    authorize_casewise_common_reference_migration: bool = False,
+    authorize_convergence_poll_refinement_migration: bool = False,
+    authorize_casewise_timing_migration: bool = False,
 ) -> None:
     if through not in {"generation", "assessment", "complete"}:
         raise ValueError("through must be generation, assessment, or complete")
     validate_authorized_profile(ARTICLE_FULL)
     run = resolve_run_directory(run_id)
-    _prepare_run_directories(run)
     source_files = source_file_digests()
     contract = _build_contract(run_id, ARTICLE_FULL, source_files)
+    if reuse_from_run_id is not None:
+        initialize_reused_run(
+            run,
+            source_run_id=reuse_from_run_id,
+            successor_contract=contract,
+        )
+    _prepare_run_directories(run)
     establish_contract(
         run,
         contract,
@@ -4664,6 +7681,13 @@ def main(
         authorize_single_start_exact_qp_migration=(
             authorize_single_start_exact_qp_migration
         ),
+        authorize_casewise_common_reference_migration=(
+            authorize_casewise_common_reference_migration
+        ),
+        authorize_convergence_poll_refinement_migration=(
+            authorize_convergence_poll_refinement_migration
+        ),
+        authorize_casewise_timing_migration=authorize_casewise_timing_migration,
     )
     design = load_or_create_design(run, ARTICLE_FULL)
     assert_source_unchanged(source_files)
@@ -4759,6 +7783,14 @@ if __name__ == "__main__":
         "--run-id", default=os.environ.get("ARTICLE_V3_RUN_ID", DEFAULT_RUN_ID),
     )
     parser.add_argument(
+        "--reuse-from-run-id",
+        default=os.environ.get("ARTICLE_V3_REUSE_FROM_RUN_ID"),
+        help=(
+            "create a new self-contained rerun directory by byte-copying the "
+            "validated upstream and primary-search artifacts from this run id"
+        ),
+    )
+    parser.add_argument(
         "--through", choices=("generation", "assessment", "complete"),
         default="complete",
     )
@@ -4786,10 +7818,50 @@ if __name__ == "__main__":
             "migration to the existing default run"
         ),
     )
+    parser.add_argument(
+        "--authorize-casewise-common-reference-migration",
+        action="store_true",
+        help=(
+            "apply the pinned casewise exact common-reference migration while "
+            "retaining completed generation, fit, assessment, and optimization"
+        ),
+    )
+    parser.add_argument(
+        "--authorize-convergence-poll-refinement-migration",
+        action="store_true",
+        help=(
+            "apply the pinned casewise convergence-poll refinement while "
+            "retaining all upstream artifacts and completed primary searches"
+        ),
+    )
+    parser.add_argument(
+        "--authorize-casewise-timing-migration",
+        action="store_true",
+        help=(
+            "retire the unfinished repeated untouched-test timing benchmark and "
+            "resume from the completed robustness-case timing records"
+        ),
+    )
     arguments = parser.parse_args()
+    reuse_from_run_id = arguments.reuse_from_run_id
+    migration_requested = any((
+        arguments.authorize_generation_replacement_migration,
+        arguments.authorize_assessment_recovery_migration,
+        arguments.authorize_single_start_exact_qp_migration,
+        arguments.authorize_casewise_common_reference_migration,
+        arguments.authorize_convergence_poll_refinement_migration,
+        arguments.authorize_casewise_timing_migration,
+    ))
+    if (
+        reuse_from_run_id is None
+        and arguments.run_id == DEFAULT_RUN_ID
+        and not migration_requested
+    ):
+        reuse_from_run_id = LEGACY_RUN_ID
     main(
         arguments.run_id,
         arguments.through,
+        reuse_from_run_id=reuse_from_run_id,
         authorize_generation_replacement_migration=(
             arguments.authorize_generation_replacement_migration
         ),
@@ -4798,5 +7870,14 @@ if __name__ == "__main__":
         ),
         authorize_single_start_exact_qp_migration=(
             arguments.authorize_single_start_exact_qp_migration
+        ),
+        authorize_casewise_common_reference_migration=(
+            arguments.authorize_casewise_common_reference_migration
+        ),
+        authorize_convergence_poll_refinement_migration=(
+            arguments.authorize_convergence_poll_refinement_migration
+        ),
+        authorize_casewise_timing_migration=(
+            arguments.authorize_casewise_timing_migration
         ),
     )

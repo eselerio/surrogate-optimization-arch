@@ -351,6 +351,109 @@ def optimization_migration_fixture(run: Path):
     return predecessor, successor, authorization, assessment_marker, ridge_marker
 
 
+def casewise_migration_fixture(run: Path):
+    """Apply the historical schema-6 common-reference migration."""
+
+    optimization_migration_fixture(run)
+    predecessor = json.loads((run / "inputs/contract.json").read_text())
+    snapshot_relative = (
+        "inputs/contract_migrations/unit-casewise-v1-predecessor-source"
+    )
+    snapshot = run / snapshot_relative
+    for relative, content in {
+        "stable.py": b"stable-v2",
+        "runner.py": b"runner-v5",
+        "replacement.py": b"replacement-v3",
+    }.items():
+        path = snapshot / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+
+    case_directory = run / "optimization/nominal"
+    route_path = case_directory / "surrogate.json"
+    runner.atomic_json(route_path, {"route_contract": "retained-route"})
+    marker_path = case_directory / "case_complete.json"
+    runner.atomic_json(marker_path, {
+        "stage": "optimization_case",
+        "case": "nominal",
+    })
+    artifacts = {
+        route_path.relative_to(run).as_posix(): runner.file_digest(route_path),
+    }
+    marker_set_digest = "unit-case-marker-set"
+    retention = {
+        "schema": 3,
+        "predecessor_source_digest": predecessor["source_digest"],
+        "effective_design_digest": "effective",
+        "ridge_input_digest": "ridge-input",
+        "assessment_input_digest": "assessment-input",
+        "case_marker_set_digest": marker_set_digest,
+        "pinned_artifacts": {},
+        "retired_unfinished_stage": "validation/untouched_test_equivalence",
+        "stages": {
+            "optimization/nominal": {
+                "checkpoint": marker_path.relative_to(run).as_posix(),
+                "checkpoint_sha256": runner.file_digest(marker_path),
+                "artifact_source_digest": predecessor["source_digest"],
+                "artifacts": artifacts,
+            },
+        },
+    }
+    successor_files = {
+        **predecessor["source_files"],
+        "runner.py": sha256(b"runner-v6").hexdigest(),
+    }
+    successor = {
+        **{
+            key: value for key, value in predecessor.items()
+            if key != "contract_migrations"
+        },
+        "runner_schema": 6,
+        "source_digest": runner.source_digest(successor_files),
+        "source_files": successor_files,
+        "validation_protocol": "casewise_exact_common_reference_v1",
+    }
+    authorization = runner.CasewiseComparisonMigrationAuthorization(
+        migration_id="unit-casewise-v1",
+        run_id="unit-run",
+        authorized_date="2026-08-24",
+        reason="unit casewise comparison migration",
+        predecessor_runner_schema=5,
+        successor_runner_schema=6,
+        predecessor_source_digest=predecessor["source_digest"],
+        predecessor_contract_file_digest=runner.file_digest(
+            run / "inputs/contract.json"
+        ),
+        required_prior_migration_ids=(
+            "unit-generation-replacement-v1",
+            "unit-assessment-v1",
+            "unit-optimization-v1",
+        ),
+        predecessor_source_snapshot=snapshot_relative,
+        allowed_changed_source_files=frozenset({"runner.py"}),
+        required_changed_source_files=frozenset({"runner.py"}),
+        required_artifact_digests={},
+        expected_case_marker_set_digest=marker_set_digest,
+    )
+    with (
+        patch.object(runner, "CASEWISE_COMMON_REFERENCE_MIGRATION", authorization),
+        patch.object(
+            runner,
+            "_validate_retained_casewise_comparison_checkpoints",
+            return_value=retention,
+        ),
+        patch.object(
+            runner, "COMPARISON_PROTOCOL", "casewise_exact_common_reference_v1",
+        ),
+    ):
+        runner.establish_contract(
+            run,
+            successor,
+            authorize_casewise_common_reference_migration=True,
+        )
+    return successor, authorization, retention, case_directory
+
+
 def publish_mock_replacement_block(
     output: Path,
     decisions: np.ndarray,
@@ -716,6 +819,157 @@ class ArticleV3FiveThousandContractTests(unittest.TestCase):
                     observed_source_id=ridge_source,
                     current_source_id=successor["source_digest"],
                 ))
+
+    def test_casewise_schema_six_migration_is_preserved_in_history(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            run = Path(temporary)
+            successor, _, _, _ = casewise_migration_fixture(run)
+            migrated = json.loads((run / "inputs/contract.json").read_text())
+            self.assertEqual(migrated["runner_schema"], 6)
+            self.assertEqual(
+                migrated["validation_protocol"],
+                "casewise_exact_common_reference_v1",
+            )
+            self.assertEqual(
+                [entry["migration_id"] for entry in migrated["contract_migrations"]],
+                [
+                    "unit-generation-replacement-v1",
+                    "unit-assessment-v1",
+                    "unit-optimization-v1",
+                    "unit-casewise-v1",
+                ],
+            )
+            runner.establish_contract(run, successor)
+            retained_manifest = json.loads((
+                run
+                / "inputs/contract_migrations/unit-casewise-v1-retained.json"
+            ).read_text())
+            self.assertEqual(
+                retained_manifest["retired_unfinished_stage"],
+                "validation/untouched_test_equivalence",
+            )
+            self.assertIn("optimization/nominal", retained_manifest["stages"])
+
+    def test_schema_seven_poll_migration_requires_flag_and_loads_retained_route(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            run = Path(temporary)
+            _, _, prior_retention, case_directory = casewise_migration_fixture(run)
+            predecessor = json.loads((run / "inputs/contract.json").read_text())
+            snapshot_relative = (
+                "inputs/contract_migrations/unit-poll-v2-predecessor-source"
+            )
+            snapshot = run / snapshot_relative
+            for relative, content in {
+                "stable.py": b"stable-v2",
+                "runner.py": b"runner-v6",
+                "replacement.py": b"replacement-v3",
+            }.items():
+                path = snapshot / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(content)
+
+            successor_files = {
+                **predecessor["source_files"],
+                "runner.py": sha256(b"runner-v7").hexdigest(),
+            }
+            successor = {
+                **{
+                    key: value for key, value in predecessor.items()
+                    if key != "contract_migrations"
+                },
+                "runner_schema": 7,
+                "source_digest": runner.source_digest(successor_files),
+                "source_files": successor_files,
+                # This fixture exercises the historical schema-6 -> schema-7
+                # transition even when the live runner has advanced to v3.
+                "validation_protocol": "casewise_exact_common_reference_v2",
+            }
+            marker_set_digest = str(prior_retention["case_marker_set_digest"])
+            retention = {
+                **prior_retention,
+                "predecessor_source_digest": predecessor["source_digest"],
+            }
+            authorization = runner.CasewiseComparisonMigrationAuthorization(
+                migration_id="unit-poll-v2",
+                run_id="unit-run",
+                authorized_date="2026-08-24",
+                reason="unit finite-poll refinement migration",
+                predecessor_runner_schema=6,
+                successor_runner_schema=7,
+                predecessor_source_digest=predecessor["source_digest"],
+                predecessor_contract_file_digest=runner.file_digest(
+                    run / "inputs/contract.json"
+                ),
+                required_prior_migration_ids=(
+                    "unit-generation-replacement-v1",
+                    "unit-assessment-v1",
+                    "unit-optimization-v1",
+                    "unit-casewise-v1",
+                ),
+                predecessor_source_snapshot=snapshot_relative,
+                allowed_changed_source_files=frozenset({"runner.py"}),
+                required_changed_source_files=frozenset({"runner.py"}),
+                required_artifact_digests={},
+                expected_case_marker_set_digest=marker_set_digest,
+                retired_casewise_snapshot=None,
+            )
+            with (
+                patch.object(
+                    runner,
+                    "CONVERGENCE_POLL_REFINEMENT_MIGRATION",
+                    authorization,
+                ),
+                patch.object(
+                    runner,
+                    "_validate_retained_casewise_comparison_checkpoints",
+                    return_value=retention,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError, "explicit authorized migration"
+                ):
+                    runner.establish_contract(run, successor)
+                runner.establish_contract(
+                    run,
+                    successor,
+                    authorize_convergence_poll_refinement_migration=True,
+                )
+
+                migrated = json.loads((run / "inputs/contract.json").read_text())
+                self.assertEqual(migrated["runner_schema"], 7)
+                self.assertEqual(
+                    migrated["validation_protocol"],
+                    "casewise_exact_common_reference_v2",
+                )
+                self.assertEqual(
+                    [entry["migration_id"] for entry in migrated["contract_migrations"]],
+                    [
+                        "unit-generation-replacement-v1",
+                        "unit-assessment-v1",
+                        "unit-optimization-v1",
+                        "unit-casewise-v1",
+                        "unit-poll-v2",
+                    ],
+                )
+
+                sentinel = object()
+                starts = np.asarray(runner.EXACT_QP_CENTER_START).reshape(1, 7)
+                with patch.object(
+                    runner, "_load_complete_route", return_value=sentinel,
+                ) as load, patch.object(runner, "RUNNER_SCHEMA", 7):
+                    restored = runner._load_retained_complete_route(
+                        case_directory,
+                        route="surrogate",
+                        route_protocol=runner.EXACT_QP_SINGLE_START_PROTOCOL,
+                        starts=starts,
+                    )
+                self.assertIs(restored, sentinel)
+                self.assertEqual(
+                    load.call_args.kwargs["route_contract"], "retained-route"
+                )
+                np.testing.assert_array_equal(load.call_args.kwargs["starts"], starts)
 
     def test_single_start_migration_requires_explicit_flag(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

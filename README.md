@@ -11,11 +11,13 @@ reactors, and a dimension-parametric layered Clarifier. A 406-feature ridge
 surrogate predicts the complete mixer/reactor/outlet/layer response. Each raw
 prediction is reconciled by an independently audited convex physical
 projection. Operational results compare the projected-surrogate route with a
-separate smooth mechanistic NLP and then replay available decisions with the
-nonsmooth reference model.
+separate smooth mechanistic NLP. Each selected decision is then replayed on
+the same exact nonsmooth mechanistic model so that the two routes are compared
+on one common physical and objective reference.
 
 Every analysis retains mass-conservation and non-negativity diagnostics for
-raw, projected, smooth-mechanistic, and reference/mechanistic responses.
+raw, projected, optimizer-native, and exact-mechanistic responses. The exact
+ledger retains both replay starts when a second start is required.
 Rejected mechanistic generations remain in the candidate-attempt denominator
 and audit ledger but are excluded from fitted/test datasets and replaced.
 Optimization failures and missing endpoints remain in their case denominator.
@@ -81,16 +83,58 @@ and every distinct fallback trial cold-solves the unchanged exact projection
 QP. No finite-difference derivative replaces a failed active-set audit.
 
 The fallback retains the best validated feasible point it visited and cold
-replays that point independently. It is reported as a budget-limited or
-stationarity-unresolved incumbent—not as a local optimum—unless solver
-convergence and the independent endpoint active-set/upper-KKT audit support
-the stronger label. The surrogate route does not run the former approximately
-450-variable embedded-KKT IPOPT problem or any of its seven gap-continuation
-stages. The direct smooth-mechanistic route remains an IPOPT NLP and retains
-its separate three-stage smoothing continuation. The nominal case and all ten
-robustness cases are still attempted for both routes. An optimization failure
-or unresolved audit is recorded casewise and does not suppress the remaining
-cases, replay, physical audits, timing, or reporting.
+replays that point independently. Surrogate convergence has two explicitly
+different tiers: a strong first-order certificate from the independent
+endpoint active-set and upper-KKT audits, or a finite-resolution certificate
+from complete feasible no-descent polls at normalized radii \(10^{-3}\) and
+\(10^{-4}\). Protocol v3 uses 14 signed coordinate directions at the coarse
+radius and 106 directions at the fine radius: the signed axes, 84 signed
+pairwise diagonals, and eight Helmert-simplex directions. After a winning poll
+step, exact-QP-feasible trials expand deterministically along that same coupled
+ray by factors 2, 4, and so on, for at most 16 probes. These acceleration
+trials move the search but never certify it: a fresh complete two-radius poll
+at the final endpoint remains mandatory. The shared safety budget is 10,000
+exact-QP evaluations. Every completed poll must contain at least one
+feasible nonzero displacement; feasible-direction rank is reported only as a
+diagnostic because an active constrained feasible cone need not span
+\(\mathbb R^7\). Any accepted fine-scale move invalidates the earlier coarse
+check and triggers coarse revalidation. This tier is finite-direction,
+finite-resolution evidence only, not a KKT, Clarke-stationarity, local-, or
+global-optimality proof. An incomplete poll or failed audit leaves a feasible
+incumbent with unresolved stationarity.
+
+The surrogate route does not run the former approximately 450-variable
+embedded-KKT IPOPT problem or any of its seven gap-continuation stages.
+
+Preliminary v1 poll outputs are archived and excluded from article analysis:
+all eleven cases were unresolved, comprising three evaluation-budget outcomes
+and eight rank-inconclusive outcomes. Those observations motivated the v2
+direction, budget, and feasible-cone correction. A subsequent v2 run showed a
+fixed-step fine-poll crawl in robustness case 05 (36 accepted moves before the
+2,500-evaluation safety limit), which motivated v3 ray acceleration. Both
+predecessor result sets remain archived and excluded rather than reclassified.
+
+The direct smooth-mechanistic route remains an IPOPT NLP and retains its
+separate three-stage smoothing continuation. It receives at most one recovery
+attempt, only after its primary solve fails and only when that attempt can be
+initialized from the same case's certified surrogate decision; a successful
+primary direct solve is never given an extra basin search. The nominal case
+and all ten robustness cases are still attempted for both routes. An
+optimization failure or unresolved audit is recorded casewise and does not
+suppress the remaining cases, replay, physical audits, timing aggregation, or
+reporting. Runtime comparisons use only the durations already recorded for
+robustness cases 01--10; no repeated inference or projection benchmark is run
+over the 1,000-row untouched test block.
+
+Whole-test smooth/reference equivalence is retired and is not an article
+admission gate. The 1,000-row untouched test block is reserved for surrogate
+prediction assessment. Instead, every available selected surrogate and direct
+candidate is replayed casewise from both declared starts on the exact
+nonsmooth mechanistic model. A branch-boundary ambiguity is retained as a
+qualification and is not by itself a rejection. Comparison eligibility still
+requires a valid exact replay, physical and stability audits, and engineering
+feasibility. A valid replay's exact objective remains reportable when its
+engineering check fails, but that candidate cannot enter a paired comparison.
 
 The earlier nine-start surrogate gap-continuation protocol is retired for
 production. This explicit revision reuses the verified 5,000-row generation,
@@ -138,7 +182,8 @@ To execute the full article notebook from a resumable named run directory:
 
 ```powershell
 $env:ARTICLE_V3_PROFILE = "article_full"
-$env:ARTICLE_V3_RUN_ID = "article_full_5000_001"
+$env:ARTICLE_V3_RUN_ID = "article_full_5000_002"
+$env:ARTICLE_V3_REUSE_FROM_RUN_ID = "article_full_5000_001"
 uv run jupyter nbconvert --to notebook --execute main_closed_loop.ipynb `
   --output "main_closed_loop.$($env:ARTICLE_V3_RUN_ID).executed.ipynb" `
   --output-dir results\executed_notebooks `
@@ -146,16 +191,18 @@ uv run jupyter nbconvert --to notebook --execute main_closed_loop.ipynb `
   --ExecutePreprocessor.timeout=-1
 ```
 
-To resume the already-started default run directly, authorizing the pinned
-single-start exact-QP migration while reusing its verified generation, fit,
-and assessment artifacts, use:
+Every rerun is created in a new self-contained directory. The runner byte-copies
+and hash-verifies the accepted 5,000-row dataset, model, assessment, and primary
+route-search artifacts from the declared source run, records a provenance
+manifest, and writes all newly computed downstream outputs into the target.
+For the current corrected rerun, use:
 
 ```powershell
 $env:PYTHONPATH = "."
 uv run python -u scripts\run_article_v3_5000.py `
-  --run-id article_full_5000_001 `
-  --through complete `
-  --authorize-single-start-exact-qp-migration
+  --run-id article_full_5000_002 `
+  --reuse-from-run-id article_full_5000_001 `
+  --through complete
 ```
 
 Generation publishes `all_attempts.csv`, `accepted_provenance.csv`,
@@ -171,5 +218,5 @@ article-ineligible preflight; it is not the default article workload.
 An article result is releasable only when its artifact manifest verifies the
 complete attempt ledger, exactly 4,000/1,000 accepted rows and their provenance,
 all mechanistic and QP audits, trust gates, both optimization
-routes for every case, reference/equivalence checks, physical-violation
+routes for every case, casewise common-reference checks, physical-violation
 ledger, and required reporting tables.
