@@ -616,10 +616,10 @@ def _smooth_rates(c: ca.MX, scales: SmoothingScales) -> ca.MX:
         p["b_PP"] * alk_p * xpp,
         p["b_PHA"] * alk_p * xpha,
         p["mu_AOB"] * monod(so, p["K_O_AOB"]) * monod(snh4, p["K_NH4_AOB"]) * ln * xaob,
-        p["mu_NOB"] * monod(so, p["K_O_NOB"]) * monod(sno2, p["K_NO2_NOB"]) * ln * xnob,
+        p["mu_NOB"] * monod(so, p["K_O_NOB"]) * monod(sno2, p["K_NO2_NOB"]) * ln * monod(snh4, p["K_NH4_NOB"]) * xnob,
         p["b_AOB"] * xaob,
         p["b_NOB"] * xnob,
-        p["k_PRE"] * spo4 * xmeoh,
+        p["k_PRE"] * spo4 * xmeoh * monod(salk, p["K_ALK_PRE"]),
         p["k_RED"] * p["i_PMeP"] * monod(salk, p["K_ALK_chem"]) * xmep,
     ]
     return ca.vertcat(*rates)

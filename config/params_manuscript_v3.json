@@ -1,0 +1,132 @@
+{
+  "schema_version": 1,
+  "sources": {
+    "manuscript": "article/wip_v3/manuscript.tex",
+    "supplement": "article/wip_v3/supplementary_material.tex"
+  },
+  "execution": {
+    "default_profile": "test_500_l5",
+    "profile_environment_variable": "ARTICLE_V3_PROFILE",
+    "run_id_environment_variable": "ARTICLE_V3_RUN_ID",
+    "results_root": "results/article_v3",
+    "resume_requires_exact_contract_hash": true,
+    "numerical_threads_per_worker": 1
+  },
+  "profiles": {
+    "test_500_l5": {
+      "article_eligible": false,
+      "development_count": 400,
+      "test_count": 100,
+      "robustness_count": 5,
+      "clarifier_layer_count": 5,
+      "clarifier_feed_layer_one_based": 3,
+      "clarifier_layer_volume_m3": 1200.0,
+      "development_seed": 500042,
+      "test_seed": 500043,
+      "robustness_seed": 500314159,
+      "continue_after_article_admission_gate_failure": true,
+      "purpose": "Implementation validation only; never eligible for article results."
+    },
+    "article_full": {
+      "article_eligible": true,
+      "development_count": 800,
+      "test_count": 200,
+      "robustness_count": 10,
+      "clarifier_layer_count": 10,
+      "clarifier_feed_layer_one_based": 5,
+      "clarifier_layer_volume_m3": 600.0,
+      "development_seed": 100042,
+      "test_seed": 100043,
+      "robustness_seed": 314159,
+      "continue_after_article_admission_gate_failure": false
+    }
+  },
+  "design": {
+    "generator": "SplitMix64",
+    "method": "strength-1 Latin hypercube",
+    "dimension_order": [
+      "H", "a_3", "a_4", "a_5", "r_I", "r_R", "w",
+      "S_O", "S_F", "S_A", "S_NH4", "S_NO2", "S_NO3", "S_N2", "S_PO4", "S_I", "S_ALK",
+      "X_I", "X_S", "X_H", "X_PAO", "X_PP", "X_PHA", "X_AOB", "X_NOB", "X_MeP", "X_MeOH"
+    ],
+    "lhs_jitter_formula": "((U >> 11) + 0.5) / 2^53",
+    "fisher_yates_traversal": "descending n-1 through 1",
+    "fold_seed": 271828,
+    "optimization_start_seed": 271828
+  },
+  "mechanistic_generation": {
+    "bdf_coordinates": "log",
+    "relative_tolerance": 1e-7,
+    "dimensionless_absolute_tolerance": 1e-9,
+    "minimum_horizon_d": 400.0,
+    "waste_turnovers": 50.0,
+    "maximum_step_fraction": 0.01,
+    "polish_maximum_evaluations": 5000,
+    "polish_xtol": 1e-9,
+    "polish_ftol": 1e-9,
+    "polish_gtol": 1e-9,
+    "balance_tolerance": 1e-8,
+    "state_nonnegativity_tolerance": 1e-10,
+    "rate_nonnegativity_tolerance": 1e-12,
+    "two_start_scaled_tolerance": 1e-6,
+    "stability_margin_d_inv": -1e-8,
+    "stability_step_agreement_d_inv": 1e-6,
+    "stability_step_agreement_note": "Revised from 1e-9 after the complete 500-row preflight showed that all 21 apparent failures passed every physical, convergence, branch, and stability-margin gate and differed only in the prescribed two-step finite-difference eigenvalue estimate (maximum observed discrepancy 9.281e-7 d^-1); see manuscript revision record."
+  },
+  "surrogate": {
+    "fold_count": 5,
+    "ridge_grid": [1e-8, 1e-7, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 1.0, 10.0, 100.0],
+    "selection": "largest ridge within one descriptive standard error of minimum raw complete-response nRMSE",
+    "population_standard_deviation_ddof": 0,
+    "variance_relative_floor": 1e-12,
+    "solver": "column-pivoted QR on augmented ridge system",
+    "independent_audit": "thin SVD"
+  },
+  "projection": {
+    "solver": "OSQP",
+    "active_set_tolerance": 1e-7,
+    "equality_tolerance": 1e-8,
+    "inequality_tolerance": 1e-8,
+    "stationarity_tolerance": 1e-8,
+    "dual_tolerance": 1e-8,
+    "complementarity_tolerance": 1e-8,
+    "nonnegativity_tolerance": 1e-10
+  },
+  "optimization": {
+    "start_count": 9,
+    "surrogate_gap_sequence": [1e-2, 1e-4, 1e-6, 1e-8],
+    "smooth_sequence": [
+      {"epsilon": 1e-6, "receiver_half_width_g_m3": 10.0},
+      {"epsilon": 1e-7, "receiver_half_width_g_m3": 3.0},
+      {"epsilon": 1e-8, "receiver_half_width_g_m3": 1.0}
+    ],
+    "maximum_iterations_per_stage": 2500,
+    "derivative_steps": [1e-6, 5e-7],
+    "derivative_relative_tolerance": 1e-5,
+    "upper_kkt_tolerance": 1e-6,
+    "objective_tie_relative_tolerance": 1e-10
+  },
+  "engineering": {
+    "srt_d": [8.0, 30.0],
+    "slr_max_kg_m2_d": 100.0,
+    "underflow_tss_max_g_m3": 15000.0,
+    "feed_tss_min_g_m3": 1.0,
+    "external_solids_loss_min_g_m3": 1.0,
+    "sor_report_only_max_m_d": 20.0
+  },
+  "objective": {
+    "weights": [0.50, 0.15, 0.20, 0.05, 0.05, 0.05],
+    "quality_weights": [0.25, 0.25, 0.25, 0.25],
+    "aeration_reference_m3_d": 423000.0,
+    "underflow_tss_reference_g_m3": 15000.0
+  },
+  "reporting": {
+    "nearest_rank_probability": 0.95,
+    "timing_warmups": 5,
+    "timing_batches": 30,
+    "required_methods": ["raw", "projected", "smooth", "reference"],
+    "track_mass_conservation": true,
+    "track_nonnegativity": true,
+    "retain_zero_count_failure_classes": true
+  }
+}

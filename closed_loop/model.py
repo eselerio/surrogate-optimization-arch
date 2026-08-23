@@ -1,7 +1,7 @@
 """Coupled ASM2d-TSN mixer--reactor--clarifier model.
 
 The implementation follows the complete mechanistic definition in
-``article/wip_v2/manuscript.tex``.  It deliberately keeps the recycle mixer
+``article/wip_v3/supplementary_material.tex``.  It deliberately keeps the recycle mixer
 and clarifier outlets algebraic: the dynamic/steady unknown is therefore the
 five 20-component reactor states followed by ten clarifier-layer TSS states.
 No concentration or reaction rate is clipped during a solve.
@@ -124,6 +124,69 @@ class OperatingPoint:
 
         return 120.0 * self.q_process / self.hrt_hours
 
+    def aeration_for_stage(self, stage: int) -> float:
+        """Return the stage-specific aeration setting (legacy tied-aeration case)."""
+
+        return 0.0 if stage < 2 else self.aeration
+
+
+@dataclass(frozen=True)
+class ArticleOperatingPoint:
+    """Seven-control operating point specified by the wip_v3 manuscript."""
+
+    hrt_hours: float
+    aeration_3: float
+    aeration_4: float
+    aeration_5: float
+    internal_recycle: float
+    return_sludge: float
+    waste_sludge: float
+
+    def __post_init__(self) -> None:
+        values = np.asarray(self.as_array(), dtype=float)
+        if not np.all(np.isfinite(values)):
+            raise ValueError("Operating decisions must be finite.")
+        if self.hrt_hours <= 0.0:
+            raise ValueError("hrt_hours must be positive.")
+        if np.any((values[1:4] < 0.0) | (values[1:4] > 1.0)):
+            raise ValueError("Stage aeration settings must lie in [0, 1].")
+        if self.internal_recycle < 0.0 or self.return_sludge <= 0.0:
+            raise ValueError("Recycle ratios must satisfy r_I >= 0 and r_R > 0.")
+        if not 0.0 <= self.waste_sludge < 1.0:
+            raise ValueError("waste_sludge must lie in [0, 1).")
+
+    def as_array(self) -> FloatArray:
+        return np.asarray([
+            self.hrt_hours, self.aeration_3, self.aeration_4,
+            self.aeration_5, self.internal_recycle, self.return_sludge,
+            self.waste_sludge,
+        ], dtype=float)
+
+    def aeration_for_stage(self, stage: int) -> float:
+        if stage not in range(N_STAGES):
+            raise ValueError("stage must be in range(5).")
+        return 0.0 if stage < 2 else (self.aeration_3, self.aeration_4, self.aeration_5)[stage - 2]
+
+    @property
+    def q_process(self) -> float:
+        return 1.0 + self.internal_recycle + self.return_sludge
+
+    @property
+    def q_clarifier(self) -> float:
+        return 1.0 + self.return_sludge
+
+    @property
+    def q_underflow(self) -> float:
+        return self.return_sludge + self.waste_sludge
+
+    @property
+    def q_effluent(self) -> float:
+        return 1.0 - self.waste_sludge
+
+    @property
+    def stage_dilution_rate(self) -> float:
+        return 120.0 * self.q_process / self.hrt_hours
+
 
 @dataclass(frozen=True)
 class ClarifierParameters:
@@ -136,11 +199,14 @@ class ClarifierParameters:
     low_concentration_coefficient: float = 0.00286
     nonsettleable_fraction: float = 0.00228
     flux_threshold: float = 3_000.0
+    layer_count: int = 10
     feed_layer: int = 4  # zero-based: fifth layer from the top
 
     def __post_init__(self) -> None:
-        if self.feed_layer != 4:
-            raise ValueError("The case study fixes the clarifier feed at zero-based layer 4.")
+        if self.layer_count < 3:
+            raise ValueError("A Clarifier requires at least three layers.")
+        if self.feed_layer not in range(self.layer_count):
+            raise ValueError("feed_layer must identify an existing Clarifier layer.")
         positive = (
             self.fresh_flow, self.area, self.layer_volume,
             self.maximum_settling_velocity, self.theoretical_settling_velocity,
@@ -179,9 +245,9 @@ PARAMETERS: Mapping[str, float] = {
     "K_IPP": .02, "K_PHA": .01,
     "mu_AOB": 1.81, "mu_NOB": 1.52, "b_AOB": .20,
     "b_NOB": .17, "K_O_AOB": .74, "K_O_NOB": 1.75,
-    "K_NH4_AOB": .5, "K_NO2_NOB": .5, "K_ALK_nit": .5,
+    "K_NH4_AOB": .5, "K_NO2_NOB": .5, "K_NH4_NOB": .05, "K_ALK_nit": .5,
     "K_PO4_nit": .01, "k_PRE": 1.0, "k_RED": .60,
-    "gamma_OH": 3.45, "K_ALK_chem": .50,
+    "gamma_OH": 3.45, "K_ALK_PRE": .50, "K_ALK_chem": .50,
 }
 
 
@@ -400,10 +466,10 @@ def process_rates(state: ArrayLike, parameters: Mapping[str, float] = PARAMETERS
             p["b_PP"] * alk_p * xpp,
             p["b_PHA"] * alk_p * xpha,
             p["mu_AOB"] * _monod(so, p["K_O_AOB"]) * _monod(snh4, p["K_NH4_AOB"]) * ln * xaob,
-            p["mu_NOB"] * _monod(so, p["K_O_NOB"]) * _monod(sno2, p["K_NO2_NOB"]) * ln * xnob,
+            p["mu_NOB"] * _monod(so, p["K_O_NOB"]) * _monod(sno2, p["K_NO2_NOB"]) * ln * _monod(snh4, p["K_NH4_NOB"]) * xnob,
             p["b_AOB"] * xaob,
             p["b_NOB"] * xnob,
-            p["k_PRE"] * spo4 * xmeoh,
+            p["k_PRE"] * spo4 * xmeoh * _monod(salk, p["K_ALK_PRE"]),
             p["k_RED"] * p["i_PMeP"] * _monod(salk, p["K_ALK_chem"]) * xmep,
         ],
         dtype=float,
@@ -425,6 +491,10 @@ def oxygen_transfer(state: ArrayLike, stage: int, aeration: float) -> float:
     if stage not in range(N_STAGES):
         raise ValueError("stage must be in range(5).")
     return 0.0 if stage < 2 else 47.0 * aeration * (8.5 - _state(state)[0])
+
+
+def _stage_aeration(operating: OperatingPoint | ArticleOperatingPoint, stage: int) -> float:
+    return float(operating.aeration_for_stage(stage))
 
 
 def settling_velocity(
@@ -457,16 +527,17 @@ def clarifier_fluxes(
 ) -> FloatArray:
     """Return 11 downward-positive boundary/interface TSS fluxes."""
 
-    s = _state(layers, N_LAYERS)
+    layer_count = parameters.layer_count
+    s = _state(layers, layer_count)
     if np.min(s) < 0.0:
         raise ValueError("Clarifier layer TSS must be non-negative.")
     velocity = np.asarray(settling_velocity(s, feed_tss, parameters), dtype=float)
     gravity = velocity * s
-    flux = np.empty(N_LAYERS + 1, dtype=float)
+    flux = np.empty(layer_count + 1, dtype=float)
     v_e = parameters.fresh_flow * operating.q_effluent / parameters.area
     v_u = parameters.fresh_flow * operating.q_underflow / parameters.area
     flux[0] = -v_e * s[0]
-    for left in range(N_LAYERS - 1):
+    for left in range(layer_count - 1):
         settling = gravity[left]
         if s[left + 1] > parameters.flux_threshold:
             settling = min(settling, gravity[left + 1])
@@ -502,7 +573,9 @@ def reconstruct_clarifier(
 ) -> tuple[FloatArray, FloatArray]:
     """Reconstruct overflow and underflow component concentrations."""
 
-    feed, s = _state(reactor_outlet), _state(layers, N_LAYERS)
+    feed, s = _state(reactor_outlet), np.asarray(layers, dtype=float)
+    if s.shape != (s.size,) or s.size < 3:
+        raise ValueError("Clarifier layers must be a one-dimensional vector with at least three entries.")
     if np.min(feed) < 0.0 or np.min(s) < 0.0:
         raise ValueError("Clarifier reconstruction requires non-negative states.")
     effluent, underflow = feed.copy(), feed.copy()
@@ -531,9 +604,22 @@ def mixer_state(
     ) / operating.q_process
 
 
-def unpack_state(state: ArrayLike) -> tuple[FloatArray, FloatArray]:
-    values = _state(state, STATE_SIZE)
-    return values[: N_STAGES * N_COMPONENTS].reshape(N_STAGES, N_COMPONENTS), values[-N_LAYERS:]
+def state_size(clarifier: ClarifierParameters = CLARIFIER) -> int:
+    return N_STAGES * N_COMPONENTS + clarifier.layer_count
+
+
+def target_size(clarifier: ClarifierParameters = CLARIFIER) -> int:
+    return N_COMPONENTS * (1 + N_STAGES + 2) + clarifier.layer_count
+
+
+def unpack_state(
+    state: ArrayLike, clarifier: ClarifierParameters = CLARIFIER,
+) -> tuple[FloatArray, FloatArray]:
+    values = _state(state, state_size(clarifier))
+    return (
+        values[: N_STAGES * N_COMPONENTS].reshape(N_STAGES, N_COMPONENTS),
+        values[-clarifier.layer_count :],
+    )
 
 
 def coupled_rhs(
@@ -544,7 +630,7 @@ def coupled_rhs(
 ) -> FloatArray:
     """Coupled 110-state derivative after eliminating mixer/outlet algebraics."""
 
-    reactors, layers = unpack_state(state)
+    reactors, layers = unpack_state(state, clarifier)
     x = _state(influent)
     if np.min(reactors) < 0.0 or np.min(layers) < 0.0 or np.min(x) < 0.0:
         raise ValueError("The coupled model is defined on the non-negative orthant.")
@@ -554,7 +640,9 @@ def coupled_rhs(
     upstream = mixer
     for stage in range(N_STAGES):
         source = reaction_source(reactors[stage])
-        source[COMPONENT_INDEX["S_O"]] += oxygen_transfer(reactors[stage], stage, operating.aeration)
+        source[COMPONENT_INDEX["S_O"]] += oxygen_transfer(
+            reactors[stage], stage, _stage_aeration(operating, stage)
+        )
         derivative[stage] = operating.stage_dilution_rate * (upstream - reactors[stage]) + source
         upstream = reactors[stage]
     feed_tss = float(TSS_VECTOR @ reactors[-1])
@@ -565,22 +653,37 @@ def coupled_rhs(
     return result
 
 
-def residual_scales(influent: ArrayLike, reactor_outlet: ArrayLike) -> FloatArray:
+def residual_scales(
+    influent: ArrayLike,
+    reactor_outlet: ArrayLike,
+    clarifier: ClarifierParameters = CLARIFIER,
+) -> FloatArray:
     """Fixed component references and current clarifier feed-TSS reference."""
 
     _state(influent)
     outlet = _state(reactor_outlet)
     component = np.tile(np.maximum(1.0, INFLUENT_UPPER), N_STAGES)
-    layer = np.full(N_LAYERS, max(1.0, float(TSS_VECTOR @ outlet)))
+    layer = np.full(clarifier.layer_count, max(1.0, float(TSS_VECTOR @ outlet)))
     return np.concatenate((component, layer))
 
 
-def scaled_residual(state: ArrayLike, operating: OperatingPoint, influent: ArrayLike) -> FloatArray:
-    reactors, _ = unpack_state(state)
-    return coupled_rhs(state, operating, influent) / residual_scales(influent, reactors[-1])
+def scaled_residual(
+    state: ArrayLike,
+    operating: OperatingPoint | ArticleOperatingPoint,
+    influent: ArrayLike,
+    clarifier: ClarifierParameters = CLARIFIER,
+) -> FloatArray:
+    reactors, _ = unpack_state(state, clarifier)
+    return coupled_rhs(state, operating, influent, clarifier) / residual_scales(
+        influent, reactors[-1], clarifier
+    )
 
 
-def initial_state(influent: ArrayLike, start: int = 1) -> FloatArray:
+def initial_state(
+    influent: ArrayLike,
+    start: int = 1,
+    clarifier: ClarifierParameters = CLARIFIER,
+) -> FloatArray:
     """Construct either of the two fully specified manuscript initial states."""
 
     x = _state(influent)
@@ -588,38 +691,47 @@ def initial_state(influent: ArrayLike, start: int = 1) -> FloatArray:
         raise ValueError("Influent must be non-negative.")
     if start == 1:
         reactors = np.tile(x, (N_STAGES, 1))
-        layers = np.full(N_LAYERS, float(TSS_VECTOR @ x))
+        layers = np.full(clarifier.layer_count, float(TSS_VECTOR @ x))
     elif start == 2:
         factors = np.asarray([1.5, 2.0, 2.5, 3.0, 3.5])
         reactors = np.tile(x, (N_STAGES, 1))
         reactors[:, PARTICULATE] *= factors[:, None]
         feed_tss = float(TSS_VECTOR @ reactors[-1])
-        profile = np.asarray([.002, .005, .01, .03, .10, .50, 1.25, 2.25, 3.25, 4.00])
+        declared = np.asarray([.002, .005, .01, .03, .10, .50, 1.25, 2.25, 3.25, 4.00])
+        if clarifier.layer_count == declared.size:
+            profile = declared
+        else:
+            # Preserve the declared top and bottom factors while sampling the
+            # same depthwise log-profile for a dimension-parametric test case.
+            depth = np.linspace(0.0, 1.0, clarifier.layer_count)
+            profile = np.exp(np.interp(depth, np.linspace(0.0, 1.0, declared.size), np.log(declared)))
         layers = feed_tss * profile
     else:
         raise ValueError("start must equal 1 or 2.")
     return np.concatenate((reactors.ravel(), layers))
 
 
-def jacobian_sparsity():
+def jacobian_sparsity(clarifier: ClarifierParameters = CLARIFIER):
     """Conservative structural sparsity for finite-difference steady solves."""
 
     from scipy.sparse import lil_matrix
 
-    pattern = lil_matrix((STATE_SIZE, STATE_SIZE), dtype=int)
+    size = state_size(clarifier)
+    layer_count = clarifier.layer_count
+    pattern = lil_matrix((size, size), dtype=int)
     # CSTR 1 sees itself and the algebraically recycled CSTR-5/bottom-layer state.
     pattern[0:20, 0:20] = 1
     pattern[0:20, 80:100] = 1
-    pattern[0:20, STATE_SIZE - 1] = 1
+    pattern[0:20, size - 1] = 1
     # Each later CSTR sees its immediate upstream state and its own kinetic state.
     for stage in range(1, N_STAGES):
         rows = slice(stage * 20, (stage + 1) * 20)
         pattern[rows, (stage - 1) * 20 : (stage + 1) * 20] = 1
     # All layer rates share CSTR-5 feed TSS; each flux is otherwise local.
-    for layer in range(N_LAYERS):
+    for layer in range(layer_count):
         row = 100 + layer
         pattern[row, 80:100] = 1
-        for neighbor in range(max(0, layer - 1), min(N_LAYERS, layer + 2)):
+        for neighbor in range(max(0, layer - 1), min(layer_count, layer + 2)):
             pattern[row, 100 + neighbor] = 1
     return pattern.tocsr()
 
@@ -631,21 +743,281 @@ def _scaled_algebraic_residual(terms: Iterable[FloatArray]) -> float:
     return float(np.max(numerator / denominator))
 
 
+def _termwise_balance_residual(terms: Iterable[ArrayLike]) -> FloatArray:
+    """Scale a heterogeneous balance by its largest separately evaluated term.
+
+    This is the acceptance convention in the v3 supplement.  It intentionally
+    differs from a residual norm divided by a state scale and from scaling by
+    the sum of absolute terms.
+    """
+
+    arrays = [np.asarray(term, dtype=float) for term in terms]
+    if not arrays:
+        return np.empty(0, dtype=float)
+    shape = arrays[0].shape
+    if any(array.shape != shape for array in arrays):
+        raise ValueError("Every term in one physical balance must have the same shape.")
+    numerator = np.abs(np.sum(arrays, axis=0))
+    denominator = np.maximum(1.0, np.maximum.reduce([np.abs(array) for array in arrays]))
+    return np.asarray(numerator / denominator, dtype=float)
+
+
+def generation_scale(
+    influent: ArrayLike,
+    reactor_outlet: ArrayLike,
+    clarifier: ClarifierParameters = CLARIFIER,
+) -> FloatArray:
+    """Return the manuscript ``D_y,gen`` diagonal for one fixed input."""
+
+    _state(influent)
+    outlet = _state(reactor_outlet)
+    feed_tss = max(1.0, float(TSS_VECTOR @ outlet))
+    return np.concatenate((
+        np.tile(np.maximum(1.0, INFLUENT_UPPER), N_STAGES),
+        np.full(clarifier.layer_count, feed_tss, dtype=float),
+    ))
+
+
+def mechanistic_balance_audit(
+    state: ArrayLike,
+    operating: OperatingPoint | ArticleOperatingPoint,
+    influent: ArrayLike,
+    clarifier: ClarifierParameters = CLARIFIER,
+    *,
+    balance_tolerance: float = 1.0e-8,
+    state_tolerance: float = 1.0e-10,
+    rate_tolerance: float = 1.0e-12,
+) -> dict[str, object]:
+    """Audit every v3 mechanistic balance, domain guard, and sign condition."""
+
+    reactors, layers = unpack_state(state, clarifier)
+    x = _state(influent)
+    c_e, c_u = reconstruct_clarifier(reactors[-1], layers)
+    mixer = mixer_state(x, reactors[-1], c_u, operating)
+    q_p = operating.q_process
+    q_c = operating.q_clarifier
+    q_e = operating.q_effluent
+    q_u = operating.q_underflow
+
+    mixer_rows = _termwise_balance_residual((
+        q_p * mixer, -x, -operating.internal_recycle * reactors[-1],
+        -operating.return_sludge * c_u,
+    ))
+
+    reactor_rows: list[float] = []
+    rates_by_stage: list[FloatArray] = []
+    upstream = mixer
+    for stage in range(N_STAGES):
+        rates = process_rates(reactors[stage])
+        rates_by_stage.append(rates)
+        process_terms = rates[:, None] * STOICHIOMETRIC_MATRIX
+        oxygen = np.zeros(N_COMPONENTS, dtype=float)
+        oxygen[COMPONENT_INDEX["S_O"]] = oxygen_transfer(
+            reactors[stage], stage, _stage_aeration(operating, stage)
+        )
+        for component in range(N_COMPONENTS):
+            terms = [
+                np.asarray(operating.stage_dilution_rate * upstream[component]),
+                np.asarray(-operating.stage_dilution_rate * reactors[stage, component]),
+                *(np.asarray(value) for value in process_terms[:, component]),
+                np.asarray(oxygen[component]),
+            ]
+            reactor_rows.append(float(_termwise_balance_residual(terms)))
+        upstream = reactors[stage]
+
+    feed_tss = float(TSS_VECTOR @ reactors[-1])
+    flux = clarifier_fluxes(layers, feed_tss, operating, clarifier)
+    incoming = clarifier.area * flux[:-1] / clarifier.layer_volume
+    outgoing = -clarifier.area * flux[1:] / clarifier.layer_volume
+    feed = np.zeros(clarifier.layer_count, dtype=float)
+    feed[clarifier.feed_layer] = (
+        clarifier.fresh_flow * q_c * feed_tss / clarifier.layer_volume
+    )
+    layer_rows = _termwise_balance_residual((incoming, outgoing, feed))
+
+    clarifier_rows = _termwise_balance_residual((
+        q_c * reactors[-1], -q_e * c_e, -q_u * c_u,
+    ))
+    soluble_rows = np.concatenate((
+        _termwise_balance_residual((c_e[SOLUBLE], -reactors[-1, SOLUBLE])),
+        _termwise_balance_residual((c_u[SOLUBLE], -reactors[-1, SOLUBLE])),
+    ))
+    endpoint_rows = np.asarray([
+        float(_termwise_balance_residual((
+            np.asarray(q_e * layers[0]), np.asarray(-q_e * (TSS_VECTOR @ c_e)),
+        ))),
+        float(_termwise_balance_residual((
+            np.asarray(q_u * layers[-1]), np.asarray(-q_u * (TSS_VECTOR @ c_u)),
+        ))),
+    ])
+    external_invariant_rows = _termwise_balance_residual((
+        INVARIANT_MATRIX @ x,
+        -q_e * (INVARIANT_MATRIX @ c_e),
+        -operating.waste_sludge * (INVARIANT_MATRIX @ c_u),
+    ))
+
+    families: dict[str, FloatArray] = {
+        "mixer_component": mixer_rows,
+        "reactor_component": np.asarray(reactor_rows, dtype=float),
+        "clarifier_component": clarifier_rows,
+        "soluble_outlet_identity": soluble_rows,
+        "tss_endpoint_identity": endpoint_rows,
+        "external_invariant": external_invariant_rows,
+        "clarifier_layer": layer_rows,
+    }
+    all_balances = np.concatenate(tuple(families.values()))
+    family_maxima = {
+        name: (0.0 if values.size == 0 else float(np.max(values)))
+        for name, values in families.items()
+    }
+    family_counts = {
+        name: int(np.count_nonzero(values > balance_tolerance))
+        for name, values in families.items()
+    }
+    rates_flat = np.concatenate(rates_by_stage)
+    scaled_state_negativity = np.maximum(-np.asarray(state, dtype=float), 0.0)
+    scaled_rate_negativity = np.maximum(-rates_flat, 0.0)
+    layer_envelope_values = np.concatenate((
+        layers[0] - layers[1:-1], layers[1:-1] - layers[-1]
+    )) if clarifier.layer_count > 2 else np.empty(0)
+    external_solids_loss = float(
+        q_e * (TSS_VECTOR @ c_e) + operating.waste_sludge * (TSS_VECTOR @ c_u)
+    )
+    maximum_balance = float(np.max(all_balances)) if all_balances.size else 0.0
+    maximum_state_negativity = float(np.max(scaled_state_negativity))
+    maximum_rate_negativity = float(np.max(scaled_rate_negativity))
+    maximum_envelope = (
+        float(np.max(np.maximum(layer_envelope_values, 0.0)))
+        if layer_envelope_values.size else 0.0
+    )
+    passed = bool(
+        maximum_balance <= balance_tolerance
+        and maximum_state_negativity <= state_tolerance
+        and maximum_rate_negativity <= rate_tolerance
+        and maximum_envelope <= state_tolerance
+        and feed_tss >= 1.0
+        and external_solids_loss >= 1.0
+    )
+    return {
+        "passed": passed,
+        "maximum_balance_residual": maximum_balance,
+        "balance_violation_count": int(np.count_nonzero(all_balances > balance_tolerance)),
+        "balance_family_maxima": family_maxima,
+        "balance_family_violation_counts": family_counts,
+        "state_negativity_max": maximum_state_negativity,
+        "state_negativity_count": int(np.count_nonzero(scaled_state_negativity > state_tolerance)),
+        "rate_negativity_max": maximum_rate_negativity,
+        "rate_negativity_count": int(np.count_nonzero(scaled_rate_negativity > rate_tolerance)),
+        "layer_envelope_violation_max": maximum_envelope,
+        "feed_tss_g_m3": feed_tss,
+        "external_solids_loss_g_m3": external_solids_loss,
+    }
+
+
+def stability_audit(
+    state: ArrayLike,
+    operating: OperatingPoint | ArticleOperatingPoint,
+    influent: ArrayLike,
+    clarifier: ClarifierParameters = CLARIFIER,
+    *,
+    stability_margin: float = 1.0e-8,
+    agreement_tolerance: float = 1.0e-6,
+) -> dict[str, float | bool]:
+    """Run the v3 two-step, domain-respecting scaled Jacobian audit."""
+
+    reactors, _ = unpack_state(state, clarifier)
+    y = _state(state, state_size(clarifier))
+    scale = generation_scale(influent, reactors[-1], clarifier)
+    z = y / scale
+
+    def scaled_rhs(value: FloatArray) -> FloatArray:
+        return coupled_rhs(scale * value, operating, influent, clarifier) / scale
+
+    base = scaled_rhs(z)
+    rightmost: list[float] = []
+    base_step = float(np.finfo(float).eps ** (1.0 / 3.0))
+    for step in (base_step, 2.0 * base_step):
+        jacobian = np.empty((y.size, y.size), dtype=float)
+        for column in range(y.size):
+            direction = np.zeros(y.size, dtype=float)
+            direction[column] = step
+            if z[column] > 2.0 * step:
+                jacobian[:, column] = (
+                    scaled_rhs(z + direction) - scaled_rhs(z - direction)
+                ) / (2.0 * step)
+            else:
+                jacobian[:, column] = (
+                    -3.0 * base + 4.0 * scaled_rhs(z + direction)
+                    - scaled_rhs(z + 2.0 * direction)
+                ) / (2.0 * step)
+        eigenvalues = np.linalg.eigvals(jacobian)
+        rightmost.append(float(np.max(np.real(eigenvalues))))
+    agreement = abs(rightmost[0] - rightmost[1])
+    largest = max(rightmost)
+    return {
+        "passed": bool(
+            np.isfinite(largest)
+            and agreement <= agreement_tolerance
+            and largest <= -stability_margin
+        ),
+        "rightmost_eigenvalue_step_1": rightmost[0],
+        "rightmost_eigenvalue_step_2": rightmost[1],
+        "rightmost_eigenvalue_agreement": float(agreement),
+        "largest_real_eigenvalue": float(largest),
+    }
+
+
+def branch_classification(
+    state: ArrayLike,
+    clarifier: ClarifierParameters = CLARIFIER,
+) -> dict[str, tuple[bool, ...]]:
+    """Return every nonsmooth branch used by the v3 equivalence contract."""
+
+    reactors, layers = unpack_state(state, clarifier)
+    feed_tss = float(TSS_VECTOR @ reactors[-1])
+    delta = layers - clarifier.nonsettleable_fraction * feed_tss
+    with np.errstate(over="ignore", invalid="ignore"):
+        raw_velocity = clarifier.theoretical_settling_velocity * (
+            np.exp(-clarifier.hindered_coefficient * delta)
+            - np.exp(-clarifier.low_concentration_coefficient * delta)
+        )
+    velocity = np.maximum(0.0, np.minimum(clarifier.maximum_settling_velocity, raw_velocity))
+    gravity = layers * velocity
+    return {
+        "receiver_limited": tuple(bool(value > clarifier.flux_threshold) for value in layers[1:]),
+        "settling_floor": tuple(bool(value <= 0.0) for value in raw_velocity),
+        "settling_cap": tuple(bool(value >= clarifier.maximum_settling_velocity) for value in raw_velocity),
+        "flux_minimum_receiver": tuple(
+            bool(layers[index + 1] > clarifier.flux_threshold and gravity[index + 1] < gravity[index])
+            for index in range(clarifier.layer_count - 1)
+        ),
+        "storage_capacity_positive": tuple(
+            bool(PARAMETERS["K_max"] * reactor[COMPONENT_INDEX["X_PAO"]]
+                 - reactor[COMPONENT_INDEX["X_PP"]] > 0.0)
+            for reactor in reactors
+        ),
+    }
+
+
 def diagnostics(
     state: ArrayLike,
-    operating: OperatingPoint,
+    operating: OperatingPoint | ArticleOperatingPoint,
     influent: ArrayLike,
     *,
     residual_tolerance: float = 1e-8,
     check_stability: bool = True,
+    clarifier: ClarifierParameters = CLARIFIER,
+    strict_v3: bool = False,
 ) -> dict[str, float | bool]:
     """Replay the local and external physical acceptance checks."""
 
-    reactors, layers = unpack_state(state)
+    reactors, layers = unpack_state(state, clarifier)
     x = _state(influent)
     ce, cu = reconstruct_clarifier(reactors[-1], layers)
-    rhs = coupled_rhs(state, operating, x)
-    scaled_inf = float(np.linalg.norm(rhs / residual_scales(x, reactors[-1]), ord=np.inf))
+    rhs = coupled_rhs(state, operating, x, clarifier)
+    scaled_inf = float(np.linalg.norm(
+        rhs / residual_scales(x, reactors[-1], clarifier), ord=np.inf
+    ))
     clarifier_error = _scaled_algebraic_residual(
         (operating.q_clarifier * reactors[-1], -operating.q_effluent * ce, -operating.q_underflow * cu)
     )
@@ -655,7 +1027,9 @@ def diagnostics(
     for stage in range(N_STAGES):
         rates = process_rates(reactors[stage])
         source = STOICHIOMETRIC_MATRIX.T @ rates
-        source[0] += oxygen_transfer(reactors[stage], stage, operating.aeration)
+        source[0] += oxygen_transfer(
+            reactors[stage], stage, _stage_aeration(operating, stage)
+        )
         total_source += stage_volume_over_q0_days * source
         finite_rates &= bool(np.all(np.isfinite(rates)) and np.min(rates) >= -1e-12)
     boundary_error = _scaled_algebraic_residual(
@@ -686,6 +1060,9 @@ def diagnostics(
     layer_envelope = bool(np.all(layers[1:-1] >= layers[0] - 1e-10)
                           and np.all(layers[1:-1] <= layers[-1] + 1e-10))
     recovery_ok = bool(np.isnan(eta) or lower_recovery - 1e-10 <= eta <= 1.0 + 1e-10)
+    v3_audit = mechanistic_balance_audit(
+        state, operating, x, clarifier, balance_tolerance=residual_tolerance,
+    )
     physical_pass = bool(
         np.min(state) >= -1e-10
         and scaled_inf <= residual_tolerance
@@ -696,13 +1073,36 @@ def diagnostics(
         and layer_envelope
         and recovery_ok
         and finite_rates
+        and (not strict_v3 or bool(v3_audit["passed"]))
     )
     if check_stability and physical_pass:
-        stable, largest_real_eigenvalue = stability_screen(state, operating, x)
+        if strict_v3:
+            stability = stability_audit(state, operating, x, clarifier)
+            stable = bool(stability["passed"])
+            largest_real_eigenvalue = float(stability["largest_real_eigenvalue"])
+        else:
+            stable, largest_real_eigenvalue = stability_screen(
+                state, operating, x, clarifier=clarifier
+            )
+            stability = {
+                "rightmost_eigenvalue_step_1": float(largest_real_eigenvalue),
+                "rightmost_eigenvalue_step_2": float("nan"),
+                "rightmost_eigenvalue_agreement": float("nan"),
+            }
     elif check_stability:
         stable, largest_real_eigenvalue = False, np.nan
+        stability = {
+            "rightmost_eigenvalue_step_1": float("nan"),
+            "rightmost_eigenvalue_step_2": float("nan"),
+            "rightmost_eigenvalue_agreement": float("nan"),
+        }
     else:
         stable, largest_real_eigenvalue = True, np.nan
+        stability = {
+            "rightmost_eigenvalue_step_1": float("nan"),
+            "rightmost_eigenvalue_step_2": float("nan"),
+            "rightmost_eigenvalue_agreement": float("nan"),
+        }
     passed = bool(physical_pass and stable)
     return {
         "passed": passed,
@@ -718,6 +1118,17 @@ def diagnostics(
         "finite_nonnegative_rates": finite_rates,
         "locally_stable": stable,
         "largest_real_eigenvalue": float(largest_real_eigenvalue),
+        "stability_eigenvalue_step_1": float(stability["rightmost_eigenvalue_step_1"]),
+        "stability_eigenvalue_step_2": float(stability["rightmost_eigenvalue_step_2"]),
+        "stability_eigenvalue_agreement": float(stability["rightmost_eigenvalue_agreement"]),
+        "v3_balance_residual": float(v3_audit["maximum_balance_residual"]),
+        "v3_balance_violation_count": int(v3_audit["balance_violation_count"]),
+        "v3_state_negativity_max": float(v3_audit["state_negativity_max"]),
+        "v3_state_negativity_count": int(v3_audit["state_negativity_count"]),
+        "v3_rate_negativity_max": float(v3_audit["rate_negativity_max"]),
+        "v3_rate_negativity_count": int(v3_audit["rate_negativity_count"]),
+        "feed_tss_g_m3": float(v3_audit["feed_tss_g_m3"]),
+        "external_solids_loss_g_m3": float(v3_audit["external_solids_loss_g_m3"]),
     }
 
 
@@ -735,14 +1146,15 @@ class SteadyStateResult:
     route: str = "unknown"
     integration_time_days: float = 0.0
     integration_steps: int = 0
+    clarifier: ClarifierParameters = CLARIFIER
 
     @property
     def reactors(self) -> FloatArray:
-        return unpack_state(self.state)[0]
+        return unpack_state(self.state, self.clarifier)[0]
 
     @property
     def layers(self) -> FloatArray:
-        return unpack_state(self.state)[1]
+        return unpack_state(self.state, self.clarifier)[1]
 
     @property
     def effluent(self) -> FloatArray:
@@ -758,22 +1170,24 @@ class SteadyStateResult:
 
     @property
     def target(self) -> FloatArray:
-        return assemble_target(self.state, self.operating, self.influent)
+        return assemble_target(self.state, self.operating, self.influent, self.clarifier)
 
 
 def reduced_jacobian(
     state: ArrayLike,
     operating: OperatingPoint,
     influent: ArrayLike,
+    clarifier: ClarifierParameters = CLARIFIER,
 ) -> FloatArray:
     """Finite-difference Jacobian after all algebraic loop variables are eliminated."""
 
-    y = _state(state, STATE_SIZE)
+    size = state_size(clarifier)
+    y = _state(state, size)
     x = _state(influent)
-    base = coupled_rhs(y, operating, x)
-    jacobian = np.empty((STATE_SIZE, STATE_SIZE), dtype=float)
+    base = coupled_rhs(y, operating, x, clarifier)
+    jacobian = np.empty((size, size), dtype=float)
     relative_step = np.sqrt(np.finfo(float).eps)
-    for column in range(STATE_SIZE):
+    for column in range(size):
         step = relative_step * max(1.0, abs(y[column]))
         forward = y.copy()
         forward[column] += step
@@ -781,11 +1195,13 @@ def reduced_jacobian(
             backward = y.copy()
             backward[column] -= step
             jacobian[:, column] = (
-                coupled_rhs(forward, operating, x)
-                - coupled_rhs(backward, operating, x)
+                coupled_rhs(forward, operating, x, clarifier)
+                - coupled_rhs(backward, operating, x, clarifier)
             ) / (2.0 * step)
         else:
-            jacobian[:, column] = (coupled_rhs(forward, operating, x) - base) / step
+            jacobian[:, column] = (
+                coupled_rhs(forward, operating, x, clarifier) - base
+            ) / step
     return jacobian
 
 
@@ -795,10 +1211,13 @@ def stability_screen(
     influent: ArrayLike,
     *,
     tolerance: float = 1e-8,
+    clarifier: ClarifierParameters = CLARIFIER,
 ) -> tuple[bool, float]:
     """Return local stability and the largest real reduced-Jacobian eigenvalue."""
 
-    eigenvalues = np.linalg.eigvals(reduced_jacobian(state, operating, influent))
+    eigenvalues = np.linalg.eigvals(
+        reduced_jacobian(state, operating, influent, clarifier)
+    )
     largest_real = float(np.max(np.real(eigenvalues)))
     return bool(np.isfinite(largest_real) and largest_real <= tolerance), largest_real
 
@@ -813,14 +1232,15 @@ def _integrate_to_steady_state(
     absolute_tolerance: float,
     logarithmic: bool,
     steady_tolerance: float,
+    clarifier: ClarifierParameters = CLARIFIER,
 ):
     """Scaled BDF relaxation; the log form guarantees positive trial states."""
 
     from scipy.integrate import solve_ivp
 
-    reactors, _ = unpack_state(y0)
-    scale = residual_scales(influent, reactors[-1])
-    sparsity = jacobian_sparsity()
+    reactors, _ = unpack_state(y0, clarifier)
+    scale = residual_scales(influent, reactors[-1], clarifier)
+    sparsity = jacobian_sparsity(clarifier)
     maximum_step = horizon_days / 100.0
     if logarithmic:
         if np.any(y0 <= 0.0):
@@ -830,11 +1250,13 @@ def _integrate_to_steady_state(
         def transformed_rhs(_time: float, transformed: FloatArray) -> FloatArray:
             scaled_state = np.exp(transformed)
             physical_state = scale * scaled_state
-            return coupled_rhs(physical_state, operating, influent) / (scale * scaled_state)
+            return coupled_rhs(physical_state, operating, influent, clarifier) / (scale * scaled_state)
 
         def steady_event(_time: float, transformed: FloatArray) -> float:
             physical_state = scale * np.exp(transformed)
-            return float(np.linalg.norm(scaled_residual(physical_state, operating, influent), ord=np.inf) - steady_tolerance)
+            return float(np.linalg.norm(
+                scaled_residual(physical_state, operating, influent, clarifier), ord=np.inf
+            ) - steady_tolerance)
 
         steady_event.terminal = True
         steady_event.direction = -1
@@ -853,12 +1275,16 @@ def _integrate_to_steady_state(
         endpoint = scale * np.exp(integration.y[:, -1])
     else:
         def steady_event(_time: float, scaled: FloatArray) -> float:
-            return float(np.linalg.norm(scaled_residual(scale * scaled, operating, influent), ord=np.inf) - steady_tolerance)
+            return float(np.linalg.norm(
+                scaled_residual(scale * scaled, operating, influent, clarifier), ord=np.inf
+            ) - steady_tolerance)
 
         steady_event.terminal = True
         steady_event.direction = -1
         integration = solve_ivp(
-            lambda _time, scaled: coupled_rhs(scale * scaled, operating, influent) / scale,
+            lambda _time, scaled: coupled_rhs(
+                scale * scaled, operating, influent, clarifier
+            ) / scale,
             (0.0, horizon_days),
             y0 / scale,
             method="BDF",
@@ -880,7 +1306,7 @@ def _integrate_to_steady_state(
 
 
 def solve_steady_state(
-    operating: OperatingPoint,
+    operating: OperatingPoint | ArticleOperatingPoint,
     influent: ArrayLike,
     *,
     max_nfev: int = 5_000,
@@ -891,6 +1317,9 @@ def solve_steady_state(
     solids_turnovers: float = 50.0,
     integration_rtol: float = 1e-7,
     integration_atol: float = 1e-9,
+    clarifier: ClarifierParameters = CLARIFIER,
+    logarithmic_only: bool = False,
+    strict_v3: bool = False,
 ) -> SteadyStateResult:
     """Relax the positive dynamics first, then polish only if acceptance requires it.
 
@@ -911,30 +1340,36 @@ def solve_steady_state(
         float(solids_turnovers) / max(operating.waste_sludge, 1e-3),
     )
     for start in starts:
-        y0 = initial_state(x, start)
-        initial_replay = diagnostics(y0, operating, x, residual_tolerance=acceptance_tolerance)
+        y0 = initial_state(x, start, clarifier)
+        initial_replay = diagnostics(
+            y0, operating, x, residual_tolerance=acceptance_tolerance,
+            clarifier=clarifier, strict_v3=strict_v3,
+        )
         if bool(initial_replay["passed"]):
             return SteadyStateResult(
                 state=y0.copy(), operating=operating, influent=x.copy(),
                 accepted=True, start=start, nfev=1, cost=0.0,
                 message="The prescribed initial state already satisfies the acceptance contract.",
-                diagnostics=initial_replay, route="initial-state",
+                diagnostics=initial_replay, route="initial-state", clarifier=clarifier,
             )
         endpoint = None
         integration = None
         route = "scaled-bdf"
         integration_errors: list[str] = []
-        for logarithmic in (False, True):
+        logarithmic_routes = (True,) if logarithmic_only else (False, True)
+        for logarithmic in logarithmic_routes:
             try:
+                integration_start = np.maximum(y0, 1.0e-8) if logarithmic else y0
                 endpoint, integration = _integrate_to_steady_state(
                     operating,
                     x,
-                    y0,
+                    integration_start,
                     horizon_days=horizon,
                     relative_tolerance=integration_rtol,
                     absolute_tolerance=integration_atol,
                     logarithmic=logarithmic,
                     steady_tolerance=acceptance_tolerance / 10.0,
+                    clarifier=clarifier,
                 )
                 route = "log-bdf" if logarithmic else "scaled-bdf"
                 break
@@ -946,7 +1381,11 @@ def solve_steady_state(
             endpoint = y0
             route = "bounded-least-squares"
         else:
-            replay = diagnostics(endpoint, operating, x, residual_tolerance=acceptance_tolerance)
+            replay = diagnostics(
+                endpoint, operating, x,
+                residual_tolerance=acceptance_tolerance,
+                clarifier=clarifier, strict_v3=strict_v3,
+            )
             if bool(replay["passed"]):
                 return SteadyStateResult(
                     state=endpoint.copy(), operating=operating, influent=x.copy(),
@@ -954,18 +1393,23 @@ def solve_steady_state(
                     message=str(integration.message), diagnostics=replay, route=route,
                     integration_time_days=float(integration.t[-1]),
                     integration_steps=int(integration.t.size),
+                    clarifier=clarifier,
                 )
 
         # The bounded calculation is now a local polish/fallback, never the
         # expensive first route from a hydraulically inconsistent raw start.
         result = least_squares(
-            lambda y: scaled_residual(y, operating, x), endpoint,
-            bounds=(np.zeros(STATE_SIZE), np.full(STATE_SIZE, np.inf)),
-            jac_sparsity=jacobian_sparsity(), x_scale=np.maximum(1.0, endpoint),
+            lambda y: scaled_residual(y, operating, x, clarifier), endpoint,
+            bounds=(np.zeros(state_size(clarifier)), np.full(state_size(clarifier), np.inf)),
+            jac_sparsity=jacobian_sparsity(clarifier), x_scale=np.maximum(1.0, endpoint),
             xtol=tolerance, ftol=tolerance, gtol=tolerance,
             max_nfev=max_nfev, tr_solver="lsmr",
         )
-        replay = diagnostics(result.x, operating, x, residual_tolerance=acceptance_tolerance)
+        replay = diagnostics(
+            result.x, operating, x,
+            residual_tolerance=acceptance_tolerance,
+            clarifier=clarifier, strict_v3=strict_v3,
+        )
         candidate = SteadyStateResult(
             state=result.x.copy(), operating=operating, influent=x.copy(),
             accepted=bool(replay["passed"]), start=start, nfev=int(result.nfev),
@@ -973,6 +1417,7 @@ def solve_steady_state(
             diagnostics=replay, route=f"{route}+bounded-polish",
             integration_time_days=(0.0 if integration is None else float(integration.t[-1])),
             integration_steps=(0 if integration is None else int(integration.t.size)),
+            clarifier=clarifier,
         )
         candidates.append(candidate)
         if candidate.accepted:
@@ -980,15 +1425,20 @@ def solve_steady_state(
     return min(candidates, key=lambda item: float(item.diagnostics["scaled_residual_inf"]))
 
 
-def assemble_target(state: ArrayLike, operating: OperatingPoint, influent: ArrayLike) -> FloatArray:
-    """Return (m, c1..c5, g_E, g_U, s1..s10), the 170-response target."""
+def assemble_target(
+    state: ArrayLike,
+    operating: OperatingPoint | ArticleOperatingPoint,
+    influent: ArrayLike,
+    clarifier: ClarifierParameters = CLARIFIER,
+) -> FloatArray:
+    """Return ``(m,c1,...,c5,g_E,g_U,s1,...,sL)``."""
 
-    reactors, layers = unpack_state(state)
+    reactors, layers = unpack_state(state, clarifier)
     ce, cu = reconstruct_clarifier(reactors[-1], layers)
     mixer = mixer_state(influent, reactors[-1], cu, operating)
     ge, gu = operating.q_effluent * ce, operating.q_underflow * cu
     target = np.concatenate((mixer, reactors.ravel(), ge, gu, layers))
-    if target.shape != (TARGET_SIZE,):
+    if target.shape != (target_size(clarifier),):
         raise AssertionError("Mechanistic target dimension changed unexpectedly.")
     return target
 
@@ -1007,12 +1457,13 @@ __all__ = [
     "INFLUENT_LOWER", "INFLUENT_UPPER", "INVARIANT_MATRIX", "NOMINAL_INFLUENT",
     "N_COMPONENTS", "N_LAYERS", "N_PROCESSES", "N_STAGES", "PARAMETERS",
     "PARTICULATE", "SOLUBLE", "STATE_SIZE", "STOICHIOMETRIC_MATRIX",
-    "TARGET_SIZE", "TSS_VECTOR", "ClarifierParameters", "OperatingPoint",
+    "TARGET_SIZE", "TSS_VECTOR", "ArticleOperatingPoint", "ClarifierParameters", "OperatingPoint",
     "SteadyStateResult", "assemble_target", "audit_mechanistic_matrices",
-    "build_invariant_matrix", "build_stoichiometric_matrix", "clarifier_fluxes",
-    "clarifier_rhs", "coupled_rhs", "diagnostics", "initial_state",
+    "branch_classification", "build_invariant_matrix", "build_stoichiometric_matrix", "clarifier_fluxes",
+    "clarifier_rhs", "coupled_rhs", "diagnostics", "generation_scale", "initial_state",
     "jacobian_sparsity", "mixer_state", "oxygen_transfer", "process_rates",
     "reaction_source", "reconstruct_clarifier", "reduced_jacobian", "residual_scales",
-    "scaled_residual", "settling_velocity", "solve_steady_state", "unpack_state",
-    "stability_screen", "zero_state_solution",
+    "mechanistic_balance_audit", "scaled_residual", "settling_velocity", "solve_steady_state", "state_size",
+    "target_size", "unpack_state",
+    "stability_audit", "stability_screen", "zero_state_solution",
 ]
