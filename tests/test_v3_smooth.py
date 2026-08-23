@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
+
+import closed_loop.v3_smooth as v3_smooth
 
 from closed_loop.model import (
     ArticleOperatingPoint,
@@ -20,6 +24,7 @@ from closed_loop.v3_smooth import (
     DirectAssets,
     DirectCase,
     SmoothScales,
+    SolverSettings,
     branches_match,
     build_direct_nlp,
     classify_branches,
@@ -203,6 +208,153 @@ class DevelopmentScalingAndStartTests(unittest.TestCase):
         )
         self.assertGreaterEqual(float(np.min(state)), 1.0e-8)
         self.assertGreaterEqual(feed_tss, 1.0)
+
+
+class DirectContinuationWarmStartTests(unittest.TestCase):
+    def test_stage_returns_and_reuses_ipopt_duals(self) -> None:
+        class RecordingSolver:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            def __call__(self, **arguments: object) -> dict[str, np.ndarray]:
+                self.calls.append(arguments)
+                return {
+                    "x": np.asarray([0.2, 0.3, 0.4]),
+                    "lam_x": np.asarray([1.0, 2.0, 3.0]),
+                    "lam_g": np.asarray([-4.0, 5.0]),
+                }
+
+            @staticmethod
+            def stats() -> dict[str, object]:
+                return {"return_status": "Solve_Succeeded", "success": True,
+                        "iter_count": 3}
+
+        solver = RecordingSolver()
+        problem = SimpleNamespace(
+            solver=solver,
+            variable_count=3,
+            equality_count=1,
+            inequality_count=1,
+            lower_bounds=np.zeros(3),
+            upper_bounds=np.ones(3),
+            constraint_lower_bounds=np.asarray([0.0, -np.inf]),
+            constraint_upper_bounds=np.asarray([0.0, 0.0]),
+            settings=SolverSettings(),
+            epsilon=1.0e-4,
+            receiver_half_width=1.0e-3,
+        )
+        case = DirectCase(NOMINAL_INFLUENT)
+        evaluated = {"equality": np.zeros(1), "inequality": -np.ones(1)}
+        with patch.object(v3_smooth, "evaluate_direct", return_value=evaluated):
+            first, primal, dual = v3_smooth._solve_direct_stage(
+                problem, case, np.asarray([0.1, 0.2, 0.3]),
+            )
+            second, _, _ = v3_smooth._solve_direct_stage(
+                problem, case, primal, dual,
+            )
+
+        self.assertTrue(first.feasible)
+        self.assertTrue(second.feasible)
+        self.assertNotIn("lam_x0", solver.calls[0])
+        self.assertNotIn("lam_g0", solver.calls[0])
+        np.testing.assert_array_equal(solver.calls[1]["lam_x0"], [1.0, 2.0, 3.0])
+        np.testing.assert_array_equal(solver.calls[1]["lam_g0"], [-4.0, 5.0])
+        np.testing.assert_array_equal(first.constraint_multipliers, [-4.0, 5.0])
+        restored = v3_smooth.ContinuationStageResult.from_dict(first.as_dict())
+        np.testing.assert_array_equal(
+            restored.constraint_multipliers, [-4.0, 5.0]
+        )
+
+    def test_completed_starts_round_trip_and_skip_solver_work(self) -> None:
+        assets = _assets(5)
+        case = DirectCase(NOMINAL_INFLUENT)
+        settings = SolverSettings()
+        starts = ordered_normalized_starts()
+        contract = v3_smooth.direct_start_resume_contract(assets, case, settings)
+        completed = {}
+        for index, initial in enumerate(starts):
+            result = v3_smooth.DirectStartResult(
+                start_index=index,
+                initial_normalized_controls=initial.copy(),
+                resume_contract=contract,
+                nearest_development_row=0,
+                stages=(),
+                objective=np.nan,
+                normalized_controls=initial.copy(),
+                theta=DECISION_LOWER + (DECISION_UPPER - DECISION_LOWER) * initial,
+                state=np.full(assets.state_count, np.nan),
+                feed_tss=np.nan,
+                response=np.full(assets.response_count, np.nan),
+                engineering=np.full(11, np.nan),
+                objective_components=np.full(6, np.nan),
+                branch=None,
+                kkt=None,
+                feasible=False,
+                stationary=False,
+                status="continuation_failed",
+            )
+            payload = result.as_dict()
+            payload["objective"] = None
+            payload["feed_tss"] = None
+            completed[index] = v3_smooth.DirectStartResult.from_dict(payload)
+        callbacks = []
+        with patch.object(v3_smooth, "build_direct_nlp", return_value=SimpleNamespace()):
+            outcome = v3_smooth.solve_direct_multistart(
+                assets, case,
+                np.empty((1, 7)), np.empty((1, 20)),
+                np.empty((1, assets.response_count)),
+                settings=settings, starts=starts,
+                completed_starts=completed,
+                progress_callback=callbacks.append,
+            )
+        self.assertEqual(len(outcome.starts), 9)
+        self.assertEqual(callbacks, [])
+        self.assertEqual(outcome.status, "no_validated_feasible_start")
+        invalid = dict(completed)
+        invalid[0] = v3_smooth.DirectStartResult.from_dict({
+            **completed[0].as_dict(), "resume_contract": "wrong",
+        })
+        with self.assertRaisesRegex(ValueError, "completed direct start"):
+            v3_smooth.solve_direct_multistart(
+                assets, case,
+                np.empty((1, 7)), np.empty((1, 20)),
+                np.empty((1, assets.response_count)),
+                settings=settings, starts=starts,
+                completed_starts=invalid,
+            )
+
+    def test_final_audit_exception_is_a_retained_start_failure(self) -> None:
+        assets = _assets(5)
+        case = DirectCase(NOMINAL_INFLUENT)
+        starts = ordered_normalized_starts()[:1]
+
+        def problem(_assets, epsilon, receiver_half_width, **_kwargs):
+            return SimpleNamespace(
+                epsilon=epsilon, receiver_half_width=receiver_half_width,
+            )
+
+        def stage(problem_value, _case, primal, _dual=None):
+            record = v3_smooth.ContinuationStageResult(
+                problem_value.epsilon, problem_value.receiver_half_width,
+                "Solve_Succeeded", True, 0.01, 1, primal.copy(), True,
+            )
+            return record, primal, (np.empty(0), np.empty(0))
+
+        callbacks = []
+        with patch.object(v3_smooth, "build_direct_nlp", side_effect=problem), \
+                patch.object(v3_smooth, "direct_initial_point", return_value=(np.zeros(1), 0)), \
+                patch.object(v3_smooth, "_solve_direct_stage", side_effect=stage), \
+                patch.object(v3_smooth, "evaluate_direct", side_effect=FloatingPointError("audit")):
+            outcome = v3_smooth.solve_direct_multistart(
+                assets, case,
+                np.empty((1, 7)), np.empty((1, 20)),
+                np.empty((1, assets.response_count)),
+                starts=starts, allow_reduced_starts=True,
+                progress_callback=callbacks.append,
+            )
+        self.assertEqual(outcome.starts[0].status, "final_audit_exception")
+        self.assertIn("FloatingPointError", outcome.starts[0].error)
+        self.assertEqual(len(callbacks), 1)
 
 
 if __name__ == "__main__":

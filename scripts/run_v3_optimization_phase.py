@@ -26,15 +26,19 @@ from closed_loop.model import (
     solve_steady_state,
 )
 from closed_loop.projection import NetworkLayout, QuadraticSurrogate
+from closed_loop.v3_reporting import write_reporting_tables
 from closed_loop.v3_smooth import (
     DirectCase,
+    SolverSettings,
     compare_smooth_reference,
     fit_direct_assets,
     solve_direct_multistart,
 )
 from closed_loop.v3_surrogate_nlp import (
     SurrogateCase,
+    SurrogateSolverSettings,
     build_surrogate_assets,
+    ordered_normalized_starts as surrogate_normalized_starts,
     solve_surrogate_multistart,
 )
 from closed_loop.v3_trust import calibrate_trust_diagnostics
@@ -48,6 +52,7 @@ NOMINAL = (
     + np.asarray([0.5, 180.0, 80.0, 55.0, 3.0, 8.0, 2.0, 18.0, 90.0, 5.2,
                   120.0, 280.0, 100.0, 60.0, 20.0, 30.0, 8.0, 8.0, 12.0, 12.0])
 ) / 2.0
+SMOKE_START_COUNT = 1
 
 
 def _json_default(value: Any) -> Any:
@@ -146,6 +151,7 @@ def main(case_limit: int) -> None:
     ]
     case_root = RUN / "optimization"
     case_root.mkdir(parents=True, exist_ok=True)
+    smoke_starts = surrogate_normalized_starts()[:SMOKE_START_COUNT]
     violations: list[dict[str, object]] = []
     for case_id, influent in case_inputs[:case_limit]:
         case_directory = case_root / case_id
@@ -154,15 +160,57 @@ def main(case_limit: int) -> None:
         direct_path = case_directory / "direct.json"
         print(f"[{case_id}] surrogate route", flush=True)
         started = perf_counter()
-        surrogate = solve_surrogate_multistart(
-            surrogate_assets, SurrogateCase(influent=np.asarray(influent), case_id=case_id),
-            name="preflight_surrogate",
-        )
-        surrogate_payload = surrogate.as_dict()
-        surrogate_payload["elapsed_seconds"] = perf_counter() - started
-        _write_json(surrogate_path, surrogate_payload)
-        if surrogate.selected is not None and surrogate.selected.final is not None:
-            final = surrogate.selected.final
+        partial_surrogate: list[dict[str, Any]] = []
+
+        def checkpoint_surrogate(item: Any) -> None:
+            partial_surrogate.append(item.as_dict())
+            _write_json(case_directory / "surrogate_starts.partial.json", partial_surrogate)
+            print(
+                f"[{case_id}] surrogate start {item.start_index + 1}/{SMOKE_START_COUNT}: {item.status}",
+                flush=True,
+            )
+
+        cached_surrogate = None
+        if surrogate_path.is_file():
+            candidate = json.loads(surrogate_path.read_text(encoding="utf-8"))
+            if candidate.get("preflight_stage_wall_time_seconds") == 600.0:
+                cached_surrogate = candidate
+        if cached_surrogate is None:
+            surrogate = solve_surrogate_multistart(
+                surrogate_assets, SurrogateCase(influent=np.asarray(influent), case_id=case_id),
+                settings=SurrogateSolverSettings(maximum_wall_time=600.0),
+                starts=smoke_starts,
+                name="preflight_surrogate",
+                progress_callback=checkpoint_surrogate,
+                allow_reduced_starts=True,
+            )
+            surrogate_payload = surrogate.as_dict()
+            surrogate_payload["elapsed_seconds"] = perf_counter() - started
+            surrogate_payload["preflight_stage_wall_time_seconds"] = 600.0
+            surrogate_payload["smoke_test_start_count"] = SMOKE_START_COUNT
+            _write_json(surrogate_path, surrogate_payload)
+            surrogate_selected = (
+                surrogate.selected.final
+                if surrogate.selected is not None and surrogate.selected.final is not None
+                else None
+            )
+        else:
+            surrogate_payload = cached_surrogate
+            surrogate_selected = None
+            selected_file = case_directory / "surrogate_selected.npz"
+            if selected_file.is_file():
+                with np.load(selected_file, allow_pickle=False) as stored:
+                    selected_theta = np.asarray(stored["theta"], dtype=float)
+                    selected_raw = np.asarray(stored["raw"], dtype=float)
+                    selected_projected = np.asarray(stored["projected"], dtype=float)
+                for method, response in (("raw", selected_raw), ("projected", selected_projected)):
+                    violations.append(violation_record(
+                        method, f"{case_id}:surrogate", response, selected_theta, influent,
+                        layout, surrogate_assets.row_scales.equality,
+                        surrogate_assets.row_scales.inequality, model.response_scale,
+                    ))
+        if cached_surrogate is None and surrogate_selected is not None:
+            final = surrogate_selected
             np.savez_compressed(
                 case_directory / "surrogate_selected.npz", theta=final.theta,
                 raw=final.raw, projected=final.projected,
@@ -176,48 +224,65 @@ def main(case_limit: int) -> None:
 
         print(f"[{case_id}] direct route", flush=True)
         started = perf_counter()
-        direct = solve_direct_multistart(
-            direct_assets, DirectCase(influent=np.asarray(influent), case_id=case_id),
-            design["development_decisions"], design["development_influents"], targets,
-        )
-        direct_payload = _direct_summary(direct)
-        direct_payload["elapsed_seconds"] = perf_counter() - started
-        _write_json(direct_path, direct_payload)
-        if direct.selected is not None:
-            selected = direct.selected
+        direct_selected_path = case_directory / "direct_selected.npz"
+        if direct_path.is_file() and direct_selected_path.is_file():
+            direct_payload = json.loads(direct_path.read_text(encoding="utf-8"))
+            with np.load(direct_selected_path, allow_pickle=False) as stored:
+                direct_theta = np.asarray(stored["theta"], dtype=float)
+                direct_response = np.asarray(stored["response"], dtype=float)
+                direct_state = np.asarray(stored["state"], dtype=float)
+        else:
+            direct = solve_direct_multistart(
+                direct_assets, DirectCase(influent=np.asarray(influent), case_id=case_id),
+                design["development_decisions"], design["development_influents"], targets,
+                settings=SolverSettings(maximum_wall_time=600.0),
+                starts=smoke_starts,
+                allow_reduced_starts=True,
+            )
+            direct_payload = _direct_summary(direct)
+            direct_payload["elapsed_seconds"] = perf_counter() - started
+            direct_payload["preflight_stage_wall_time_seconds"] = 600.0
+            direct_payload["smoke_test_start_count"] = SMOKE_START_COUNT
+            _write_json(direct_path, direct_payload)
+            if direct.selected is None:
+                direct_theta = direct_response = direct_state = None
+            else:
+                direct_theta = direct.selected.theta
+                direct_response = direct.selected.response
+                direct_state = direct.selected.state
+        if direct_theta is not None and direct_response is not None and direct_state is not None:
             np.savez_compressed(
-                case_directory / "direct_selected.npz", theta=selected.theta,
-                response=selected.response, state=selected.state,
+                direct_selected_path, theta=direct_theta,
+                response=direct_response, state=direct_state,
             )
             violations.append(violation_record(
-                "smooth", f"{case_id}:direct", selected.response, selected.theta,
+                "smooth", f"{case_id}:direct", direct_response, direct_theta,
                 influent, layout, surrogate_assets.row_scales.equality,
                 surrogate_assets.row_scales.inequality, model.response_scale,
-                nonlinear_state=selected.state,
             ))
             equivalence = compare_smooth_reference(
-                selected.theta, influent, direct_assets,
+                direct_theta, influent, direct_assets,
             )
             _write_json(case_directory / "direct_equivalence.json", asdict(equivalence))
-            operating = ArticleOperatingPoint(*map(float, selected.theta))
+            operating = ArticleOperatingPoint(*map(float, direct_theta))
             reference = solve_steady_state(
                 operating, influent, starts=(1,), clarifier=direct_assets.clarifier,
                 logarithmic_only=True, strict_v3=True,
             )
             response = assemble_target(reference.state, operating, influent, direct_assets.clarifier)
             np.savez_compressed(
-                case_directory / "direct_reference.npz", theta=selected.theta,
+                case_directory / "direct_reference.npz", theta=direct_theta,
                 response=response, state=reference.state,
             )
             violations.append(violation_record(
-                "reference", f"{case_id}:direct", response, selected.theta,
+                "reference", f"{case_id}:direct", response, direct_theta,
                 influent, layout, surrogate_assets.row_scales.equality,
                 surrogate_assets.row_scales.inequality, model.response_scale,
-                nonlinear_state=reference.state,
             ))
         pd.DataFrame(violations).to_csv(
             RUN / "metrics/physical_violations_selected_cases.csv", index=False,
         )
+        write_reporting_tables(RUN)
 
 
 if __name__ == "__main__":

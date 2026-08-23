@@ -13,24 +13,26 @@ single-level relaxation alone: a newly constructed OSQP problem resolves the
 original projection and the independently reconstructed lower-QP KKT
 residuals supplied by :mod:`closed_loop.projection` are retained.
 
-The optional exact-QP outer refinement also resolves a cold projection at
-every trial control.  This module deliberately labels upper stationarity as
-unresolved.  A solver success flag (or SLSQP's approximate multipliers) is not
-the active-set sensitivity and independently reconstructed upper KKT audit
-required by the manuscript.
+The exact-QP outer refinement resolves a cold projection at every trial
+control.  A candidate is promoted to stationary only after stable-active-set
+sensitivity, an independent final cold-QP reproduction, and reconstructed
+upper multipliers pass the manuscript audit; a solver success flag alone is
+never sufficient.
 """
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
+from hashlib import sha256
 from time import perf_counter
 from typing import Any, Callable, Mapping, Sequence
+import json
 
 import casadi as ca
 import numpy as np
 import numpy.typing as npt
 from scipy import linalg
-from scipy.optimize import minimize
+from scipy.optimize import Bounds, NonlinearConstraint, minimize
 
 from .manuscript_v3 import DECISION_LOWER, DECISION_UPPER
 from .model import COMPOSITE_MATRIX, INVARIANT_MATRIX, TSS_VECTOR
@@ -38,6 +40,7 @@ from .projection import (
     NetworkLayout,
     NetworkRowScales,
     PhysicalProjector,
+    ProjectionDiagnostics,
     ProjectionResult,
     QuadraticSurrogate,
     SurrogateValidationError,
@@ -49,9 +52,20 @@ from .projection import (
 FloatArray = npt.NDArray[np.float64]
 TrustRowCallback = Callable[[Any, Any, Any, Any], Any]
 
-GAP_CONTINUATION: tuple[float, ...] = (1.0e-2, 1.0e-4, 1.0e-6, 1.0e-8)
+GAP_CONTINUATION: tuple[float, ...] = (
+    1.0e-2,
+    1.0e-4,
+    1.0e-6,
+    3.0e-7,
+    1.0e-7,
+    3.0e-8,
+    1.0e-8,
+)
 START_SEED = 271_828
 DEFAULT_OBJECTIVE_WEIGHTS = np.asarray([0.50, 0.15, 0.20, 0.05, 0.05, 0.05])
+LEGACY_SURROGATE_PROTOCOL = "embedded_kkt_gap_continuation_multistart_v1"
+EXACT_QP_SINGLE_START_PROTOCOL = "seven_variable_exact_qp_single_start_v1"
+EXACT_QP_CENTER_START: tuple[float, ...] = (0.5,) * 7
 
 
 class SurrogateNLPError(RuntimeError):
@@ -78,9 +92,43 @@ def _flat(value: Any) -> FloatArray:
     return np.asarray(value, dtype=np.float64).reshape(-1)
 
 
+def _float_or_nan(value: Any) -> float:
+    """Restore strict-JSON ``null`` failure placeholders as IEEE NaN."""
+
+    return float("nan") if value is None else float(value)
+
+
+def _optional_float(value: Any) -> float | None:
+    return None if value is None else float(value)
+
+
 def _maximum_positive(values: npt.ArrayLike) -> float:
     array = np.asarray(values, dtype=np.float64).reshape(-1)
     return float(np.max(np.maximum(array, 0.0), initial=0.0))
+
+
+def _scaled_upper_residual(residual: Any, positive_scale: float) -> Any:
+    """Return a dimensionless upper-inequality row without changing its sign."""
+
+    scale = float(positive_scale)
+    if not np.isfinite(scale) or scale <= 0.0:
+        raise ValueError("an upper-constraint row scale must be finite and positive.")
+    return residual / scale
+
+
+def _normalized_limit_residual(value: Any, nonnegative_limit: float) -> Any:
+    """Normalize ``value <= limit`` by its positive limit when available.
+
+    A zero limit denotes an exact-zero diagnostic. Unit scaling is then the
+    only finite fixed scale that preserves the feasible set without inserting
+    an arbitrary floor into the scientific limit.
+    """
+
+    limit = float(nonnegative_limit)
+    if not np.isfinite(limit) or limit < 0.0:
+        raise ValueError("an upper-constraint limit must be finite and nonnegative.")
+    scale = limit if limit > 0.0 else 1.0
+    return _scaled_upper_residual(value - limit, scale)
 
 
 def _safe_name(value: str) -> str:
@@ -661,12 +709,30 @@ def _engineering_expressions(
     )
     scale = limits.resolved_inventory_scale
     rows: list[Any] = [
-        (limits.srt_lower_d * limits.fresh_flow_m3_d * external_loss - inventory) / scale,
-        (inventory - limits.srt_upper_d * limits.fresh_flow_m3_d * external_loss) / scale,
-        (limits.external_loss_min_g_m3 - external_loss) / limits.external_loss_min_g_m3,
-        slr / limits.slr_upper_kg_m2_d - 1.0,
-        underflow_tss / limits.underflow_tss_upper_g_m3 - 1.0,
-        (limits.feed_tss_min_g_m3 - feed_tss) / limits.feed_tss_min_g_m3,
+        _scaled_upper_residual(
+            limits.srt_lower_d * limits.fresh_flow_m3_d * external_loss - inventory,
+            scale,
+        ),
+        _scaled_upper_residual(
+            inventory - limits.srt_upper_d * limits.fresh_flow_m3_d * external_loss,
+            scale,
+        ),
+        _scaled_upper_residual(
+            limits.external_loss_min_g_m3 - external_loss,
+            limits.external_loss_min_g_m3,
+        ),
+        _scaled_upper_residual(
+            slr - limits.slr_upper_kg_m2_d,
+            limits.slr_upper_kg_m2_d,
+        ),
+        _scaled_upper_residual(
+            underflow_tss - limits.underflow_tss_upper_g_m3,
+            limits.underflow_tss_upper_g_m3,
+        ),
+        _scaled_upper_residual(
+            limits.feed_tss_min_g_m3 - feed_tss,
+            limits.feed_tss_min_g_m3,
+        ),
     ]
     names = [
         "srt_lower",
@@ -677,7 +743,12 @@ def _engineering_expressions(
         "feed_tss_lower",
     ]
     if limits.sor_upper_m_d is not None:
-        rows.append(sor / limits.sor_upper_m_d - 1.0)
+        rows.append(
+            _scaled_upper_residual(
+                sor - limits.sor_upper_m_d,
+                limits.sor_upper_m_d,
+            )
+        )
         names.append("sor_upper")
     # Reported quantities avoid division only where the constraint contract
     # requires it; q_U and external loss are positive on accepted points.
@@ -763,8 +834,12 @@ def _trust_expressions(
         [phi.T, ca.DM(assets.leverage_precision), phi]
     )
     rows: list[Any] = [
-        correction_squared - thresholds.correction_rms**2,
-        leverage - thresholds.regularized_leverage,
+        _normalized_limit_residual(
+            correction_squared, thresholds.correction_rms**2
+        ),
+        _normalized_limit_residual(
+            leverage, thresholds.regularized_leverage
+        ),
     ]
     values: list[Any] = [correction_squared, leverage]
     names = ["correction", "leverage"]
@@ -790,7 +865,7 @@ def _trust_expressions(
             continue
         residual = _callback_rows(callback, theta, raw, projected, influent, name)
         squared = ca.dot(residual, residual) / residual.numel()
-        rows.append(squared - threshold**2)
+        rows.append(_normalized_limit_residual(squared, threshold**2))
         values.append(squared)
         names.append(name)
     for specification in assets.trust_callbacks.additional:
@@ -803,7 +878,11 @@ def _trust_expressions(
             specification.name,
         )
         squared = ca.dot(residual, residual) / residual.numel()
-        rows.append(squared - specification.rms_threshold**2)
+        rows.append(
+            _normalized_limit_residual(
+                squared, specification.rms_threshold**2
+            )
+        )
         values.append(squared)
         names.append(specification.name)
     return ca.vertcat(*rows), tuple(names), ca.vertcat(*values)
@@ -820,6 +899,7 @@ class SurrogateSolverSettings:
     outer_function_tolerance: float = 1.0e-10
     perform_outer_refinement: bool = True
     print_level: int = 0
+    maximum_wall_time: float | None = None
 
     def __post_init__(self) -> None:
         if self.maximum_iterations < 1 or self.outer_maximum_iterations < 1:
@@ -833,9 +913,13 @@ class SurrogateSolverSettings:
         ):
             if not np.isfinite(value) or value <= 0.0:
                 raise ValueError("solver tolerances must be finite and positive.")
+        if self.maximum_wall_time is not None and (
+            not np.isfinite(self.maximum_wall_time) or self.maximum_wall_time <= 0.0
+        ):
+            raise ValueError("maximum_wall_time must be positive when supplied.")
 
     def ipopt_options(self) -> dict[str, Any]:
-        return {
+        options: dict[str, Any] = {
             "print_time": False,
             "ipopt.print_level": self.print_level,
             "ipopt.sb": "yes",
@@ -845,7 +929,88 @@ class SurrogateSolverSettings:
             "ipopt.mu_strategy": "adaptive",
             "ipopt.bound_relax_factor": 0.0,
             "ipopt.honor_original_bounds": "yes",
+            "ipopt.warm_start_init_point": "yes",
+            "ipopt.warm_start_bound_push": 1.0e-9,
+            "ipopt.warm_start_bound_frac": 1.0e-9,
+            "ipopt.warm_start_slack_bound_push": 1.0e-9,
+            "ipopt.warm_start_slack_bound_frac": 1.0e-9,
+            "ipopt.warm_start_mult_bound_push": 1.0e-9,
         }
+        if self.maximum_wall_time is not None:
+            options["ipopt.max_wall_time"] = float(self.maximum_wall_time)
+        return options
+
+
+def surrogate_start_resume_contract(
+    assets: SurrogateNLPAssets,
+    case: SurrogateCase,
+    settings: SurrogateSolverSettings,
+) -> str:
+    """Return the stable case/settings fingerprint required for start reuse.
+
+    The full-run manifest separately binds model and source artifacts.  This
+    library-level token prevents a completed start from being reused for a
+    different case vector, case identifier, continuation schedule, or solver
+    contract.
+    """
+
+    digest = sha256()
+    digest.update(b"manuscript-v3-surrogate-start-resume-v1\0")
+    digest.update(case.case_id.encode("utf-8"))
+    digest.update(b"\0")
+    digest.update(
+        np.asarray(case.parameter_vector(assets), dtype="<f8").tobytes(order="C")
+    )
+    digest.update(np.asarray(GAP_CONTINUATION, dtype="<f8").tobytes(order="C"))
+    digest.update(
+        json.dumps(
+            asdict(settings),
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    )
+    return digest.hexdigest()
+
+
+def surrogate_exact_qp_resume_contract(
+    assets: SurrogateNLPAssets,
+    case: SurrogateCase,
+    settings: SurrogateSolverSettings,
+) -> str:
+    """Fingerprint the direct seven-variable, single-start protocol.
+
+    This token is deliberately disjoint from
+    :func:`surrogate_start_resume_contract`: a checkpoint produced by the
+    embedded-KKT continuation route can never be mistaken for a direct
+    exact-QP local-optimization result. IPOPT-only settings are omitted
+    because this protocol does not construct or call an IPOPT solver.
+    """
+
+    digest = sha256()
+    digest.update(b"manuscript-v3-surrogate-exact-qp-single-start-resume-v1\0")
+    digest.update(EXACT_QP_SINGLE_START_PROTOCOL.encode("utf-8"))
+    digest.update(b"\0")
+    digest.update(case.case_id.encode("utf-8"))
+    digest.update(b"\0")
+    digest.update(
+        np.asarray(case.parameter_vector(assets), dtype="<f8").tobytes(order="C")
+    )
+    digest.update(np.asarray(EXACT_QP_CENTER_START, dtype="<f8").tobytes(order="C"))
+    digest.update(
+        json.dumps(
+            {
+                "final_upper_tolerance": settings.final_upper_tolerance,
+                "outer_maximum_iterations": settings.outer_maximum_iterations,
+                "outer_function_tolerance": settings.outer_function_tolerance,
+                "perform_outer_refinement": settings.perform_outer_refinement,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    )
+    return digest.hexdigest()
 
 
 @dataclass
@@ -1218,11 +1383,50 @@ class ContinuationStageRecord:
     normalized_gap: float
     primal: FloatArray
     error: str | None = None
+    constraint_multipliers: FloatArray | None = None
 
     def as_dict(self) -> dict[str, Any]:
         value = asdict(self)
         value["primal"] = self.primal.tolist()
+        value["constraint_multipliers"] = (
+            None
+            if self.constraint_multipliers is None
+            else self.constraint_multipliers.tolist()
+        )
         return value
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "ContinuationStageRecord":
+        return cls(
+            tau=_float_or_nan(value.get("tau")),
+            status=str(value.get("status", "unknown")),
+            solver_success=bool(value.get("solver_success", False)),
+            iterations=int(value.get("iterations", 0)),
+            elapsed_seconds=_float_or_nan(value.get("elapsed_seconds")),
+            feasible=bool(value.get("feasible", False)),
+            equality_residual=_float_or_nan(value.get("equality_residual")),
+            inequality_residual=_float_or_nan(value.get("inequality_residual")),
+            bound_residual=_float_or_nan(value.get("bound_residual")),
+            normalized_gap=_float_or_nan(value.get("normalized_gap")),
+            primal=np.asarray(value.get("primal"), dtype=np.float64).reshape(-1),
+            error=None if value.get("error") is None else str(value["error"]),
+            constraint_multipliers=(
+                None
+                if value.get("constraint_multipliers") is None
+                else np.asarray(
+                    value["constraint_multipliers"], dtype=np.float64
+                ).reshape(-1)
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class _ContinuationSolveResult:
+    """One stage plus IPOPT's outer duals for the next gap stage."""
+
+    stage: ContinuationStageRecord
+    bound_multipliers: FloatArray | None
+    constraint_multipliers: FloatArray | None
 
 
 @dataclass(frozen=True)
@@ -1235,9 +1439,32 @@ class FeasibilityRecord:
     trust_residual: float
     maximum_upper_residual: float
     feasible: bool
+    projection_reproduction_residual: float | None = None
+    projection_reproduction_passed: bool | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "FeasibilityRecord":
+        return cls(
+            finite=bool(value.get("finite", False)),
+            cold_projection=bool(value.get("cold_projection", False)),
+            projection_accepted=bool(value.get("projection_accepted", False)),
+            control_bound_residual=_float_or_nan(value.get("control_bound_residual")),
+            engineering_residual=_float_or_nan(value.get("engineering_residual")),
+            trust_residual=_float_or_nan(value.get("trust_residual")),
+            maximum_upper_residual=_float_or_nan(value.get("maximum_upper_residual")),
+            feasible=bool(value.get("feasible", False)),
+            projection_reproduction_residual=_optional_float(
+                value.get("projection_reproduction_residual")
+            ),
+            projection_reproduction_passed=(
+                None
+                if value.get("projection_reproduction_passed") is None
+                else bool(value["projection_reproduction_passed"])
+            ),
+        )
 
 
 @dataclass(frozen=True)
@@ -1252,6 +1479,19 @@ class StationarityRecord:
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
 
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "StationarityRecord":
+        return cls(
+            classification=str(value.get("classification", "stationarity_unresolved")),
+            resolved=bool(value.get("resolved", False)),
+            stationary=bool(value.get("stationary", False)),
+            lower_qp_kkt_passed=bool(value.get("lower_qp_kkt_passed", False)),
+            upper_stationarity_residual=_optional_float(
+                value.get("upper_stationarity_residual")
+            ),
+            reason=str(value.get("reason", "checkpoint did not record a reason")),
+        )
+
 
 @dataclass(frozen=True)
 class OuterRefinementRecord:
@@ -1263,9 +1503,70 @@ class OuterRefinementRecord:
     elapsed_seconds: float
     initial_objective: float | None
     final_objective: float | None
+    cold_qp_resolutions: int = 0
+    derivative_error: str | None = None
+    lower_active_set: dict[str, Any] | None = None
+    upper_kkt: dict[str, Any] | None = None
+    projection_reproduction_residual: float | None = None
+    projection_reproduction_passed: bool | None = None
+    method: str = "exact_qp_active_set_slsqp"
+    fallback_used: bool = False
+    fallback_method: str | None = None
+    fallback_solver_success: bool | None = None
+    fallback_status: str | None = None
+    fallback_iterations: int = 0
+    fallback_evaluations: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "OuterRefinementRecord":
+        lower = value.get("lower_active_set")
+        upper = value.get("upper_kkt")
+        return cls(
+            attempted=bool(value.get("attempted", False)),
+            solver_success=bool(value.get("solver_success", False)),
+            status=str(value.get("status", "unknown")),
+            iterations=int(value.get("iterations", 0)),
+            evaluations=int(value.get("evaluations", 0)),
+            elapsed_seconds=_float_or_nan(value.get("elapsed_seconds")),
+            initial_objective=_optional_float(value.get("initial_objective")),
+            final_objective=_optional_float(value.get("final_objective")),
+            cold_qp_resolutions=int(value.get("cold_qp_resolutions", 0)),
+            derivative_error=(
+                None if value.get("derivative_error") is None else str(value["derivative_error"])
+            ),
+            lower_active_set=None if lower is None else dict(lower),
+            upper_kkt=None if upper is None else dict(upper),
+            projection_reproduction_residual=_optional_float(
+                value.get("projection_reproduction_residual")
+            ),
+            projection_reproduction_passed=(
+                None
+                if value.get("projection_reproduction_passed") is None
+                else bool(value["projection_reproduction_passed"])
+            ),
+            method=str(value.get("method", "exact_qp_active_set_slsqp")),
+            fallback_used=bool(value.get("fallback_used", False)),
+            fallback_method=(
+                None
+                if value.get("fallback_method") is None
+                else str(value["fallback_method"])
+            ),
+            fallback_solver_success=(
+                None
+                if value.get("fallback_solver_success") is None
+                else bool(value["fallback_solver_success"])
+            ),
+            fallback_status=(
+                None
+                if value.get("fallback_status") is None
+                else str(value["fallback_status"])
+            ),
+            fallback_iterations=int(value.get("fallback_iterations", 0)),
+            fallback_evaluations=int(value.get("fallback_evaluations", 0)),
+        )
 
 
 @dataclass(frozen=True)
@@ -1285,6 +1586,8 @@ class FinalCandidateRecord:
     feasibility: FeasibilityRecord
     stationarity: StationarityRecord
     status: str
+    lower_active_set: dict[str, Any] | None = None
+    upper_kkt: dict[str, Any] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -1301,12 +1604,115 @@ class FinalCandidateRecord:
             "trust_values": self.trust_values.tolist(),
             "projection": {
                 "accepted": self.projection.accepted,
+                "state": self.projection.state.tolist(),
+                "displacement": self.projection.displacement.tolist(),
+                "equality_multipliers": self.projection.equality_multipliers.tolist(),
+                "inequality_multipliers": self.projection.inequality_multipliers.tolist(),
+                "inequality_slack": self.projection.inequality_slack.tolist(),
                 "diagnostics": self.projection.diagnostics.as_dict(),
             },
             "feasibility": self.feasibility.as_dict(),
             "stationarity": self.stationarity.as_dict(),
             "status": self.status,
+            "lower_active_set": self.lower_active_set,
+            "upper_kkt": self.upper_kkt,
         }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "FinalCandidateRecord":
+        projection_value = value["projection"]
+        diagnostics_value = projection_value["diagnostics"]
+        diagnostics = ProjectionDiagnostics(
+            status=str(diagnostics_value.get("status", "unknown")),
+            status_value=int(diagnostics_value.get("status_value", 0)),
+            iterations=int(diagnostics_value.get("iterations", 0)),
+            equality_rank_tolerance=_float_or_nan(
+                diagnostics_value.get("equality_rank_tolerance")
+            ),
+            equality_smallest_singular_value=_float_or_nan(
+                diagnostics_value.get("equality_smallest_singular_value")
+            ),
+            equality_condition_number=_float_or_nan(
+                diagnostics_value.get("equality_condition_number")
+            ),
+            equality_residual=_float_or_nan(
+                diagnostics_value.get("equality_residual")
+            ),
+            inequality_residual=_float_or_nan(
+                diagnostics_value.get("inequality_residual")
+            ),
+            nonnegativity_residual=_float_or_nan(
+                diagnostics_value.get("nonnegativity_residual")
+            ),
+            dual_feasibility_residual=_float_or_nan(
+                diagnostics_value.get("dual_feasibility_residual")
+            ),
+            stationarity_residual=_float_or_nan(
+                diagnostics_value.get("stationarity_residual")
+            ),
+            complementarity_residual=_float_or_nan(
+                diagnostics_value.get("complementarity_residual")
+            ),
+            retried_cold=bool(diagnostics_value.get("retried_cold", False)),
+            active_inequality_count=int(
+                diagnostics_value.get("active_inequality_count", 0)
+            ),
+            multipliers_reconstructed=bool(
+                diagnostics_value.get("multipliers_reconstructed", False)
+            ),
+            solver_attempts=int(diagnostics_value.get("solver_attempts", 1)),
+            fallback_used=bool(diagnostics_value.get("fallback_used", False)),
+        )
+        projection = ProjectionResult(
+            state=np.asarray(projection_value.get("state"), dtype=np.float64).reshape(-1),
+            displacement=np.asarray(
+                projection_value.get("displacement"), dtype=np.float64
+            ).reshape(-1),
+            equality_multipliers=np.asarray(
+                projection_value.get("equality_multipliers"), dtype=np.float64
+            ).reshape(-1),
+            inequality_multipliers=np.asarray(
+                projection_value.get("inequality_multipliers"), dtype=np.float64
+            ).reshape(-1),
+            inequality_slack=np.asarray(
+                projection_value.get("inequality_slack"), dtype=np.float64
+            ).reshape(-1),
+            diagnostics=diagnostics,
+            accepted=bool(projection_value.get("accepted", False)),
+        )
+        lower = value.get("lower_active_set")
+        upper = value.get("upper_kkt")
+        return cls(
+            normalized_controls=np.asarray(
+                value.get("normalized_controls"), dtype=np.float64
+            ).reshape(-1),
+            theta=np.asarray(value.get("theta"), dtype=np.float64).reshape(-1),
+            raw=np.asarray(value.get("raw"), dtype=np.float64).reshape(-1),
+            projected=np.asarray(value.get("projected"), dtype=np.float64).reshape(-1),
+            displacement=np.asarray(
+                value.get("displacement"), dtype=np.float64
+            ).reshape(-1),
+            objective=_float_or_nan(value.get("objective")),
+            objective_components=np.asarray(
+                value.get("objective_components"), dtype=np.float64
+            ).reshape(-1),
+            engineering_rows=np.asarray(
+                value.get("engineering_rows"), dtype=np.float64
+            ).reshape(-1),
+            engineering_quantities=np.asarray(
+                value.get("engineering_quantities"), dtype=np.float64
+            ).reshape(-1),
+            trust_rows=np.asarray(value.get("trust_rows"), dtype=np.float64).reshape(-1),
+            trust_values=np.asarray(
+                value.get("trust_values"), dtype=np.float64
+            ).reshape(-1),
+            projection=projection,
+            feasibility=FeasibilityRecord.from_dict(value["feasibility"]),
+            stationarity=StationarityRecord.from_dict(value["stationarity"]),
+            status=str(value.get("status", "unknown")),
+            lower_active_set=None if lower is None else dict(lower),
+            upper_kkt=None if upper is None else dict(upper),
+        )
 
 
 @dataclass(frozen=True)
@@ -1318,6 +1724,8 @@ class SurrogateStartResult:
     final: FinalCandidateRecord | None
     status: str
     error: str | None = None
+    resume_contract: str | None = None
+    protocol: str = LEGACY_SURROGATE_PROTOCOL
 
     @property
     def feasible(self) -> bool:
@@ -1336,7 +1744,39 @@ class SurrogateStartResult:
             "final": None if self.final is None else self.final.as_dict(),
             "status": self.status,
             "error": self.error,
+            "resume_contract": self.resume_contract,
+            "protocol": self.protocol,
         }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "SurrogateStartResult":
+        final_value = value.get("final")
+        return cls(
+            start_index=int(value["start_index"]),
+            initial_normalized_controls=np.asarray(
+                value.get("initial_normalized_controls"), dtype=np.float64
+            ).reshape(-1),
+            stages=tuple(
+                ContinuationStageRecord.from_dict(item)
+                for item in value.get("stages", ())
+            ),
+            outer_refinement=OuterRefinementRecord.from_dict(
+                value.get("outer_refinement", {})
+            ),
+            final=(
+                None
+                if final_value is None
+                else FinalCandidateRecord.from_dict(final_value)
+            ),
+            status=str(value.get("status", "unknown")),
+            error=None if value.get("error") is None else str(value["error"]),
+            resume_contract=(
+                None
+                if value.get("resume_contract") is None
+                else str(value["resume_contract"])
+            ),
+            protocol=str(value.get("protocol", LEGACY_SURROGATE_PROTOCOL)),
+        )
 
 
 @dataclass(frozen=True)
@@ -1344,12 +1784,14 @@ class SurrogateMultistartResult:
     starts: tuple[SurrogateStartResult, ...]
     selected: SurrogateStartResult | None
     status: str
+    protocol: str = LEGACY_SURROGATE_PROTOCOL
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "starts": [result.as_dict() for result in self.starts],
             "selected_start": None if self.selected is None else self.selected.start_index,
             "status": self.status,
+            "protocol": self.protocol,
         }
 
 
@@ -1358,12 +1800,13 @@ def _solve_continuation_stage(
     case: SurrogateCase,
     initial: FloatArray,
     settings: SurrogateSolverSettings,
-) -> ContinuationStageRecord:
+    dual_warm_start: tuple[npt.ArrayLike, npt.ArrayLike] | None = None,
+) -> _ContinuationSolveResult:
     if problem.solver is None:
         raise SurrogateNLPError("the continuation problem was built without an NLP solver.")
     started = perf_counter()
     try:
-        solution = problem.solver(
+        arguments: dict[str, Any] = dict(
             x0=initial,
             p=case.parameter_vector(problem.assets),
             lbx=problem.lower_bounds,
@@ -1371,8 +1814,28 @@ def _solve_continuation_stage(
             lbg=problem.constraint_lower_bounds,
             ubg=problem.constraint_upper_bounds,
         )
+        if dual_warm_start is not None:
+            arguments["lam_x0"] = _vector(
+                dual_warm_start[0], problem.variable_count, "IPOPT bound warm start"
+            )
+            arguments["lam_g0"] = _vector(
+                dual_warm_start[1],
+                problem.constraint_lower_bounds.size,
+                "IPOPT constraint warm start",
+            )
+        solution = problem.solver(**arguments)
         elapsed = perf_counter() - started
         primal = _flat(solution["x"])
+        bound_multipliers = _vector(
+            _flat(solution["lam_x"]),
+            problem.variable_count,
+            "IPOPT bound multipliers",
+        )
+        constraint_multipliers = _vector(
+            _flat(solution["lam_g"]),
+            problem.constraint_lower_bounds.size,
+            "IPOPT constraint multipliers",
+        )
         evaluated = evaluate_surrogate_problem(problem, primal, case)
         equality_residual = float(
             np.max(np.abs(evaluated["equality"]), initial=0.0)
@@ -1398,33 +1861,42 @@ def _solve_continuation_stage(
             and bound_residual <= settings.stage_feasibility_tolerance
         )
         stats = problem.solver.stats()
-        return ContinuationStageRecord(
-            tau=problem.tau,
-            status=str(stats.get("return_status", "unknown")),
-            solver_success=bool(stats.get("success", False)),
-            iterations=int(stats.get("iter_count", 0)),
-            elapsed_seconds=elapsed,
-            feasible=feasible,
-            equality_residual=equality_residual,
-            inequality_residual=inequality_residual,
-            bound_residual=bound_residual,
-            normalized_gap=float(evaluated["normalized_gap"]),
-            primal=primal,
+        return _ContinuationSolveResult(
+            stage=ContinuationStageRecord(
+                tau=problem.tau,
+                status=str(stats.get("return_status", "unknown")),
+                solver_success=bool(stats.get("success", False)),
+                iterations=int(stats.get("iter_count", 0)),
+                elapsed_seconds=elapsed,
+                feasible=feasible,
+                equality_residual=equality_residual,
+                inequality_residual=inequality_residual,
+                bound_residual=bound_residual,
+                normalized_gap=float(evaluated["normalized_gap"]),
+                primal=primal,
+                constraint_multipliers=constraint_multipliers,
+            ),
+            bound_multipliers=bound_multipliers,
+            constraint_multipliers=constraint_multipliers,
         )
     except Exception as exc:
-        return ContinuationStageRecord(
-            tau=problem.tau,
-            status="solver_exception",
-            solver_success=False,
-            iterations=0,
-            elapsed_seconds=perf_counter() - started,
-            feasible=False,
-            equality_residual=np.inf,
-            inequality_residual=np.inf,
-            bound_residual=np.inf,
-            normalized_gap=np.inf,
-            primal=initial.copy(),
-            error=f"{type(exc).__name__}: {exc}",
+        return _ContinuationSolveResult(
+            stage=ContinuationStageRecord(
+                tau=problem.tau,
+                status="solver_exception",
+                solver_success=False,
+                iterations=0,
+                elapsed_seconds=perf_counter() - started,
+                feasible=False,
+                equality_residual=np.inf,
+                inequality_residual=np.inf,
+                bound_residual=np.inf,
+                normalized_gap=np.inf,
+                primal=initial.copy(),
+                error=f"{type(exc).__name__}: {exc}",
+            ),
+            bound_multipliers=None,
+            constraint_multipliers=None,
         )
 
 
@@ -1558,99 +2030,153 @@ def _outer_refine(
     case: SurrogateCase,
     initial: FloatArray,
     settings: SurrogateSolverSettings,
-) -> tuple[FloatArray, OuterRefinementRecord]:
-    initial_evaluation = _exact_evaluation(problem, case, initial)
-    initial_feasibility = _feasibility_record(initial_evaluation, settings)
-    if not initial_feasibility.feasible or not settings.perform_outer_refinement:
-        return initial.copy(), OuterRefinementRecord(
+) -> tuple[FinalCandidateRecord | None, OuterRefinementRecord]:
+    """Run the seven-variable exact-QP active-set refinement.
+
+    The import is local because :mod:`closed_loop.v3_active_set` builds on the
+    public data structures in this module.  The implementation has no
+    finite-difference fallback: an unstable lower active set is retained as
+    an explicit stationarity-unresolved result.
+    """
+
+    if not settings.perform_outer_refinement:
+        return None, OuterRefinementRecord(
             attempted=False,
             solver_success=False,
-            status=(
-                "disabled"
-                if not settings.perform_outer_refinement
-                else "initial_exact_qp_candidate_infeasible"
-            ),
+            status="disabled",
             iterations=0,
-            evaluations=1,
+            evaluations=0,
             elapsed_seconds=0.0,
-            initial_objective=(
-                initial_evaluation.objective
-                if np.isfinite(initial_evaluation.objective)
-                else None
-            ),
+            initial_objective=None,
             final_objective=None,
         )
-    cache: dict[bytes, _ExactEvaluation] = {initial.tobytes(): initial_evaluation}
 
-    def evaluate(value: npt.ArrayLike) -> _ExactEvaluation:
-        normalized = np.asarray(value, dtype=np.float64).reshape(7)
-        key = normalized.tobytes()
-        if key not in cache:
-            cache[key] = _exact_evaluation(problem, case, normalized)
-        return cache[key]
+    from .v3_active_set import (  # local import avoids a module cycle
+        ActiveSetRefinementSettings,
+        ExactQPActiveSetRefiner,
+    )
 
-    def objective(value: npt.ArrayLike) -> float:
-        evaluated = evaluate(value)
-        if not evaluated.projection.accepted or not np.isfinite(evaluated.objective):
-            return 1.0e20
-        return evaluated.objective
+    active_settings = ActiveSetRefinementSettings(
+        upper_acceptance_tolerance=settings.final_upper_tolerance,
+        maximum_iterations=settings.outer_maximum_iterations,
+        function_tolerance=settings.outer_function_tolerance,
+    )
+    exact = ExactQPActiveSetRefiner(
+        problem.assets,
+        case,
+        problem=problem,
+        settings=active_settings,
+        name=f"{problem.name}_outer",
+    ).refine(initial)
+    initial_objective = (
+        None if exact.initial is None else float(exact.initial.objective)
+    )
+    final_objective = None if exact.final is None else float(exact.final.objective)
+    lower_audit = (
+        exact.final.lower_active_set.as_dict()
+        if exact.final is not None
+        else (
+            None
+            if exact.derivative_audit is None
+            else exact.derivative_audit.as_dict()
+        )
+    )
+    upper_audit = None if exact.upper_kkt is None else exact.upper_kkt.as_dict()
+    record = OuterRefinementRecord(
+        attempted=True,
+        solver_success=exact.solver_success,
+        status=exact.solver_status,
+        iterations=exact.iterations,
+        evaluations=exact.distinct_trials,
+        elapsed_seconds=exact.elapsed_seconds,
+        initial_objective=initial_objective,
+        final_objective=final_objective,
+        cold_qp_resolutions=exact.cold_qp_resolutions,
+        derivative_error=exact.derivative_error,
+        lower_active_set=lower_audit,
+        upper_kkt=upper_audit,
+        projection_reproduction_residual=exact.state_reproduction_residual,
+        projection_reproduction_passed=exact.state_reproduction_passed,
+    )
+    if exact.final is None or exact.upper_kkt is None:
+        return None, record
 
-    def constraints(value: npt.ArrayLike) -> FloatArray:
-        evaluated = evaluate(value)
-        if not evaluated.projection.accepted:
-            return np.full(
-                len(problem.engineering_names) + len(problem.trust_names),
-                -1.0e6,
-            )
-        return -np.concatenate((evaluated.engineering, evaluated.trust))
-
-    started = perf_counter()
-    try:
-        result = minimize(
-            objective,
-            initial,
-            method="SLSQP",
-            bounds=[(0.0, 1.0)] * 7,
-            constraints={"type": "ineq", "fun": constraints},
-            options={
-                "maxiter": settings.outer_maximum_iterations,
-                "ftol": settings.outer_function_tolerance,
-                "disp": False,
-            },
+    trial = exact.final
+    parameter = case.parameter_vector(problem.assets)
+    outputs = problem.upper_from_state_function(
+        trial.normalized_controls,
+        parameter,
+        trial.projected_state,
+    )
+    evaluation = _ExactEvaluation(
+        normalized=trial.normalized_controls.copy(),
+        projection=trial.projection,
+        objective=float(outputs[0]),
+        engineering=_flat(outputs[1]),
+        trust=_flat(outputs[2]),
+        components=_flat(outputs[3]),
+        quantities=_flat(outputs[4]),
+        trust_values=_flat(outputs[5]),
+    )
+    feasibility = _feasibility_record(evaluation, settings)
+    reproduction_passed = exact.state_reproduction_passed is True
+    feasibility = replace(
+        feasibility,
+        feasible=bool(feasibility.feasible and reproduction_passed),
+        projection_reproduction_residual=exact.state_reproduction_residual,
+        projection_reproduction_passed=exact.state_reproduction_passed,
+    )
+    upper = exact.upper_kkt
+    stationary = bool(upper.stationary and reproduction_passed)
+    unresolved = not stationary
+    stationarity = StationarityRecord(
+        classification=(
+            upper.classification
+            if reproduction_passed
+            else "projection_reproduction_failed"
+        ),
+        resolved=not unresolved,
+        stationary=stationary,
+        lower_qp_kkt_passed=bool(
+            trial.projection.accepted and trial.lower_active_set.stable
+        ),
+        upper_stationarity_residual=float(upper.stationarity_residual),
+        reason=(
+            upper.reason
+            if reproduction_passed
+            else "independent cold-QP state reproduction failed"
+        ),
+    )
+    status = (
+        "projection_reproduction_failed"
+        if not reproduction_passed
+        else "validated_stationary"
+        if feasibility.feasible and stationarity.stationary
+        else (
+            "validated_feasible_stationarity_unresolved"
+            if feasibility.feasible
+            else "final_feasibility_failed"
         )
-        elapsed = perf_counter() - started
-        proposed = np.asarray(result.x, dtype=np.float64)
-        candidates = [initial_evaluation, evaluate(proposed)]
-        feasible = [
-            item
-            for item in candidates
-            if _feasibility_record(item, settings).feasible
-        ]
-        selected = min(
-            feasible,
-            key=lambda item: (item.objective, *item.normalized.tolist()),
-        )
-        return selected.normalized.copy(), OuterRefinementRecord(
-            attempted=True,
-            solver_success=bool(result.success),
-            status=str(result.message),
-            iterations=int(result.nit),
-            evaluations=len(cache),
-            elapsed_seconds=elapsed,
-            initial_objective=initial_evaluation.objective,
-            final_objective=selected.objective,
-        )
-    except Exception as exc:
-        return initial.copy(), OuterRefinementRecord(
-            attempted=True,
-            solver_success=False,
-            status=f"{type(exc).__name__}: {exc}",
-            iterations=0,
-            evaluations=len(cache),
-            elapsed_seconds=perf_counter() - started,
-            initial_objective=initial_evaluation.objective,
-            final_objective=initial_evaluation.objective,
-        )
+    )
+    return FinalCandidateRecord(
+        normalized_controls=trial.normalized_controls.copy(),
+        theta=trial.physical_controls.copy(),
+        raw=trial.raw_state.copy(),
+        projected=trial.projected_state.copy(),
+        displacement=trial.projection.displacement.copy(),
+        objective=evaluation.objective,
+        objective_components=evaluation.components,
+        engineering_rows=evaluation.engineering,
+        engineering_quantities=evaluation.quantities,
+        trust_rows=evaluation.trust,
+        trust_values=evaluation.trust_values,
+        projection=trial.projection,
+        feasibility=feasibility,
+        stationarity=stationarity,
+        status=status,
+        lower_active_set=trial.lower_active_set.as_dict(),
+        upper_kkt=upper.as_dict(),
+    ), record
 
 
 def solve_surrogate_start(
@@ -1661,7 +2187,7 @@ def solve_surrogate_start(
     start_index: int,
     settings: SurrogateSolverSettings | None = None,
 ) -> SurrogateStartResult:
-    """Run one start through all four gap stages and exact-QP refinement."""
+    """Run one start through every gap stage and exact-QP refinement."""
 
     settings = settings or SurrogateSolverSettings()
     if tuple(problem.tau for problem in problems) != GAP_CONTINUATION:
@@ -1669,6 +2195,7 @@ def solve_surrogate_start(
     assets = problems[0].assets
     if any(problem.assets is not assets for problem in problems):
         raise ValueError("all continuation stages must share one assets object.")
+    resume_contract = surrogate_start_resume_contract(assets, case, settings)
     initial_normalized = _vector(normalized_start, 7, "normalized_start")
     stages: list[ContinuationStageRecord] = []
     try:
@@ -1686,9 +2213,14 @@ def solve_surrogate_start(
             final=None,
             status="initial_projection_failed",
             error=f"{type(exc).__name__}: {exc}",
+            resume_contract=resume_contract,
         )
+    dual_warm_start: tuple[FloatArray, FloatArray] | None = None
     for problem in problems:
-        stage = _solve_continuation_stage(problem, case, primal, settings)
+        solved = _solve_continuation_stage(
+            problem, case, primal, settings, dual_warm_start
+        )
+        stage = solved.stage
         stages.append(stage)
         primal = stage.primal
         if not stage.feasible:
@@ -1702,22 +2234,67 @@ def solve_surrogate_start(
                 final=None,
                 status="continuation_failed",
                 error=stage.error,
+                resume_contract=resume_contract,
             )
+        if solved.bound_multipliers is None or solved.constraint_multipliers is None:
+            raise AssertionError("a feasible IPOPT stage did not return its dual solution.")
+        dual_warm_start = (
+            solved.bound_multipliers,
+            solved.constraint_multipliers,
+        )
     normalized = primal[problems[-1].theta_slice]
     # Only an independently projected feasible point is eligible for exact-QP
     # refinement.  The refinement itself cold-solves OSQP at every trial.
     initial_final = audit_exact_candidate(
         problems[-1], case, normalized, settings=settings
     )
+    refinement_error: str | None = None
     if initial_final.feasibility.feasible:
-        refined, refinement = _outer_refine(
-            problems[-1], case, normalized, settings
-        )
-        # This is an additional, uncached cold OSQP replay for the reportable
-        # endpoint, even if SLSQP returned its initial vector.
-        final = audit_exact_candidate(
-            problems[-1], case, refined, settings=settings
-        )
+        try:
+            refined_final, refinement = _outer_refine(
+                problems[-1], case, normalized, settings
+            )
+        except Exception as exc:
+            refinement_error = f"{type(exc).__name__}: {exc}"
+            refined_final = None
+            refinement = OuterRefinementRecord(
+                attempted=True,
+                solver_success=False,
+                status="unexpected_refinement_exception",
+                iterations=0,
+                evaluations=0,
+                elapsed_seconds=0.0,
+                initial_objective=(
+                    initial_final.objective
+                    if np.isfinite(initial_final.objective)
+                    else None
+                ),
+                final_objective=None,
+                derivative_error=refinement_error,
+            )
+        if refined_final is not None:
+            # The active-set refiner's endpoint is already an additional,
+            # uncached cold OSQP replay with an independent upper KKT audit.
+            final = refined_final
+        else:
+            reason = refinement.derivative_error or refinement.status
+            final = replace(
+                initial_final,
+                stationarity=StationarityRecord(
+                    classification="stationarity_unresolved",
+                    resolved=False,
+                    stationary=False,
+                    lower_qp_kkt_passed=bool(initial_final.projection.accepted),
+                    upper_stationarity_residual=None,
+                    reason=(
+                        "Exact-QP active-set refinement was unavailable; the "
+                        f"independently projected continuation incumbent is retained: {reason}"
+                    ),
+                ),
+                status="validated_feasible_stationarity_unresolved",
+                lower_active_set=refinement.lower_active_set,
+                upper_kkt=refinement.upper_kkt,
+            )
     else:
         refinement = OuterRefinementRecord(
             False,
@@ -1737,7 +2314,53 @@ def solve_surrogate_start(
         outer_refinement=refinement,
         final=final,
         status=final.status,
+        error=refinement_error,
+        resume_contract=resume_contract,
     )
+
+
+def _validated_completed_starts(
+    completed_starts: Mapping[int, SurrogateStartResult] | None,
+    normalized_starts: FloatArray,
+    expected_contract: str,
+) -> dict[int, SurrogateStartResult]:
+    if completed_starts is None:
+        return {}
+    if not isinstance(completed_starts, Mapping):
+        raise TypeError("completed_starts must be an index-to-SurrogateStartResult mapping.")
+    validated: dict[int, SurrogateStartResult] = {}
+    for raw_index, result in completed_starts.items():
+        if isinstance(raw_index, bool) or not isinstance(raw_index, (int, np.integer)):
+            raise TypeError("every completed-start key must be an integer index.")
+        index = int(raw_index)
+        if not 0 <= index < normalized_starts.shape[0]:
+            raise ValueError(f"completed start index {index} is outside the requested schedule.")
+        if not isinstance(result, SurrogateStartResult):
+            raise TypeError("every completed-start value must be a SurrogateStartResult.")
+        if result.start_index != index:
+            raise ValueError(
+                f"completed start key {index} does not match result index {result.start_index}."
+            )
+        initial = np.asarray(result.initial_normalized_controls, dtype=np.float64)
+        if initial.shape != (7,) or not np.array_equal(initial, normalized_starts[index]):
+            raise ValueError(
+                f"completed start {index} does not match its declared normalized control."
+            )
+        if result.resume_contract != expected_contract:
+            raise ValueError(
+                f"completed start {index} has a stale case/settings resume contract."
+            )
+        stage_taus = tuple(float(stage.tau) for stage in result.stages)
+        if stage_taus != GAP_CONTINUATION[: len(stage_taus)]:
+            raise ValueError(
+                f"completed start {index} has a non-prefix continuation schedule."
+            )
+        if result.final is not None and stage_taus != GAP_CONTINUATION:
+            raise ValueError(
+                f"completed start {index} reports a final candidate before all stages."
+            )
+        validated[index] = result
+    return validated
 
 
 def solve_surrogate_multistart(
@@ -1746,9 +2369,16 @@ def solve_surrogate_multistart(
     *,
     settings: SurrogateSolverSettings | None = None,
     starts: npt.ArrayLike | None = None,
+    completed_starts: Mapping[int, SurrogateStartResult] | None = None,
     name: str = "v3_surrogate",
+    progress_callback: Callable[[SurrogateStartResult], None] | None = None,
+    allow_reduced_starts: bool = False,
 ) -> SurrogateMultistartResult:
-    """Run all nine deterministic starts through the exact v3 gap schedule."""
+    """Run the deterministic starts through the exact v3 gap schedule.
+
+    Production keeps the declared nine-start contract.  A caller must opt in
+    explicitly to fewer starts for an article-ineligible smoke test.
+    """
 
     settings = settings or SurrogateSolverSettings()
     normalized_starts = (
@@ -1756,41 +2386,65 @@ def solve_surrogate_multistart(
         if starts is None
         else np.asarray(starts, dtype=np.float64)
     )
-    if normalized_starts.shape != (9, 7) or not np.all(np.isfinite(normalized_starts)):
-        raise ValueError("starts must be a finite 9-by-7 matrix.")
+    if (
+        normalized_starts.ndim != 2
+        or normalized_starts.shape[1:] != (7,)
+        or normalized_starts.shape[0] < 1
+        or (not allow_reduced_starts and normalized_starts.shape[0] != 9)
+        or not np.all(np.isfinite(normalized_starts))
+    ):
+        requirement = "one or more" if allow_reduced_starts else "exactly nine"
+        raise ValueError(f"starts must contain {requirement} finite seven-control rows.")
     if np.any(normalized_starts < 0.0) or np.any(normalized_starts > 1.0):
         raise ValueError("all normalized starts must lie in [0, 1].")
-    problems = tuple(
-        build_surrogate_nlp(
-            assets,
-            tau,
-            settings=settings,
-            name=f"{name}_{case.case_id}_{index}",
-            compile_solver=True,
-        )
-        for index, tau in enumerate(GAP_CONTINUATION)
+    expected_contract = surrogate_start_resume_contract(assets, case, settings)
+    resumed = _validated_completed_starts(
+        completed_starts,
+        normalized_starts,
+        expected_contract,
     )
-    results = tuple(
-        solve_surrogate_start(
+    problems: tuple[SurrogateNLP, ...] = ()
+    if len(resumed) < normalized_starts.shape[0]:
+        problems = tuple(
+            build_surrogate_nlp(
+                assets,
+                tau,
+                settings=settings,
+                name=f"{name}_{case.case_id}_{index}",
+                compile_solver=True,
+            )
+            for index, tau in enumerate(GAP_CONTINUATION)
+        )
+    completed: dict[int, SurrogateStartResult] = dict(resumed)
+    for index, normalized in enumerate(normalized_starts):
+        if index in completed:
+            continue
+        result = solve_surrogate_start(
             problems,
             case,
             normalized,
             start_index=index,
             settings=settings,
         )
-        for index, normalized in enumerate(normalized_starts)
-    )
+        if result.resume_contract != expected_contract:
+            raise AssertionError("a newly solved start returned an inconsistent resume contract.")
+        completed[index] = result
+        if progress_callback is not None:
+            progress_callback(result)
+    results = tuple(completed[index] for index in range(normalized_starts.shape[0]))
     feasible = [result for result in results if result.feasible and result.final is not None]
     if not feasible:
         return SurrogateMultistartResult(results, None, "no_validated_feasible_start")
-    # No candidate is promoted to stationary by this module.  The stable
-    # active-set sensitivity and upper KKT reconstruction remain an explicit
-    # downstream audit, so selection is among validated local incumbents.
-    minimum = min(result.final.objective for result in feasible if result.final is not None)
+    # The manuscript selects among stationary feasible points whenever any
+    # exist.  Feasible stationarity-unresolved incumbents remain reportable,
+    # but cannot displace a genuinely stationary candidate.
+    stationary = [result for result in feasible if result.stationary]
+    eligible = stationary if stationary else feasible
+    minimum = min(result.final.objective for result in eligible if result.final is not None)
     tolerance = 1.0e-10 * max(1.0, abs(minimum))
     tied = [
         result
-        for result in feasible
+        for result in eligible
         if result.final is not None and result.final.objective <= minimum + tolerance
     ]
     selected = min(
@@ -1803,23 +2457,591 @@ def solve_surrogate_multistart(
     return SurrogateMultistartResult(
         results,
         selected,
-        "selected_stationarity_unresolved",
+        "selected_stationary" if stationary else "selected_stationarity_unresolved",
+    )
+
+
+@dataclass(frozen=True)
+class _DerivativeFreeEvaluation:
+    normalized_controls: FloatArray
+    candidate: FinalCandidateRecord | None
+    error: str | None
+
+
+def _derivative_free_exact_qp_refine(
+    problem: SurrogateNLP,
+    case: SurrogateCase,
+    initial: FloatArray,
+    settings: SurrogateSolverSettings,
+    active_record: OuterRefinementRecord,
+) -> tuple[FinalCandidateRecord | None, OuterRefinementRecord]:
+    """Continue an unavailable active-set derivative with exact-QP COBYQA.
+
+    Bounds are unrelaxable in COBYQA and every distinct in-box point is
+    evaluated by a newly initialized projection QP. Objective and nonlinear
+    constraint callbacks share only the resulting value cache. The selected
+    visited point is then cold-replayed independently, and analytical
+    active-set/upper-KKT auditing is attempted again only at that endpoint.
+    """
+
+    from .v3_active_set import (  # local import avoids a module cycle
+        ActiveSetDerivativeError,
+        ActiveSetRefinementError,
+        ActiveSetRefinementSettings,
+        ExactQPActiveSetRefiner,
+    )
+
+    started = perf_counter()
+    normalized_initial = _vector(initial, 7, "normalized_start")
+    upper_count = len(problem.engineering_names) + len(problem.trust_names)
+    cache: dict[bytes, _DerivativeFreeEvaluation] = {}
+    cold_qp_resolutions = 0
+    evaluation_errors: list[str] = []
+
+    def evaluate(value: npt.ArrayLike) -> _DerivativeFreeEvaluation:
+        nonlocal cold_qp_resolutions
+        normalized = _vector(value, 7, "derivative-free normalized controls")
+        # COBYQA treats finite bounds as unrelaxable. Retain a small numerical
+        # guard so an implementation-level bound excursion becomes a clean
+        # failed evaluation rather than an out-of-domain physical solve.
+        if np.any(normalized < -1.0e-12) or np.any(normalized > 1.0 + 1.0e-12):
+            key = np.ascontiguousarray(normalized, dtype=np.float64).tobytes()
+            if key not in cache:
+                message = "derivative-free solver requested an out-of-box point"
+                cache[key] = _DerivativeFreeEvaluation(normalized, None, message)
+                evaluation_errors.append(message)
+            return cache[key]
+        normalized = np.clip(normalized, 0.0, 1.0)
+        key = np.ascontiguousarray(normalized, dtype=np.float64).tobytes()
+        if key in cache:
+            return cache[key]
+        if (
+            settings.maximum_wall_time is not None
+            and perf_counter() - started >= settings.maximum_wall_time
+        ):
+            raise TimeoutError("derivative-free exact-QP wall-time limit reached")
+        cold_qp_resolutions += 1
+        try:
+            candidate = audit_exact_candidate(
+                problem,
+                case,
+                normalized,
+                settings=settings,
+            )
+            finite = bool(
+                candidate.feasibility.finite
+                and np.isfinite(candidate.objective)
+                and np.all(np.isfinite(candidate.engineering_rows))
+                and np.all(np.isfinite(candidate.trust_rows))
+            )
+            if not finite:
+                raise SurrogateNLPError(
+                    "exact-QP derivative-free evaluation was non-finite"
+                )
+            item = _DerivativeFreeEvaluation(normalized, candidate, None)
+        except Exception as exc:
+            message = f"{type(exc).__name__}: {exc}"
+            item = _DerivativeFreeEvaluation(normalized, None, message)
+            evaluation_errors.append(message)
+        cache[key] = item
+        return item
+
+    def usable(item: _DerivativeFreeEvaluation) -> bool:
+        return bool(
+            item.candidate is not None
+            and item.candidate.projection.accepted
+            and item.candidate.feasibility.finite
+        )
+
+    def objective(value: npt.ArrayLike) -> float:
+        item = evaluate(value)
+        if usable(item):
+            assert item.candidate is not None
+            return float(item.candidate.objective)
+        distance = float(
+            np.linalg.norm(item.normalized_controls - normalized_initial) ** 2
+        )
+        return 1.0e6 + distance
+
+    def upper_constraints(value: npt.ArrayLike) -> FloatArray:
+        item = evaluate(value)
+        if usable(item):
+            assert item.candidate is not None
+            rows = np.concatenate(
+                (item.candidate.engineering_rows, item.candidate.trust_rows)
+            )
+            if rows.shape != (upper_count,):
+                raise AssertionError(
+                    "derivative-free upper constraints have inconsistent dimensions"
+                )
+            return rows
+        return np.ones(upper_count, dtype=np.float64)
+
+    solver_success = False
+    solver_status = "not_started"
+    iterations = 0
+    proposed = normalized_initial.copy()
+    try:
+        optimized = minimize(
+            objective,
+            normalized_initial,
+            method="COBYQA",
+            bounds=Bounds(np.zeros(7), np.ones(7)),
+            constraints=NonlinearConstraint(
+                upper_constraints,
+                np.full(upper_count, -np.inf),
+                np.zeros(upper_count),
+            ),
+            options={
+                "maxiter": settings.outer_maximum_iterations,
+                "maxfev": settings.outer_maximum_iterations,
+                "initial_tr_radius": 0.25,
+                "final_tr_radius": settings.outer_function_tolerance,
+                "feasibility_tol": settings.final_upper_tolerance,
+                "scale": True,
+                "disp": False,
+            },
+        )
+        proposed = np.clip(
+            _vector(optimized.x, 7, "derivative-free optimizer endpoint"),
+            0.0,
+            1.0,
+        )
+        solver_success = bool(optimized.success)
+        solver_status = str(optimized.message)
+        iterations = int(optimized.nit)
+    except Exception as exc:
+        solver_status = f"{type(exc).__name__}: {exc}"
+
+    # Make the solver endpoint visible even if COBYQA did not request both
+    # callbacks there. A failed endpoint does not displace a feasible visited
+    # point.
+    try:
+        evaluate(proposed)
+    except Exception as exc:
+        evaluation_errors.append(f"{type(exc).__name__}: {exc}")
+
+    candidates = [
+        item.candidate
+        for item in cache.values()
+        if usable(item) and item.candidate is not None
+    ]
+    feasible = [item for item in candidates if item.feasibility.feasible]
+    pool = feasible or candidates
+    selected_cached: FinalCandidateRecord | None = None
+    if pool:
+        if feasible:
+            best_objective = min(item.objective for item in pool)
+            tie = 1.0e-10 * max(1.0, abs(best_objective))
+            selected_cached = min(
+                (item for item in pool if item.objective <= best_objective + tie),
+                key=lambda item: tuple(item.normalized_controls.tolist()),
+            )
+        else:
+            selected_cached = min(
+                pool,
+                key=lambda item: (
+                    item.feasibility.maximum_upper_residual,
+                    item.objective,
+                    *item.normalized_controls.tolist(),
+                ),
+            )
+
+    final: FinalCandidateRecord | None = None
+    reproduction_residual: float | None = None
+    reproduction_passed: bool | None = None
+    endpoint_lower = active_record.lower_active_set
+    endpoint_upper: dict[str, Any] | None = None
+    endpoint_stationary = False
+    endpoint_stationarity_residual: float | None = None
+    endpoint_derivative_error: str | None = None
+
+    if selected_cached is not None:
+        cold_qp_resolutions += 1
+        try:
+            replay = audit_exact_candidate(
+                problem,
+                case,
+                selected_cached.normalized_controls,
+                settings=settings,
+            )
+            reproduction_residual = float(
+                np.linalg.norm(
+                    (replay.projected - selected_cached.projected)
+                    / problem.assets.model.response_scale,
+                    ord=np.inf,
+                )
+            )
+            reproduction_passed = bool(
+                replay.projection.accepted
+                and np.isfinite(reproduction_residual)
+                and reproduction_residual <= 1.0e-8
+            )
+            final = replay
+        except Exception as exc:
+            endpoint_derivative_error = f"endpoint replay: {type(exc).__name__}: {exc}"
+
+    # The derivative-free optimizer itself cannot establish stationarity.
+    # Attempt the full analytical audit at the chosen endpoint; failure is a
+    # recorded scientific result, not an execution stop.
+    if final is not None and reproduction_passed is True:
+        active_settings = ActiveSetRefinementSettings(
+            upper_acceptance_tolerance=settings.final_upper_tolerance,
+            maximum_iterations=settings.outer_maximum_iterations,
+            function_tolerance=settings.outer_function_tolerance,
+        )
+        endpoint_refiner = ExactQPActiveSetRefiner(
+            problem.assets,
+            case,
+            problem=problem,
+            settings=active_settings,
+            name=f"{problem.name}_derivative_free_endpoint",
+        )
+        try:
+            endpoint_trial = endpoint_refiner.evaluate(
+                final.normalized_controls,
+                force_cold=True,
+                independent_final_replay=True,
+            )
+            upper_audit = endpoint_refiner.audit_upper_kkt(endpoint_trial)
+            endpoint_lower = endpoint_trial.lower_active_set.as_dict()
+            endpoint_upper = upper_audit.as_dict()
+            endpoint_stationary = bool(upper_audit.stationary)
+            endpoint_stationarity_residual = float(
+                upper_audit.stationarity_residual
+            )
+        except ActiveSetDerivativeError as exc:
+            endpoint_lower = None if exc.audit is None else exc.audit.as_dict()
+            endpoint_derivative_error = f"endpoint active-set audit: {exc}"
+        except ActiveSetRefinementError as exc:
+            endpoint_derivative_error = f"endpoint active-set audit: {exc}"
+        except Exception as exc:
+            endpoint_derivative_error = (
+                f"endpoint active-set audit: {type(exc).__name__}: {exc}"
+            )
+        finally:
+            cold_qp_resolutions += endpoint_refiner.cold_qp_resolutions
+
+    derivative_messages = [
+        item
+        for item in (active_record.derivative_error, endpoint_derivative_error)
+        if item
+    ]
+    derivative_error = "; ".join(dict.fromkeys(derivative_messages)) or None
+    if final is not None:
+        final_feasibility = replace(
+            final.feasibility,
+            feasible=bool(final.feasibility.feasible and reproduction_passed is True),
+            projection_reproduction_residual=reproduction_residual,
+            projection_reproduction_passed=reproduction_passed,
+        )
+        stationary = bool(
+            final_feasibility.feasible
+            and endpoint_stationary
+            and endpoint_upper is not None
+        )
+        if stationary:
+            stationarity = StationarityRecord(
+                classification="first_order_kkt_stationary_feasible",
+                resolved=True,
+                stationary=True,
+                lower_qp_kkt_passed=True,
+                upper_stationarity_residual=endpoint_stationarity_residual,
+                reason=(
+                    "the derivative-free local endpoint passed independent "
+                    "lower active-set and upper KKT audits"
+                ),
+            )
+            final_status = "validated_stationary"
+        else:
+            stationarity = StationarityRecord(
+                classification=(
+                    "derivative_free_local_candidate_stationarity_unresolved"
+                    if final_feasibility.feasible
+                    else "derivative_free_local_candidate_feasibility_failed"
+                ),
+                resolved=False,
+                stationary=False,
+                lower_qp_kkt_passed=bool(final.projection.accepted),
+                upper_stationarity_residual=endpoint_stationarity_residual,
+                reason=(
+                    "COBYQA returned a derivative-free exact-QP local candidate; "
+                    "stationarity remains unresolved because the independent "
+                    f"active-set/KKT audit did not pass: {derivative_error or solver_status}"
+                ),
+            )
+            final_status = (
+                "validated_feasible_derivative_free_local_candidate_stationarity_unresolved"
+                if final_feasibility.feasible
+                else (
+                    "projection_reproduction_failed"
+                    if reproduction_passed is False
+                    else "final_feasibility_failed"
+                )
+            )
+        final = replace(
+            final,
+            feasibility=final_feasibility,
+            stationarity=stationarity,
+            status=final_status,
+            lower_active_set=endpoint_lower,
+            upper_kkt=endpoint_upper,
+        )
+
+    initial_item = cache.get(
+        np.ascontiguousarray(normalized_initial, dtype=np.float64).tobytes()
+    )
+    initial_objective = (
+        None
+        if initial_item is None or initial_item.candidate is None
+        else float(initial_item.candidate.objective)
+    )
+    fallback_status = solver_status
+    if evaluation_errors:
+        fallback_status = (
+            f"{fallback_status}; failed exact-QP evaluations={len(evaluation_errors)}"
+        )
+    record = OuterRefinementRecord(
+        attempted=True,
+        solver_success=solver_success,
+        status=(
+            "derivative_free_local_candidate"
+            if final is not None
+            else "derivative_free_local_optimization_failed"
+        ),
+        iterations=iterations,
+        evaluations=len(cache),
+        elapsed_seconds=active_record.elapsed_seconds + (perf_counter() - started),
+        initial_objective=initial_objective,
+        final_objective=None if final is None else float(final.objective),
+        cold_qp_resolutions=(
+            active_record.cold_qp_resolutions + cold_qp_resolutions
+        ),
+        derivative_error=derivative_error,
+        lower_active_set=endpoint_lower,
+        upper_kkt=endpoint_upper,
+        projection_reproduction_residual=reproduction_residual,
+        projection_reproduction_passed=reproduction_passed,
+        method="exact_qp_derivative_free_cobyqa",
+        fallback_used=True,
+        fallback_method="COBYQA",
+        fallback_solver_success=solver_success,
+        fallback_status=fallback_status,
+        fallback_iterations=iterations,
+        fallback_evaluations=len(cache),
+    )
+    return final, record
+
+
+def solve_surrogate_exact_qp_local(
+    assets: SurrogateNLPAssets,
+    case: SurrogateCase,
+    *,
+    settings: SurrogateSolverSettings | None = None,
+    problem: SurrogateNLP | None = None,
+    completed_result: SurrogateStartResult | None = None,
+    name: str = "v3_surrogate_exact_qp_local",
+    progress_callback: Callable[[SurrogateStartResult], None] | None = None,
+) -> SurrogateMultistartResult:
+    """Solve one case by one seven-variable exact-QP local optimization.
+
+    The sole initial point is the deterministic center of the normalized
+    operating box. This route builds only the expression graph needed by the
+    exact-QP active-set evaluator (``compile_solver=False``): it never
+    constructs an embedded-KKT IPOPT solver and has no continuation stages.
+
+    Numerical projection, active-set, derivative, or endpoint failures are
+    returned as one structured, stationarity-unresolved start result. They
+    therefore remain visible to scientific reporting without aborting other
+    influent cases. Invalid inputs and stale checkpoints still raise.
+    """
+
+    settings = settings or SurrogateSolverSettings()
+    if not settings.perform_outer_refinement:
+        raise ValueError(
+            "the exact-QP single-start protocol requires perform_outer_refinement=True"
+        )
+    center = np.asarray(EXACT_QP_CENTER_START, dtype=np.float64)
+    resume_contract = surrogate_exact_qp_resume_contract(assets, case, settings)
+
+    if completed_result is not None:
+        if not isinstance(completed_result, SurrogateStartResult):
+            raise TypeError("completed_result must be a SurrogateStartResult.")
+        if completed_result.start_index != 0:
+            raise ValueError("the completed exact-QP result must have start_index zero.")
+        if not np.array_equal(completed_result.initial_normalized_controls, center):
+            raise ValueError("the completed exact-QP result does not use the center start.")
+        if completed_result.stages:
+            raise ValueError(
+                "an exact-QP single-start checkpoint cannot contain continuation stages."
+            )
+        if completed_result.protocol != EXACT_QP_SINGLE_START_PROTOCOL:
+            raise ValueError("the completed result uses a different surrogate protocol.")
+        if completed_result.resume_contract != resume_contract:
+            raise ValueError("the completed result has a stale exact-QP resume contract.")
+        result = completed_result
+    else:
+        if problem is None:
+            problem = build_surrogate_nlp(
+                assets,
+                GAP_CONTINUATION[-1],
+                settings=settings,
+                name=f"{name}_expressions",
+                compile_solver=False,
+            )
+        else:
+            if problem.assets is not assets:
+                raise ValueError("the reusable exact-QP problem uses different assets.")
+            if problem.tau != GAP_CONTINUATION[-1]:
+                raise ValueError("the reusable exact-QP problem must use the final gap value.")
+            if problem.solver is not None:
+                raise ValueError(
+                    "the reusable exact-QP expression problem must not contain an IPOPT solver."
+                )
+        refinement_error: str | None = None
+        try:
+            final, refinement = _outer_refine(problem, case, center, settings)
+        except Exception as exc:
+            # One bad case must not terminate the remaining cases. The
+            # independent center audit below still preserves any finite,
+            # physically projected incumbent for reporting.
+            refinement_error = f"{type(exc).__name__}: {exc}"
+            final = None
+            refinement = OuterRefinementRecord(
+                attempted=True,
+                solver_success=False,
+                status="unexpected_exact_qp_exception",
+                iterations=0,
+                evaluations=0,
+                elapsed_seconds=0.0,
+                initial_objective=None,
+                final_objective=None,
+                derivative_error=refinement_error,
+            )
+
+        if final is None:
+            try:
+                final, refinement = _derivative_free_exact_qp_refine(
+                    problem,
+                    case,
+                    center,
+                    settings,
+                    refinement,
+                )
+            except Exception as exc:
+                fallback_error = f"{type(exc).__name__}: {exc}"
+                refinement_error = (
+                    fallback_error
+                    if refinement_error is None
+                    else f"{refinement_error}; derivative-free fallback: {fallback_error}"
+                )
+                refinement = replace(
+                    refinement,
+                    status="unexpected_derivative_free_exception",
+                    derivative_error=(
+                        refinement.derivative_error or refinement_error
+                    ),
+                    method="exact_qp_derivative_free_cobyqa",
+                    fallback_used=True,
+                    fallback_method="COBYQA",
+                    fallback_solver_success=False,
+                    fallback_status=fallback_error,
+                )
+
+        if final is None:
+            try:
+                incumbent = audit_exact_candidate(
+                    problem,
+                    case,
+                    center,
+                    settings=settings,
+                )
+            except Exception as exc:
+                audit_error = f"{type(exc).__name__}: {exc}"
+                refinement_error = (
+                    audit_error
+                    if refinement_error is None
+                    else f"{refinement_error}; center audit: {audit_error}"
+                )
+            else:
+                reason = refinement.derivative_error or refinement.status
+                final = replace(
+                    incumbent,
+                    stationarity=StationarityRecord(
+                        classification="stationarity_unresolved",
+                        resolved=False,
+                        stationary=False,
+                        lower_qp_kkt_passed=bool(incumbent.projection.accepted),
+                        upper_stationarity_residual=None,
+                        reason=(
+                            "The primary seven-variable exact-QP local optimizer "
+                            "did not establish endpoint stationarity; the "
+                            "independently cold-projected center incumbent is "
+                            f"retained: {reason}"
+                        ),
+                    ),
+                    status=(
+                        "validated_feasible_stationarity_unresolved"
+                        if incumbent.feasibility.feasible
+                        else incumbent.status
+                    ),
+                    lower_active_set=refinement.lower_active_set,
+                    upper_kkt=refinement.upper_kkt,
+                )
+                if refinement_error is None:
+                    refinement_error = refinement.derivative_error
+
+        result = SurrogateStartResult(
+            start_index=0,
+            initial_normalized_controls=center.copy(),
+            stages=(),
+            outer_refinement=refinement,
+            final=final,
+            status=(
+                final.status
+                if final is not None
+                else "exact_qp_local_optimization_unresolved"
+            ),
+            error=refinement_error,
+            resume_contract=resume_contract,
+            protocol=EXACT_QP_SINGLE_START_PROTOCOL,
+        )
+        if progress_callback is not None:
+            progress_callback(result)
+
+    selected = result if result.feasible else None
+    return SurrogateMultistartResult(
+        starts=(result,),
+        selected=selected,
+        status=(
+            "selected_stationary"
+            if result.stationary
+            else (
+                "selected_stationarity_unresolved"
+                if result.feasible
+                else "no_validated_feasible_start"
+            )
+        ),
+        protocol=EXACT_QP_SINGLE_START_PROTOCOL,
     )
 
 
 IMPLEMENTATION_LIMITATIONS = (
-    "The module records a cold lower-QP KKT audit and exact-QP upper "
-    "feasibility, but intentionally does not claim upper stationarity. "
-    "The manuscript's active-set rank/conditioning/strict-complementarity "
-    "sensitivity and independently reconstructed upper multipliers must be "
-    "implemented and passed before changing stationarity_unresolved."
+    "Exact-QP derivatives are available only when the lower active set passes "
+    "the manuscript's LICQ, conditioning, strict-complementarity, and local "
+    "perturbation gates. Otherwise the independently projected feasible "
+    "continuation incumbent is retained as stationarity-unresolved; no "
+    "finite-difference derivative fallback is used."
 )
 
 
 __all__ = [
     "DEFAULT_OBJECTIVE_WEIGHTS",
+    "EXACT_QP_CENTER_START",
+    "EXACT_QP_SINGLE_START_PROTOCOL",
     "GAP_CONTINUATION",
     "IMPLEMENTATION_LIMITATIONS",
+    "LEGACY_SURROGATE_PROTOCOL",
     "START_SEED",
     "EngineeringLimits",
     "FeasibilityRecord",
@@ -1844,8 +3066,11 @@ __all__ = [
     "initial_primal_from_projection",
     "ordered_normalized_starts",
     "regularized_leverage_contract",
+    "solve_surrogate_exact_qp_local",
     "solve_surrogate_multistart",
     "solve_surrogate_start",
+    "surrogate_exact_qp_resume_contract",
+    "surrogate_start_resume_contract",
     "symbolic_network_operators",
     "symbolic_quadratic_prediction",
     "unpack_primal",

@@ -65,14 +65,14 @@
 \cortext[cor1]{Corresponding author}
 
 \begin{abstract}
-Activated-sludge optimization is difficult because biological conversion, internal mixed-liquor recycle, return activated sludge, wasting, and secondary clarification form one nonlinear closed loop. This work formulates the system for an arbitrary number $N$ of completely mixed reactors and an arbitrary number $L$ of Clarifier layers. The freely varied coordinates may include stage residence times, independent stage aeration settings, recycle ratios, wasting, and other explicitly balanced stage inputs. A quadratic multiresponse surrogate predicts the mixer, every reactor outlet, both Clarifier outlet component-flow vectors, and the layer-solids profile. Its $n_\chi=(N+3)F+L$ responses are reconciled by a unique scaled-Euclidean projection that imposes recycle mixing, stoichiometric-invariant transport, Clarifier component conservation, soluble pass-through, particulate densification, endpoint consistency, an admissible layer envelope, and non-negativity. Operational optimization is constrained by this projected state. A primal--dual-gap reformulation expresses the lower projection without complementarity slacks and is independently verified by resolving the original quadratic program. The case study uses five equal-volume reactors, independently adjustable aeration in reactors 3--5, a ten-layer Clarifier, 1,000 mechanistic design states, five-fold cross-validation, and ten influent scenarios. Raw, projected, smooth-mechanistic, and reference nonsmooth responses will be compared stage by stage. The formulation separates regression error, physical reconciliation, decision quality, smoothing error, and computational cost without asserting global optimality.
+Activated-sludge optimization is difficult because biological conversion, internal mixed-liquor recycle, return activated sludge, wasting, and secondary clarification form one nonlinear closed loop. This work formulates the system for an arbitrary number $N$ of completely mixed reactors and an arbitrary number $L$ of Clarifier layers. The freely varied coordinates may include stage residence times, independent stage aeration settings, recycle ratios, wasting, and other explicitly balanced stage inputs. A quadratic multiresponse surrogate predicts the mixer, every reactor outlet, both Clarifier outlet component-flow vectors, and the layer-solids profile. Its $n_\chi=(N+3)F+L$ responses are reconciled by a unique scaled-Euclidean projection that imposes recycle mixing, stoichiometric-invariant transport, Clarifier component conservation, soluble pass-through, particulate densification, endpoint consistency, an admissible layer envelope, and non-negativity. Operational optimization is constrained by this projected state. A seven-variable local optimizer cold-solves the exact projection quadratic program at each distinct trial control and obtains total response derivatives from a verified active-set KKT sensitivity system. The case study uses five equal-volume reactors, independently adjustable aeration in reactors 3--5, a ten-layer Clarifier, 5,000 accepted mechanistic design states, five-fold cross-validation, and ten influent scenarios. Raw, projected, smooth-mechanistic, and reference nonsmooth responses will be compared stage by stage. The formulation separates regression error, physical reconciliation, decision quality, smoothing error, and computational cost without asserting global optimality.
 \end{abstract}
 
 \begin{highlights}
 \item The formulation admits arbitrary reactor and Clarifier-layer counts.
 \item Stage residence time and aeration can be manipulated independently.
 \item A unique convex projection reconciles the complete surrogate response.
-\item A primal--dual gap yields a smaller single-level optimization model.
+\item Exact projection-QP sensitivities support seven-variable local optimization.
 \item Reference nonsmooth replay is used to validate every selected decision.
 \end{highlights}
 
@@ -381,7 +381,7 @@ The surrogate-based operational problem is
 \end{equation}
 Here $\mathcal V$ contains the declared bounds and any stage-allocation equalities. The lower response is unique; the upper problem remains generally nonconvex and piecewise smooth. Accordingly, $\vartheta_S$ denotes the selected, independently verified local incumbent rather than a certified global minimizer.
 
-\subsection{An exact lower-level certificate without complementarity slacks}
+\subsection{Exact lower-level certificate and active-set sensitivity}
 
 For fixed $(\vartheta,x)$, write the projection as
 \begin{equation}
@@ -405,7 +405,7 @@ For a primal-feasible $u$, weak duality makes the primal--dual gap non-negative.
 \end{align}
 Consequently, $\Gamma=0$ is equivalent to stationarity and complementarity and certifies that $u$ is the unique lower-QP solution. This strong-duality construction removes the $n_q$ explicit slack variables used by a conventional complementarity lift \citep{Boyd2004}.
 
-The single-level calculation replaces the last line of Equation~\eqref{eq:bilevel} by primal feasibility, $\lambda^{\le}\ge0$, and the dimension-normalized condition $\overline\Gamma=\Gamma/(n_\chi+n_q)\le\tau$. A decreasing positive sequence of $\tau$ values is used for numerical continuation. The final controls are accepted only after the projection QP is solved independently with a convex-QP method \citep{Stellato2020} and its primal feasibility, dual feasibility, stationarity, complementarity, and upper-level constraints all pass their stated tolerances. Multiple deterministic starts seek distinct local basins; they are not a global-optimality certificate.
+Equation~\eqref{eq:gap} remains the independent lower-QP optimality identity, but it is not embedded as a constraint in the production upper problem. Instead, the calculation operates directly in the $d_\vartheta=7$ normalized controls and cold-solves Equation~\eqref{eq:standardqp} with a convex-QP method at every distinct trial control \citep{Stellato2020}. On a stable active set, total derivatives of the projected response and every upper function are obtained by differentiating the equality-plus-active-inequality QP KKT system. Every upper constraint is divided by a fixed positive, development-frozen scale, so feasibility is unchanged and no row scale depends on the current iterate. The calculation uses the deterministic box center as its only start. Its endpoint is accepted only after an independent cold QP replay and the declared lower- and upper-level audits. This protocol seeks one validated local solution and provides neither basin exploration nor a global-optimality certificate.
 
 \subsection{Direct smooth mechanistic comparator}
 
@@ -481,16 +481,26 @@ The case imposes $8\le\mathrm{SRT}\le30$ d, $\mathrm{SLR}\le100$ kg TSS m$^{-2}$
 
 \subsection{Study sequence and protection against information leakage}
 
-The calculation follows six frozen phases:
+After the dated protocol revisions documented below, the calculation follows six fixed phases:
 \begin{enumerate}
-\item generate 1,000 accepted mechanistic steady states over the joint seven-control and twenty-influent domain;
-\item place 800 states in the development block and 200 independently randomized states in an untouched test block;
-\item select the ridge parameter by five-fold cross-validation entirely within the 800 development states and fit one final development surrogate;
-\item evaluate raw and projected responses once on the untouched 200 states;
+\item evaluate deterministic candidate inputs over the joint seven-control and twenty-influent domain, retain every accepted and rejected attempt, and supplement each block until it contains its required number of accepted steady states;
+\item place exactly 4,000 accepted states in the development block and 1,000 independently generated accepted states in an untouched test block;
+\item select the ridge parameter by five-fold cross-validation entirely within the 4,000 development states and fit one final development surrogate;
+\item evaluate raw and projected responses once on the untouched 1,000 states;
 \item attempt the nominal and ten influent scenarios by both Equations~\eqref{eq:bilevel} and \eqref{eq:mechanisticnlp}, retaining every success or failure status; and
 \item replay every available selected decision with the declared nonsmooth reference model.
 \end{enumerate}
 Test states and optimization responses never determine feature definitions, scales, ridge selection, objective priorities, limits, smoothing widths, tolerances, or starts.
+
+Before this article-scale sequence, a separate implementation preflight used 400 development inputs, 100 untouched test inputs, five fresh influent scenarios, and a five-layer Clarifier. Its independent seeds were 500042, 500043, and 500314159, respectively. The preflight could continue after an article admission-gate failure solely to exercise checkpointing, failure accounting, optimization, and reporting code; its fitted quantities and numerical results are never pooled with, substituted for, or reported as article-scale results. Under the then-current protocol, that smoke calculation suspended the planned nine-start basin search, used the box-center start for both routes, and imposed a 600 s wall-time ceiling on each embedded-surrogate IPOPT continuation stage. The preflight record is historical and does not define the revised production surrogate solver below. The article calculation's frozen scientific gates determine article eligibility, but, for the present model-function exercise, they are advisory with respect to execution: a failed gate is recorded and the remaining calculations are still attempted, without refitting or changing a threshold. Only outputs from a run that passes every frozen gate are eligible to support the article's scientific conclusions.
+
+On 23 August 2026, before the 5,000-input article calculation was launched and before any article-scale response was inspected, the planned workload was revised by explicit user authorization from the earlier draft's 800/200 split to a fixed 4,000/1,000 development/test split. This prospective revision changed only the article-scale sample counts and their dependent denominators; at that point it retained the declared generators, seeds, 80/20 partition, model form, gates, ten scenarios, ten-layer geometry, and then-planned nine-start optimization contract. The completed 500-input preflight remains a distinct, article-ineligible implementation record.
+
+After the initial 4,000-candidate development round had been audited, but before surrogate fitting, test assessment, or article optimization, a second explicit user-authorized revision on 23 August 2026 changed the handling of rejected mechanistic generations. An ordinary candidate-level failure no longer terminates the workflow. Every such attempt and its diagnostics remain in an immutable attempt ledger, the failed candidate is excluded from the statistical data set, and a deterministic supplemental candidate is evaluated in its place until the relevant accepted block is full. The already accepted development checkpoints are migrated within the same run after their prior contract and content hashes are verified; they are not regenerated. This revision was triggered after generation outcomes were available and is reported as such rather than represented as prospective.
+
+During the resumed article-scale model-function exercise on the same date, a development out-of-fold projection exposed premature termination of the trust-region-reflective bounded least-squares routine used only to reconstruct projection multipliers. The primal QP had solved with residuals near roundoff; the apparent failure was confined to the independent dual reconstruction. The reconstruction was therefore changed, without altering the QP, data, ridge fit, or acceptance tolerances, to the deterministic bounded-variable least-squares active-set algorithm described in the Supplementary Material. This outcome-aware numerical correction and the instruction to continue after scientific gate failures are retained in the run contract and results. Such continuation tests the complete workflow; it does not convert a failed gate into a pass or make a failing run article-eligible.
+
+After the resumed production optimizer had demonstrated that the approximately 450-variable embedded-KKT surrogate NLP and its seven continuation stages were impractically slow, a further explicit user authorization on 23 August 2026 retired that production route and the nine-start basin search. The same run now uses one deterministic box-center start for each optimization route and each of the nominal plus ten robustness cases. The surrogate route uses the seven-variable exact-QP active-set calculation directly, with no embedded-KKT IPOPT stage or gap continuation; the direct mechanistic route retains its distinct three-stage smoothing continuation. This outcome-aware computational revision accepts the limitation to one local basin. It reuses the verified generation, fit, and assessment artifacts, but does not reuse a partial optimization result produced under the retired protocol. Every case failure and unresolved audit remains reportable and does not prevent later cases or downstream replay, physical accounting, timing, and reporting from being attempted.
 
 The ordered component vector is
 \begin{equation}
@@ -499,18 +509,20 @@ The ordered component vector is
 &X_I,X_S,X_H,X_{PAO},X_{PP},X_{PHA},X_{AOB},X_{NOB},X_{MeP},X_{MeOH}).
 \end{split}
 \end{equation}
-Independent randomized Latin-hypercube blocks supply the 800 development and 200 test inputs in 27 dimensions \citep{McKay1979}. Rows within a block are stratified and are not described as independent observations. A failed or unstable mechanistic point is not silently replaced; an unresolved design point stops the study so solver success cannot condition the intended design.
+Independent randomized Latin-hypercube candidate round~0 supplies 4,000 development and 1,000 test candidates in 27 dimensions \citep{McKay1979}. A candidate is accepted only after the complete two-start mechanistic contract passes. Rejected candidates are never silently erased: they retain stable candidate identifiers, inputs, statuses, and all available numerical audits. Each block then continues its own frozen SplitMix64 stream in deterministic supplemental rounds, each sized to the current deficit, and accepted candidates fill unoccupied slots in ascending order until the block contains exactly 4,000 or 1,000 accepted rows. Development candidates are never promoted into the test block or conversely.
+
+The final accepted blocks are consequently acceptance-conditioned samples, and the union of round~0 survivors and supplemental replacements is not one global strength-one Latin hypercube. This sacrifices global Latin-hypercube stratification and can underrepresent regions in which the mechanistic acceptance contract fails. Therefore, article denominators distinguish candidate attempts from accepted rows, report acceptance and rejection by block and reason, and preserve candidate-to-accepted-slot provenance. Prediction and optimization conclusions are conditional on the accepted, numerically solvable region; they do not establish reliability over the rejected part of the declared box. The phrase ``untouched test'' means that accepted test responses do not enter fitting, scaling, ridge selection, trust calibration, or tuning; it does not mean that the test inputs are unconditional draws from the full box.
 
 \subsection{Five-fold cross-validation and final ridge fit}
 
-The 800 development rows are partitioned reproducibly into five folds of 160. For a fitting index set $\mathcal I$, let $\Phi_{\mathcal I}$ contain feature rows, $\widetilde Y_{\mathcal I}$ contain standardized responses, and $R_\phi=\diag(0,1,\ldots,1)$ leave the intercept unpenalized. Training solves
+The 4,000 development rows are partitioned reproducibly into five folds of 800. For a fitting index set $\mathcal I$, let $\Phi_{\mathcal I}$ contain feature rows, $\widetilde Y_{\mathcal I}$ contain standardized responses, and $R_\phi=\diag(0,1,\ldots,1)$ leave the intercept unpenalized. Training solves
 \begin{equation}
 \widehat C_{\gamma_{\rm R}}=\argminop_C
 \left\{\frac{\|\widetilde Y_{\mathcal I}-\Phi_{\mathcal I}C^\top\|_F^2}
 {|\mathcal I|n_\chi}+\frac{\gamma_{\rm R}}{n_\chi}\|CR_\phi\|_F^2\right\}.
 \label{eq:ridge}
 \end{equation}
-Every center and scale is recomputed from the 640 fitting rows of a fold. Positive candidate values of $\gamma_{\rm R}$ guarantee a unique, stable coefficient solution even if a feature matrix is nearly rank deficient. The fold score is complete-state standardized RMSE of the raw response. The one-standard-error rule chooses the largest $\gamma_{\rm R}$ whose mean score is within one standard error of the minimum \citep{Hastie2009}. Projection metrics are recorded but do not select $\gamma_{\rm R}$, so reconciliation cannot hide a weak raw model. The chosen value is refitted once on all 800 development rows.
+Every center and scale is recomputed from the 3,200 fitting rows of a fold. Positive candidate values of $\gamma_{\rm R}$ guarantee a unique, stable coefficient solution even if a feature matrix is nearly rank deficient. The fold score is complete-state standardized RMSE of the raw response. The one-standard-error rule chooses the largest $\gamma_{\rm R}$ whose mean score is within one standard error of the minimum \citep{Hastie2009}. Projection metrics are recorded but do not select $\gamma_{\rm R}$, so reconciliation cannot hide a weak raw model. The chosen value is refitted once on all 4,000 development rows.
 
 The untouched test reports RMSE, MAE, bias, normalized RMSE, and $R^2$ for the mixer, each reactor, both outlet-flow blocks, every Clarifier layer, and the complete response. Raw and projected predictions are reported side by side. For test row $i$, let $\mathcal C_i$ be its projection polyhedron and let $P_{\mathcal C_i}$ be metric projection in the norm $\|v\|_{D_\chi^{-1}}:=\|D_\chi^{-1}v\|_2$. Because a numerical mechanistic target $\chi_i$ satisfies equations only to finite tolerance, its feasibility distance $\delta_{{\rm feas},i}=\|P_{\mathcal C_i}(\chi_i)-\chi_i\|_{D_\chi^{-1}}$ is reported. The following general bound is checked for every target:
 \begin{equation}
@@ -518,13 +530,13 @@ The untouched test reports RMSE, MAE, bias, normalized RMSE, and $R^2$ for the m
 \le \|\chi_{{\rm raw},i}-\chi_i\|_{D_\chi^{-1}}+\delta_{{\rm feas},i}.
 \label{eq:finitefeasibility}
 \end{equation}
-Equation~\eqref{eq:nonexpansive} is invoked only for a target known to be exactly feasible; a merely small positive $\delta_{{\rm feas},i}$ does not justify the stronger squared inequality. Optimization begins only if all QPs pass their primal--dual audit, complete-state raw nRMSE is below the predeclared case threshold, and every development-supported trust threshold has been frozen successfully. A failed gate ends the study without refitting.
+Equation~\eqref{eq:nonexpansive} is invoked only for a target known to be exactly feasible; a merely small positive $\delta_{{\rm feas},i}$ does not justify the stronger squared inequality. All QPs passing their primal--dual audit, complete-state raw nRMSE being below the predeclared case threshold, and every development-supported trust threshold being frozen successfully remain necessary conditions for article eligibility. In the present model-function exercise a failed scientific gate is persisted and propagated as a failure status, but does not suppress the remaining optimization, replay, timing, or reporting attempts and never triggers refitting. A non-finite or incomplete numerical object from which a downstream problem cannot be defined remains a hard computational failure.
 
 \subsection{Nominal optimization, mechanistic comparison, and reference replay}
 
-The nominal influent is the midpoint of each declared influent interval. Both optimization routes use the same free controls, bounds, objective priorities, engineering constraints, and nine deterministic starts in the normalized seven-dimensional box. For the surrogate route, each continuation stage uses the primal--dual-gap tolerance sequence $10^{-2},10^{-4},10^{-6},10^{-8}$. Its final operating vector is accepted only after an independently initialized projection QP reproduces the projected state and all unrelaxed upper constraints.
+The nominal influent is the midpoint of each declared influent interval. Both optimization routes use the same free controls, bounds, objective priorities, engineering constraints, and one deterministic start at the componentwise center of the normalized seven-dimensional box. The resulting locally optimized solution is accepted without searching additional basins, and no global-optimality comparison is implied. For the surrogate route, the former primal--dual-gap IPOPT continuation is not executed. The exact-QP active-set problem in the seven normalized controls is the primary solver from the center start.
 
-After continuation, an outer refinement solves the original projection QP to its acceptance tolerances at every trial point. On a stable active set, derivatives follow from the lower-QP KKT sensitivity system; an active-set change triggers a fresh QP and derivative reconstruction. A surrogate-route candidate is called a first-order KKT-stationary feasible point only if its independently recomputed scaled primal, dual, stationarity, and complementarity residuals pass the declared tolerances. The direct mechanistic route is subjected to the analogous full-space KKT audit, including every mechanistic equality and the auxiliary feed-solids equality. If no stationary candidate is found, the best validated feasible point is reported more conservatively as a stationarity-unresolved local incumbent. First-order stationarity is not a certificate of local minimality.
+The original projection QP is cold-solved to its acceptance tolerances at every distinct surrogate trial point. On a stable active set, response derivatives follow from the equality-plus-active-inequality QP KKT sensitivity system after rank and conditioning checks; an active-set change triggers a fresh QP and derivative reconstruction. The selected endpoint is then cold-projected again. A surrogate-route candidate is called a first-order KKT-stationary feasible point only if its independently recomputed lower-QP primal, dual, stationarity, and complementarity residuals, all upper feasibility rows, active-set rank and strict-complementarity checks, and the seven-control upper KKT residual pass their declared tolerances. The direct mechanistic route retains its separate three-stage smoothing continuation from the same center control start and is subjected to the analogous full-space KKT audit, including every mechanistic equality and the auxiliary feed-solids equality. If stationarity cannot be established, a validated feasible point may be reported more conservatively as a stationarity-unresolved local incumbent. If a route produces no validated candidate, that failure remains in the case denominator and execution proceeds to the next case. First-order stationarity is not a certificate of local minimality.
 
 For any fixed $(\vartheta,x)$, let $\chi_{\rm sm}(\vartheta,x)$ and $\chi_{\rm ref}(\vartheta,x)$ be the complete responses reconstructed from the accepted smooth and nonsmooth endpoints, respectively, and define $J_{\rm sm}=J(\vartheta,\chi_{\rm sm};\varpi)$ and $J_{\rm ref}=J(\vartheta,\chi_{\rm ref};\varpi)$. For $k\in\{S,M\}$, raw, projected, smooth, and reference responses are all evaluated at both the surrogate-based and mechanistic-NLP decisions so prediction error is not confounded with decision difference:
 \begin{align}
@@ -537,7 +549,7 @@ e_{\rm sm,k}&=D_\chi^{-1}[\chi_{\rm sm}(\vartheta_k,x)-\chi_{\rm ref}(\vartheta_
 \end{align}
 $\Delta J_{S-M}$ compares two verified local incumbents; it is not called regret because neither route supplies a global certificate.
 
-The smooth mechanistic equations are also benchmarked at all 200 untouched test inputs and at every available selected decision---at most 22 decisions from two routes across eleven optimization cases. The actual selected-decision denominator is reported; a failed route contributes no fictitious decision. At each fixed input, both the smooth and reference equations are solved independently from the two declared influent-based starts; the optimized state is not used to initialize this comparison. Let $D_y$ be the positive diagonal mechanistic-state scale defined in the Supplementary Material. With $n_y=110$ in the case study, acceptance requires
+The smooth mechanistic equations are also benchmarked at all 1,000 untouched test inputs and at every available selected decision---at most 22 decisions from two routes across eleven optimization cases. The actual selected-decision denominator is reported; a failed route contributes no fictitious decision. At each fixed input, both the smooth and reference equations are solved independently from the two declared influent-based starts; the optimized state is not used to initialize this comparison. Let $D_y$ be the positive diagonal mechanistic-state scale defined in the Supplementary Material. With $n_y=110$ in the case study, acceptance requires
 \begin{equation}
 \frac{\|D_y^{-1}(y_{\rm sm}-y_{\rm ref})\|_2}{\sqrt{n_y}}\le10^{-6},\qquad
 \|D_y^{-1}(y_{\rm sm}-y_{\rm ref})\|_\infty\le10^{-5},
@@ -551,11 +563,26 @@ Ten new influent vectors are drawn by an independent 20-dimensional Latin hyperc
 
 \subsection{Timing and numerical acceptance}
 
-Timing separates raw regression, one projection QP, complete surrogate optimization, smooth mechanistic optimization, and reference steady-state replay. The same processor allocation and thread count are used for the two optimization routes. Setup and solve times, attempted and accepted starts, iterations, QP resolutions, and replays are all reported. A solver success flag is never sufficient: scaled primal, dual, stationarity, complementarity, physical-balance, reduced-stability, domain, and branch checks must also pass the Supplementary Material contract.
+Timing separates raw regression, one projection QP, complete surrogate optimization, smooth mechanistic optimization, and reference steady-state replay. The same processor allocation and thread count are used for the two optimization routes. Setup and solve times, case attempts and outcomes, iterations, cold QP resolutions, smoothing stages, and replays are all reported. A solver success flag is never sufficient: scaled primal, dual, stationarity, complementarity, physical-balance, reduced-stability, domain, and branch checks must also pass the Supplementary Material contract.
 
 \section{Results and discussion}
 
-No numerical result is inserted before the complete 1,000-state design and all eleven paired optimization cases have been attempted and adjudicated under the frozen checks. Failed or unresolved cases remain visible in the denominators and result tables rather than being replaced or omitted. Tables~\ref{tab:prediction_results}--\ref{tab:timing_results} define the minimum result set and prevent selective reporting after outcomes are known.
+No numerical result is inserted before the accepted 5,000-state design is complete and all eleven paired optimization cases have been attempted and adjudicated under the frozen checks. Generation reporting uses all candidate attempts as its denominator and shows how exactly 4,000 development and 1,000 test rows were accepted; downstream prediction denominators use only those accepted rows. Failed or unresolved optimization and replay cases remain visible in their case denominators and result tables rather than being replaced or omitted. Tables~\ref{tab:generation_results}--\ref{tab:timing_results} define the minimum result set and prevent selective reporting after outcomes are known.
+
+\begin{table}[htbp]
+\centering
+\caption{Required candidate-generation and accepted-set provenance summary. $m_b$ counts every attempted candidate, including rejected attempts; $n_b$ is the fixed accepted-row denominator used downstream. Rejection reasons and candidate-to-final-slot provenance accompany this summary in the archived ledger.}
+\label{tab:generation_results}
+\scriptsize
+\begin{tabular}{lrrrrrr}
+\toprule
+Block & Attempted $m_b$ & Accepted $n_b$ & Rejected $m_b-n_b$ & Acceptance (\%) & Supplemental rounds & Accepted slots traced (\%)\\
+\midrule
+Development & -- & 4,000 & -- & -- & -- & --\\
+Untouched test & -- & 1,000 & -- & -- & -- & --\\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \subsection{Cross-validation and untouched prediction performance}
 
@@ -592,6 +619,23 @@ Regularized leverage $\ell_{\rm R}$ & -- & -- & --\\
 Particulate split $\kappa_{\rm split}$ & -- & -- & --\\
 Reactor residual $\kappa_{\rm rxn}$ & -- & -- & --\\
 Clarifier flux $\kappa_{\rm flux}$ & -- & -- & --\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\caption{Required cross-method physical audit. Counts retain every finite row in the stated scope; undefined nonlinear audits are reported separately rather than omitted. Mass and non-negativity exceedance counts use the scaled tolerances $10^{-8}$ and $10^{-10}$, respectively.}
+\label{tab:physical_audit_results}
+\small
+\begin{tabular}{llrrrrr}
+\toprule
+Method & Scope & Finite $n$ & Maximum mass residual & Mass rows & Maximum negativity & Negative rows\\
+\midrule
+Raw & Untouched test and selected decisions & -- & -- & -- & -- & --\\
+Projected & Untouched test and selected decisions & -- & -- & -- & -- & --\\
+Smooth & Fixed-input and selected decisions & -- & -- & -- & -- & --\\
+Reference/mechanistic & Generated, test, and replayed states & -- & -- & -- & -- & --\\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -643,14 +687,14 @@ The nominal discussion will trace raw, projected, smooth, and reference profiles
 
 \begin{table}[htbp]
 \centering
-\caption{Smooth-NLP versus reference nonsmooth comparison over the 200 test states and every available selected decision (at most 22); the actual denominator is reported.}
+\caption{Smooth-NLP versus reference nonsmooth comparison over the 1,000 test states and every available selected decision (at most 22); the actual denominator is reported.}
 \label{tab:smooth_results}
 \begin{tabular}{lrrr}
 \toprule
 Comparison & Median & 95th percentile & Maximum\\
 \midrule
 Available selected decisions, $n_{\rm sel}$ & \multicolumn{3}{c}{--}\\
-Total evaluated fixed-input points, $200+n_{\rm sel}$ & \multicolumn{3}{c}{--}\\
+Total evaluated fixed-input points, $1000+n_{\rm sel}$ & \multicolumn{3}{c}{--}\\
 Smooth two-start scaled disagreement & -- & -- & --\\
 Reference two-start scaled disagreement & -- & -- & --\\
 Optimizer-state reproduction error & -- & -- & --\\
@@ -740,10 +784,10 @@ Scenarios 1--10 (each reported) & -- & -- & -- & --\\
 \toprule
 Metric & Surrogate plus projection & Smooth mechanistic NLP\\
 \midrule
-Median start time & -- & --\\
+Median single-start solve time & -- & --\\
 Median complete-case time & -- & --\\
 95th-percentile complete-case time & -- & --\\
-Accepted starts / attempted starts & -- & --\\
+Validated cases / attempted cases & -- & --\\
 Reference validation time & -- & --\\
 \bottomrule
 \end{tabular}
@@ -755,7 +799,7 @@ The one-time costs of mechanistic data generation and fitting are reported separ
 
 The formulation represents an $N$-stage recycling mixer--reactor--Clarifier plant with a raw statistical response and a unique physical projection. Its dimensions follow directly from $N$, $L$, the component partition, and the freely varied controls. Stagewise aeration and residence-time decisions are therefore supported without treating a five-stage arrangement as universal.
 
-The projection has a deliberately limited role: it enforces the declared linear network physics and non-negativity while making the smallest standardized change to the raw prediction. The primal--dual-gap reformulation retains the exact lower-QP certificate at zero gap while avoiding a separate complementarity slack for every inequality. Nonlinear kinetics and settling are verified through reference nonsmooth replay rather than being silently credited to the projection. Numerical conclusions will be finalized only after all predeclared tables are populated without changing the model or analysis plan.
+The projection has a deliberately limited role: it enforces the declared linear network physics and non-negativity while making the smallest standardized change to the raw prediction. The production surrogate optimizer resolves that exact lower QP within a seven-control local search and audits its primal--dual KKT conditions independently; it does not embed the former gap-continuation NLP. Nonlinear kinetics and settling are verified through reference nonsmooth replay rather than being silently credited to the projection. Numerical conclusions will be finalized only after all required tables are populated under the dated, explicitly disclosed protocol revisions above; any further change must likewise be recorded with its timing and evidential context.
 
 \section*{CRediT authorship contribution statement}
 
@@ -767,7 +811,7 @@ This work is funded by the Department of Science and Technology of the Philippin
 
 \section*{Data availability}
 
-The study record will contain the 1,000 mechanistic input--response states, immutable development/test and fold membership, fitted coefficients and scales, raw and projected test predictions, every nominal and influent-scenario optimization record, reference validation states, and timing summaries.
+The study record will contain the 5,000 accepted mechanistic input--response states; the complete accepted and rejected candidate-attempt ledger; immutable candidate-to-slot, development/test, and fold membership; fitted coefficients and scales; raw and projected test predictions; every nominal and influent-scenario optimization record; reference validation states; and timing summaries.
 
 \begin{thebibliography}{00}
 \bibitem[Bhosekar and Ierapetritou(2018)]{Bhosekar2018}

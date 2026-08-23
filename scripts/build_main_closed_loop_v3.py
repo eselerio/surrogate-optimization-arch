@@ -1,6 +1,7 @@
-"""Build the manuscript-v3 execution notebook from auditable source cells."""
+"""Build the canonical, resumable manuscript-v3 execution notebook."""
 
 from pathlib import Path
+
 import nbformat as nbf
 
 
@@ -9,297 +10,465 @@ NOTEBOOK = ROOT / "main_closed_loop.ipynb"
 
 
 def code(source: str):
+    """Return an unexecuted code cell with normalized trailing whitespace."""
+
     return nbf.v4.new_code_cell(source.strip() + "\n")
 
 
 def markdown(source: str):
+    """Return a markdown cell with normalized trailing whitespace."""
+
     return nbf.v4.new_markdown_cell(source.strip() + "\n")
 
 
 cells = [
     markdown(r"""
-# Manuscript-v3 closed-loop study
+# Manuscript-v3 closed-loop article run
 
-This is the canonical executable companion to `article/wip_v3/manuscript.tex`
-and `article/wip_v3/supplementary_material.tex`. It follows their six frozen
-phases: two independent Latin-hypercube blocks; two-start nonsmooth
-mechanistic generation; five-fold ridge selection using raw error only; one
-untouched raw/projected assessment; nominal plus influent-scenario analysis;
-and independent nonsmooth replay.
+This notebook is the canonical, resumable interface to
+`scripts/run_article_v3_5000.py`. The production driver, rather than duplicated
+notebook code, owns candidate generation and deterministic replacement, two-start
+mechanistic acceptance, ridge selection,
+untouched-test assessment, scientific admission gates, paired optimization, independent
+replay, derivative and physical audits, and Results/Discussion tables.
 
-The notebook records mass-conservation and non-negativity violations for every
-raw, projected, and mechanistic response. A failed row or gate remains visible
-and stops the applicable scientific phase; it is never replaced or tuned away.
+The full model-function workload is fixed at **5,000 accepted datasets**: 4,000
+development inputs and 1,000 untouched test inputs. Rejected mechanistic
+candidates remain fully audited but are excluded and deterministically
+replaced. It uses ten robustness cases plus the nominal case and a ten-layer
+Clarifier. Each route uses one deterministic box-center start per case and
+accepts the validated local result without claiming global optimality. The
+surrogate route directly runs the seven-variable exact-QP active-set optimizer;
+it does not execute the retired embedded-KKT IPOPT problem or any of its seven
+gap-continuation stages. The direct smooth-mechanistic route retains its
+separate three-stage smoothing continuation. There is no wall-time ceiling in
+the full article run. The scientific admission thresholds remain unchanged and still
+determine whether results are article-eligible. For this model-function
+exercise they are advisory for execution: failures are recorded and propagated
+while later stages are attempted without refitting. Non-finite or incomplete
+objects needed by a later stage and run-integrity failures remain fatal.
 
-The default verification profile is deliberately article-ineligible: 400
-development + 100 untouched test rows, five robustness influents, and five
-Clarifier layers. The article profile restores the declared 800 + 200 rows,
-ten robustness influents, and ten layers. Verification and article designs use
-different seeds, so verification observations cannot leak into article results.
+Every projection retains the same strictly convex QP. Its independent dual
+audit reconstructs multipliers with deterministic bounded-variable least
+squares (BVLS); a failed cold numerical attempt may use the two declared cold
+OSQP retry settings, without regularizing or otherwise changing the problem.
+
+The separate, already-completed 500-input preflight record used 400 development
+inputs, 100 untouched test inputs, five robustness cases, and five Clarifier
+layers. Under the then-current protocol, its limited optimization smoke used
+one center start and a 600-second (10-minute) ceiling for each embedded-surrogate
+IPOPT continuation stage. That historical solver path and every preflight
+artifact are excluded from the revised full article optimization.
+"""),
+    markdown(r"""
+## Immutable-source execution
+
+The production contract hashes this notebook byte-for-byte. For a robust
+article execution, keep `main_closed_loop.ipynb` unmodified while the run is in
+progress. The safest command is to execute it into a different output file:
+
+```powershell
+uv run jupyter nbconvert --to notebook --execute main_closed_loop.ipynb `
+  --output main_closed_loop.executed.ipynb --ExecutePreprocessor.timeout=-1
+```
+
+For interactive work, open a copy of the notebook or disable autosave; do not
+save execution counts or outputs back into this source notebook until the run
+has finished. All scientific checkpoints live under the selected result
+directory, so rerunning a stage resumes verified work rather than starting
+over.
 """),
     code(r"""
 from __future__ import annotations
 
 import json
 import os
+from dataclasses import asdict
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 from IPython.display import display
 
-from closed_loop.manuscript_v3 import (
-    ARTICLE_FULL, TEST_500, assess_raw_projected_mechanistic,
-    create_design, generate_mechanistic_block, optimize_surrogate_case,
-    replay_selected_case, select_ridge, write_json,
+from closed_loop.manuscript_v3 import ARTICLE_FULL
+from scripts.run_article_v3_5000 import (
+    DEFAULT_RUN_ID,
+    OPTIMIZATION_PROTOCOL,
+    RUN_ID_PATTERN,
+    main as run_article,
+    resolve_run_directory,
 )
 
 ROOT = Path.cwd().resolve()
-if not (ROOT / "article" / "wip_v3" / "manuscript.tex").is_file():
-    raise RuntimeError("Run this notebook from the surrogate-optimization-arch root.")
-
-PROFILE_NAME = os.environ.get("ARTICLE_V3_PROFILE", "test_500_l5")
-PROFILES = {"test_500_l5": TEST_500, "article_full": ARTICLE_FULL}
-if PROFILE_NAME not in PROFILES:
-    raise ValueError(f"ARTICLE_V3_PROFILE must be one of {tuple(PROFILES)}")
-PROFILE = PROFILES[PROFILE_NAME]
-RUN_ID = os.environ.get("ARTICLE_V3_RUN_ID", PROFILE.name)
-GATES_BYPASSED = os.environ.get("ARTICLE_V3_BYPASS_ADMISSION_GATE", "0") == "1"
-RUN_ROOT = ROOT / "results" / "article_v3" / RUN_ID
-for name in ("inputs", "datasets", "models", "predictions", "metrics", "optimization", "report"):
-    (RUN_ROOT / name).mkdir(parents=True, exist_ok=True)
-
-contract = {
-    "profile": PROFILE.__dict__,
-    "manuscript": "article/wip_v3/manuscript.tex",
-    "supplement": "article/wip_v3/supplementary_material.tex",
-    "decision_order": ["H", "a_3", "a_4", "a_5", "r_I", "r_R", "w"],
-    "response_order": "mixer, reactors 1..5, overflow flow, underflow flow, layers 1..L",
-    "failure_policy": "stop without replacement",
-    "admission_gate_bypassed_by_user": GATES_BYPASSED,
-}
-write_json(RUN_ROOT / "inputs" / "contract.json", contract)
-display(pd.Series(contract["profile"], name="value").to_frame())
-"""),
-    markdown(r"""
-## 1. Frozen design and dimensional audit
-
-The two 27-dimensional blocks restart independent SplitMix64 streams. The
-seven controls are ordered exactly as in Eq. (casecontrols); the remaining
-twenty coordinates use the manuscript component order. The feature count is
-checked from the formula rather than hard-coded.
-"""),
-    code(r"""
-design = create_design(PROFILE)
-expected_features = 1 + 27 + 27 * 28 // 2
-expected_response = (5 + 3) * 20 + PROFILE.layer_count
-assert expected_features == 406
-assert PROFILE.response_count == expected_response
-assert design["development_decisions"].shape == (PROFILE.development_count, 7)
-assert design["test_decisions"].shape == (PROFILE.test_count, 7)
-assert design["robustness_influents"].shape == (PROFILE.robustness_count, 20)
-np.savez_compressed(RUN_ROOT / "datasets" / "design.npz", **{
-    key: value for key, value in design.items() if isinstance(value, np.ndarray)
-})
-write_json(RUN_ROOT / "inputs" / "generator_records.json", design["generators"])
-print({"features": expected_features, "responses": expected_response,
-       "development": PROFILE.development_count, "test": PROFILE.test_count,
-       "robustness": PROFILE.robustness_count, "layers": PROFILE.layer_count})
-"""),
-    markdown(r"""
-## 2. Two-start nonsmooth mechanistic generation
-
-Every prescribed point is solved from both influent-defined starts. Both
-routes must pass the scaled balances, non-negativity, Clarifier envelope,
-reduced stability, and root-agreement checks. Checkpoints are resumable; a
-failed point is reported and stops the design without resampling.
-"""),
-    code(r"""
-development_targets, development_diagnostics = generate_mechanistic_block(
-    design["development_decisions"], design["development_influents"], PROFILE,
-    RUN_ROOT / "datasets" / "development",
-)
-test_targets, test_diagnostics = generate_mechanistic_block(
-    design["test_decisions"], design["test_influents"], PROFILE,
-    RUN_ROOT / "datasets" / "test",
-)
-generation_summary = pd.DataFrame([
-    {"block": "development", "rows": len(development_diagnostics),
-     "accepted": int(development_diagnostics.accepted.sum()),
-     "max_mass_residual": development_diagnostics[["mass_residual_start_1", "mass_residual_start_2"]].max().max(),
-     "minimum_state": development_diagnostics[["minimum_state_start_1", "minimum_state_start_2"]].min().min()},
-    {"block": "test", "rows": len(test_diagnostics),
-     "accepted": int(test_diagnostics.accepted.sum()),
-     "max_mass_residual": test_diagnostics[["mass_residual_start_1", "mass_residual_start_2"]].max().max(),
-     "minimum_state": test_diagnostics[["minimum_state_start_1", "minimum_state_start_2"]].min().min()},
-])
-generation_summary.to_csv(RUN_ROOT / "metrics" / "mechanistic_generation_summary.csv", index=False)
-display(generation_summary)
-"""),
-    markdown(r"""
-## 3. Five-fold ridge selection
-
-Development rows are permuted once from state 271828 and split into five
-folds. All centers and scales are fitted again inside each fold. The selected
-penalty is the largest value within one descriptive fold standard error of the
-minimum raw complete-state nRMSE. Projection results never select the penalty.
-"""),
-    code(r"""
-model, cv_scores = select_ridge(
-    design["development_decisions"], design["development_influents"],
-    development_targets,
-)
-assert model.feature_map.feature_count == 406
-assert model.response_count == PROFILE.response_count
-cv_scores.to_csv(RUN_ROOT / "metrics" / "ridge_cross_validation.csv", index=False)
-np.savez_compressed(
-    RUN_ROOT / "models" / "ridge_surrogate.npz",
-    decision_center=model.feature_map.decision_center,
-    decision_scale=model.feature_map.decision_scale,
-    influent_center=model.feature_map.influent_center,
-    influent_scale=model.feature_map.influent_scale,
-    term_center=model.feature_map.term_center,
-    term_scale=model.feature_map.term_scale,
-    response_center=model.response_center,
-    response_scale=model.response_scale,
-    coefficients=model.coefficients,
-    ridge_penalty=np.asarray(model.ridge_penalty),
-)
-display(cv_scores.groupby("gamma")[["mean", "standard_error", "selected"]].first())
-"""),
-    markdown(r"""
-## 4. Untouched raw/projected/mechanistic assessment
-
-The test block is opened once. Raw and projected predictions use the same
-frozen ridge model. For every test row, the physical ledger records scaled
-mass/network equality residuals, network-direction violations, minimum
-coordinate, and scaled non-negativity violation count and magnitude. The same
-ledger includes the independently generated mechanistic reference.
-"""),
-    code(r"""
-prediction_metrics, assessment_violations, raw_test, projected_test = (
-    assess_raw_projected_mechanistic(
-        model, design["development_decisions"], design["development_influents"],
-        development_targets, design["test_decisions"], design["test_influents"],
-        test_targets, PROFILE,
+if not (ROOT / "scripts" / "run_article_v3_5000.py").is_file():
+    raise RuntimeError(
+        "Run this notebook from the surrogate-optimization-arch repository root."
     )
+
+# Configure with ARTICLE_V3_RUN_ID before starting, or edit this assignment.
+RUN_ID = os.environ.get("ARTICLE_V3_RUN_ID", DEFAULT_RUN_ID)
+if RUN_ID_PATTERN.fullmatch(RUN_ID) is None or ".." in RUN_ID:
+    raise ValueError(
+        "ARTICLE_V3_RUN_ID must match article_full_5000_<identifier>."
+    )
+RUN_ROOT = resolve_run_directory(RUN_ID)
+
+# This explicit flag authorizes only the runner's pinned, one-time migration of
+# the already-started article_full_5000_001 optimization contract. Generation,
+# fitting, and assessment remain byte-verified and are reused. The runner
+# refuses the migration for any other run or predecessor contract.
+AUTHORIZE_SINGLE_START_EXACT_QP_MIGRATION = RUN_ID == DEFAULT_RUN_ID
+
+profile = asdict(ARTICLE_FULL)
+expected_profile = {
+    "name": "article_full",
+    "development_count": 4_000,
+    "test_count": 1_000,
+    "robustness_count": 10,
+    "layer_count": 10,
+    "article_eligible": True,
+    "enforce_admission_gate": True,
+}
+for field, expected in expected_profile.items():
+    if profile.get(field) != expected:
+        raise RuntimeError(
+            f"ARTICLE_FULL contract mismatch for {field}: "
+            f"{profile.get(field)!r} != {expected!r}"
+        )
+if profile["development_count"] + profile["test_count"] != 5_000:
+    raise RuntimeError("The article profile must require exactly 5,000 accepted inputs.")
+
+contract_config = json.loads(
+    (ROOT / "config" / "params_manuscript_v3.json").read_text(encoding="utf-8")
 )
-prediction_metrics.to_csv(RUN_ROOT / "metrics" / "untouched_prediction_metrics.csv", index=False)
-assessment_violations.to_csv(RUN_ROOT / "metrics" / "physical_violations_assessment.csv", index=False)
-np.savez_compressed(RUN_ROOT / "predictions" / "untouched_test.npz",
-                    raw=raw_test, projected=projected_test, mechanistic=test_targets)
-display(prediction_metrics)
-display(assessment_violations.groupby("method").agg(
-    mass_max=("mass_conservation_violation_max", "max"),
-    mass_rows_violating=("mass_conservation_violation_count", lambda x: int((x > 0).sum())),
-    nonnegative_max=("nonnegativity_violation_max", "max"),
-    nonnegative_rows_violating=("nonnegativity_violation_count", lambda x: int((x > 0).sum())),
-    minimum_coordinate=("minimum_coordinate", "min"),
-))
-raw_gate = float(prediction_metrics.loc[prediction_metrics.method.eq("raw"), "nrmse"].iloc[0]) < 1.0
-projection_gate = assessment_violations.loc[
-    assessment_violations.method.eq("projected"),
-    "mass_conservation_violation_count",
-].eq(0).all()
-ADMISSION_PASSED = bool(raw_gate and projection_gate)
-OPTIMIZATION_AUTHORIZED = bool(ADMISSION_PASSED or GATES_BYPASSED)
-write_json(RUN_ROOT / "metrics" / "admission_gate.json", {
-    "passed": ADMISSION_PASSED,
-    "bypassed_by_user": GATES_BYPASSED,
-    "optimization_authorized": OPTIMIZATION_AUTHORIZED,
-    "raw_nrmse_below_one": bool(raw_gate),
-    "all_projected_mass_audits_passed": bool(projection_gate),
-    "failure_action": None if ADMISSION_PASSED else "optimization prohibited without refitting",
-})
-print({"admission_passed": ADMISSION_PASSED,
-       "bypassed_by_user": GATES_BYPASSED,
-       "optimization_authorized": OPTIMIZATION_AUTHORIZED})
+optimization = contract_config["optimization"]
+article_config = contract_config["profiles"]["article_full"]
+required_optimization = {
+    "protocol": "single_start_exact_qp_active_set",
+    "runner_protocol": "single_center_local_exact_qp_v1",
+    "surrogate_protocol": "seven_variable_exact_qp_single_start_v1",
+    "direct_protocol": "smooth_direct_single_center_v1",
+    "start_count": 1,
+    "direct_start_count": 1,
+    "surrogate_embedded_kkt_ipopt_enabled": False,
+    "direct_smoothing_continuation_retained": True,
+    "optimization_case_count": 11,
+    "nominal_case_count": 1,
+    "robustness_case_count": 10,
+    "optimization_case_failure_stops_workflow": False,
+}
+for field, expected in required_optimization.items():
+    if optimization.get(field) != expected:
+        raise RuntimeError(
+            f"Optimization contract mismatch for {field}: "
+            f"{optimization.get(field)!r} != {expected!r}"
+        )
+if article_config.get("optimization_start_count") != 1:
+    raise RuntimeError("The article profile requires one start per route and case.")
+if len(optimization.get("smooth_sequence", [])) != 3:
+    raise RuntimeError("The direct route must retain its three smoothing stages.")
+if optimization.get("surrogate_gap_sequence") != []:
+    raise RuntimeError("The surrogate route must not execute gap-continuation stages.")
+if OPTIMIZATION_PROTOCOL != optimization["runner_protocol"]:
+    raise RuntimeError("The runner and configuration optimization protocols differ.")
+
+display(pd.Series({
+    "run_id": RUN_ID,
+    "run_directory": str(RUN_ROOT),
+    "accepted_dataset_target": 5_000,
+    "accepted_development_target": profile["development_count"],
+    "accepted_untouched_test_target": profile["test_count"],
+    "candidate_attempt_count": "reported after generation; may exceed 5,000",
+    "candidate_replacement_policy": "audit, exclude, deterministically replace",
+    "robustness_cases": profile["robustness_count"],
+    "clarifier_layers": profile["layer_count"],
+    "starts_per_route_and_case": 1,
+    "surrogate_optimization": optimization["surrogate_protocol"],
+    "surrogate_embedded_ipopt_stages": 0,
+    "direct_optimization": optimization["direct_protocol"],
+    "direct_smoothing_stages": len(optimization["smooth_sequence"]),
+    "local_optimum_accepted": True,
+    "global_optimality_claimed": False,
+    "full_run_wall_time_ceiling": None,
+    "scientific_admission_gate_enforced_for_article_eligibility": True,
+    "admission_gate_execution_policy": "advisory; scientific eligibility unchanged",
+}, name="value").to_frame())
 """),
     markdown(r"""
-## 5. Nominal and influent-scenario stress test
+## Status and artifact views
 
-The reduced verification performs the manuscript's nine-start projected
-surrogate outer refinement for the midpoint influent and all requested fresh
-influent scenarios. Every selected point is then replayed independently by the
-nonsmooth mechanism from both declared starts. Endpoint stationarity remains
-explicitly labeled unresolved in this reduced profile; article release is not
-authorized by a reduced test.
+The helpers below are read-only. Each stage call publishes atomic checkpoints;
+the `finally` block displays the latest state and paths. A scientific gate
+failure is visible in those artifacts but does not stop this model-function
+exercise. Hard computational and integrity failures still stop the stage.
 """),
     code(r"""
-nominal = (np.asarray([0.0, 20.0, 5.0, 12.0, 0.0, 0.0, 0.0, 2.0, 10.0, 1.6,
-                       20.0, 60.0, 15.0, 5.0, 2.0, 1.0, 0.5, 0.5, 0.0, 0.0]) +
-           np.asarray([0.5, 180.0, 80.0, 55.0, 3.0, 8.0, 2.0, 18.0, 90.0, 5.2,
-                       120.0, 280.0, 100.0, 60.0, 20.0, 30.0, 8.0, 8.0, 12.0, 12.0])) / 2
-case_influents = [("nominal", nominal)] + [
-    (f"robustness_{i + 1:02d}", row)
-    for i, row in enumerate(design["robustness_influents"])
-]
-case_rows, violation_frames = [], []
-for case, influent in case_influents:
-    if OPTIMIZATION_AUTHORIZED:
-        selected = optimize_surrogate_case(
-            model, influent, design["development_decisions"],
-            design["development_influents"], development_targets, PROFILE,
-        )
-        replay, violations = replay_selected_case(
-            case, selected, influent, model, design["development_decisions"],
-            design["development_influents"], development_targets, PROFILE,
-        )
-        case_rows.append(replay)
-        if len(violations):
-            violation_frames.append(violations)
-    else:
-        case_rows.append({
-            "case": case,
-        "status": "not attempted: predeclared untouched-test admission gate failed",
-        })
-case_results = pd.DataFrame(case_rows)
-case_violations = pd.concat(violation_frames, ignore_index=True) if violation_frames else pd.DataFrame()
-case_results.to_csv(RUN_ROOT / "optimization" / "case_results.csv", index=False)
-case_violations.to_csv(RUN_ROOT / "metrics" / "physical_violations_selected_cases.csv", index=False)
-display(case_results)
-display(case_violations)
-"""),
-    markdown(r"""
-## 6. Test disposition and article-run lock
-
-The verification run is complete only when its 500 fixed design rows, five
-scenario rows plus nominal case, and every physical ledger are present. It can
-validate implementation behavior but cannot supply article results. The full
-profile is intentionally separate and uses the manuscript's 800/200 design,
-ten scenarios, and ten-layer Clarifier.
-"""),
-    code(r"""
-all_violations = pd.concat([assessment_violations, case_violations], ignore_index=True)
-summary = {
-    "profile": PROFILE.name,
-    "article_eligible": PROFILE.article_eligible,
-    "generated_dataset_count": PROFILE.development_count + PROFILE.test_count,
-    "robustness_case_count": PROFILE.robustness_count,
-    "clarifier_layer_count": PROFILE.layer_count,
-    "ridge_penalty": model.ridge_penalty,
-    "raw_test_nrmse": float(prediction_metrics.loc[prediction_metrics.method.eq("raw"), "nrmse"].iloc[0]),
-    "projected_test_nrmse": float(prediction_metrics.loc[prediction_metrics.method.eq("projected"), "nrmse"].iloc[0]),
-    "maximum_mass_violation_by_method": all_violations.groupby("method")["mass_conservation_violation_max"].max().to_dict(),
-    "maximum_nonnegativity_violation_by_method": all_violations.groupby("method")["nonnegativity_violation_max"].max().to_dict(),
-    "admission_gate_bypassed_by_user": GATES_BYPASSED,
-    "status": (
-        "verification_complete" if OPTIMIZATION_AUTHORIZED and not PROFILE.article_eligible
-        else "article_run_complete" if OPTIMIZATION_AUTHORIZED
-        else "stopped_at_untouched_test_admission_gate"
+STAGE_ARTIFACTS = {
+    "generation": (
+        "inputs/contract.json",
+        "inputs/contract_migrations/article-v3-generation-replacement-v1.json",
+        "inputs/contract_migrations/article-v3-projection-audit-v1.json",
+        "inputs/contract_migrations/article-v3-direct-active-set-v1.json",
+        "datasets/design.npz",
+        "datasets/development/all_attempts.csv",
+        "datasets/development/accepted_provenance.csv",
+        "datasets/development/accepted_inputs.npz",
+        "datasets/development/mechanistic_accepted_v3.npz",
+        "datasets/development/accepted_diagnostics.csv",
+        "datasets/development/base_checkpoint_migration.csv",
+        "datasets/development/replacement_summary.json",
+        "datasets/development/block_complete.json",
+        "datasets/test/all_attempts.csv",
+        "datasets/test/accepted_provenance.csv",
+        "datasets/test/accepted_inputs.npz",
+        "datasets/test/mechanistic_accepted_v3.npz",
+        "datasets/test/accepted_diagnostics.csv",
+        "datasets/test/base_checkpoint_migration.csv",
+        "datasets/test/replacement_summary.json",
+        "datasets/test/block_complete.json",
+    ),
+    "assessment": (
+        "models/ridge_complete.json",
+        "metrics/assessment_complete.json",
+        "metrics/admission_gate.json",
+        "metrics/untouched_prediction_metrics.csv",
+        "metrics/physical_violations_assessment.csv",
+    ),
+    "complete": (
+        "optimization/optimization_complete.json",
+        "metrics/smooth_reference_test_complete.json",
+        "metrics/physical_violations_all_analysis.csv",
+        "report/tables/report_manifest.json",
     ),
 }
-write_json(RUN_ROOT / "report" / "summary.json", summary)
-display(pd.Series(summary, name="value").to_frame())
+
+
+def read_json(relative_path: str) -> dict:
+    path = RUN_ROOT / relative_path
+    if not path.is_file():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def artifact_table(through: str) -> pd.DataFrame:
+    ordered = ["run_state.json"]
+    for stage in ("generation", "assessment", "complete"):
+        ordered.extend(STAGE_ARTIFACTS[stage])
+        if stage == through:
+            break
+    rows = []
+    for relative in dict.fromkeys(ordered):
+        path = RUN_ROOT / relative
+        rows.append({
+            "artifact": relative,
+            "exists": path.is_file(),
+            "bytes": path.stat().st_size if path.is_file() else None,
+            "absolute_path": str(path),
+        })
+    return pd.DataFrame(rows)
+
+
+def show_status(through: str) -> None:
+    state = read_json("run_state.json")
+    display(pd.Series(
+        state or {"stage": through, "status": "no state published"},
+        name="value",
+    ).to_frame())
+    display(artifact_table(through))
+
+
+def invoke_stage(through: str) -> None:
+    print(f"Invoking production runner through {through!r} for {RUN_ID!r}.")
+    try:
+        run_article(
+            run_id=RUN_ID,
+            through=through,
+            authorize_single_start_exact_qp_migration=(
+                AUTHORIZE_SINGLE_START_EXACT_QP_MIGRATION
+            ),
+        )
+    finally:
+        show_status(through)
+"""),
+    markdown(r"""
+## 1. Complete the accepted 4,000/1,000 mechanistic blocks
+
+Candidate round 0 retains the independent development/test Latin hypercubes
+and resumes their row-level, two-start nonsmooth mechanistic checkpoints. Each
+rejected candidate remains in the attempt ledger with all available audits but
+is excluded from the accepted dataset. The runner then continues that block's
+persisted SplitMix64 state in deterministic row-major supplemental rounds,
+each sized to the remaining deficit, until exactly 4,000 development and 1,000
+test rows have been accepted. Accepted replacements fill failed original slots
+in ascending order; neither candidates nor accepted rows cross block boundaries.
+
+The accepted union is conditioned on mechanistic acceptance and is not one
+global Latin hypercube. Generation reports therefore distinguish the attempted
+candidate denominator from the accepted-row denominator and retain every
+candidate-to-final-slot mapping. The phrase "untouched test" means untouched by
+fitting and tuning, not unconditional sampling from the entire input box.
+
+For the already-started default run, the runner verifies the complete migration
+chain and preserves the accepted generation, fitted surrogate, and assessment
+artifacts. The newest pinned migration changes only the optimization protocol;
+it does not regenerate data or refit the surrogate.
+"""),
+    code(r"""
+invoke_stage("generation")
+
+generation_rows = []
+attempt_status_rows = []
+for block, required in (("development", 4_000), ("test", 1_000)):
+    attempts_path = RUN_ROOT / "datasets" / block / "all_attempts.csv"
+    provenance_path = RUN_ROOT / "datasets" / block / "accepted_provenance.csv"
+    attempts = pd.read_csv(attempts_path) if attempts_path.is_file() else pd.DataFrame()
+    provenance = (
+        pd.read_csv(provenance_path) if provenance_path.is_file() else pd.DataFrame()
+    )
+    summary = read_json(f"datasets/{block}/replacement_summary.json")
+    generation_rows.append({
+        "block": block,
+        "candidate_attempts": len(attempts),
+        "required_accepted_rows": required,
+        "accepted_rows": len(provenance),
+        "rejected_attempts": max(0, len(attempts) - len(provenance)),
+        "base_accepted_rows": summary.get("base_accepted_count"),
+        "supplemental_attempts": summary.get("supplemental_attempt_count"),
+        "supplemental_rounds": summary.get("supplemental_round_count"),
+        "provenance_complete": len(provenance) == required,
+    })
+    if "attempt_status" in attempts:
+        attempt_status_rows.extend(
+            {"block": block, "attempt_status": status, "count": int(count)}
+            for status, count in attempts["attempt_status"].value_counts(
+                dropna=False
+            ).items()
+        )
+display(pd.DataFrame(generation_rows))
+display(pd.DataFrame(
+    attempt_status_rows,
+    columns=("block", "attempt_status", "count"),
+))
+"""),
+    markdown(r"""
+## 2. Fit and assess on the untouched 1,000-input test block
+
+This call reuses the generation checkpoints, performs the frozen five-fold
+ridge selection and trust calibration, opens the untouched block once, and
+publishes raw/projected/mechanistic accuracy and physical-violation ledgers.
+The gate result remains the scientific article-eligibility decision. A failure
+is not waived or refitted; it is recorded, while execution continues because
+this run is currently serving as a complete model-function exercise.
+"""),
+    code(r"""
+invoke_stage("assessment")
+
+gate = read_json("metrics/admission_gate.json")
+if gate:
+    display(pd.Series(gate, name="value").to_frame())
+
+prediction_path = RUN_ROOT / "metrics" / "untouched_prediction_metrics.csv"
+if prediction_path.is_file():
+    display(pd.read_csv(prediction_path))
+
+physical_path = RUN_ROOT / "metrics" / "physical_violations_assessment.csv"
+if physical_path.is_file():
+    physical = pd.read_csv(physical_path)
+    display(physical.groupby("method", dropna=False).agg(
+        rows=("method", "size"),
+        maximum_mass_violation=("mass_conservation_violation_max", "max"),
+        maximum_nonnegativity_violation=("nonnegativity_violation_max", "max"),
+        minimum_coordinate=("minimum_coordinate", "min"),
+    ))
+"""),
+    markdown(r"""
+## 3. Optimize, independently replay, audit, and report
+
+This resumes the completed assessment, including any recorded scientific gate
+failure, and runs the nominal plus ten robustness cases. Both routes use one
+deterministic box-center start per case and accept the validated local result.
+The surrogate route directly uses the seven-variable exact-QP active-set
+solver with normalized constraints and no embedded-KKT IPOPT continuation.
+The direct route retains only its separate three-stage smoothing continuation.
+The driver then performs fixed-input smooth/nonsmooth replay,
+derivative and root-reproduction checks, and raw/projected/smooth/reference
+mass-conservation and non-negativity accounting before writing all article
+tables. A failed or unresolved case remains in the denominator and does not
+suppress subsequent cases or downstream audits. There is no 10-minute ceiling
+in this phase.
+"""),
+    code(r"""
+invoke_stage("complete")
+
+all_physical_path = RUN_ROOT / "metrics" / "physical_violations_all_analysis.csv"
+if all_physical_path.is_file():
+    all_physical = pd.read_csv(all_physical_path)
+    display(all_physical.groupby("method", dropna=False).agg(
+        rows=("method", "size"),
+        maximum_mass_violation=("mass_conservation_violation_max", "max"),
+        mass_violating_rows=(
+            "mass_conservation_violation_count", lambda values: int((values > 0).sum())
+        ),
+        maximum_nonnegativity_violation=("nonnegativity_violation_max", "max"),
+        nonnegative_violating_rows=(
+            "nonnegativity_violation_count", lambda values: int((values > 0).sum())
+        ),
+        minimum_coordinate=("minimum_coordinate", "min"),
+    ))
+
+report_directory = RUN_ROOT / "report" / "tables"
+report_rows = [
+    {
+        "report_artifact": path.name,
+        "bytes": path.stat().st_size,
+        "absolute_path": str(path),
+    }
+    for path in sorted(report_directory.glob("*"))
+    if path.is_file()
+]
+display(pd.DataFrame(
+    report_rows,
+    columns=("report_artifact", "bytes", "absolute_path"),
+))
+"""),
+    markdown(r"""
+## Resumption
+
+If execution is interrupted, rerun the setup and helper cells, then rerun the
+cell for the desired terminal stage. Calling `complete` is sufficient to
+resume every missing prerequisite. The production driver accepts candidate and
+accepted-row checkpoints only when their source, profile, input, stream-state,
+and provenance bindings match. Its pinned migration chain preserves the
+generation-replacement and projection-audit history, verifies all reusable
+generation, fit, and assessment artifacts, and starts the revised optimization
+without accepting a partial result from the retired protocol. Any other
+mismatch is a run-integrity failure and is not hidden by regeneration.
 """),
 ]
 
 notebook = nbf.v4.new_notebook(
     cells=cells,
     metadata={
-        "kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
-        "language_info": {"name": "python", "version": "3.12"},
+        "kernelspec": {
+            "display_name": "Python 3",
+            "language": "python",
+            "name": "python3",
+        },
+        "language_info": {
+            "codemirror_mode": {"name": "ipython", "version": 3},
+            "file_extension": ".py",
+            "mimetype": "text/x-python",
+            "name": "python",
+            "nbconvert_exporter": "python",
+            "pygments_lexer": "ipython3",
+            "version": "3.12",
+        },
+        "surrogate_optimization_arch": {
+            "interface": "scripts/run_article_v3_5000.py",
+            "profile": "article_full",
+            "schema": 5,
+        },
     },
 )
+nbf.validate(notebook)
 nbf.write(notebook, NOTEBOOK)
 print(NOTEBOOK)

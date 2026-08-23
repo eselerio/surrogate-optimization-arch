@@ -1,11 +1,11 @@
 {
-  "schema_version": 1,
+  "schema_version": 3,
   "sources": {
     "manuscript": "article/wip_v3/manuscript.tex",
     "supplement": "article/wip_v3/supplementary_material.tex"
   },
   "execution": {
-    "default_profile": "test_500_l5",
+    "default_profile": "article_full",
     "profile_environment_variable": "ARTICLE_V3_PROFILE",
     "run_id_environment_variable": "ARTICLE_V3_RUN_ID",
     "results_root": "results/article_v3",
@@ -24,13 +24,15 @@
       "development_seed": 500042,
       "test_seed": 500043,
       "robustness_seed": 500314159,
+      "smoke_optimization_start_count": 1,
+      "preflight_stage_wall_time_seconds": 600.0,
       "continue_after_article_admission_gate_failure": true,
       "purpose": "Implementation validation only; never eligible for article results."
     },
     "article_full": {
       "article_eligible": true,
-      "development_count": 800,
-      "test_count": 200,
+      "development_count": 4000,
+      "test_count": 1000,
       "robustness_count": 10,
       "clarifier_layer_count": 10,
       "clarifier_feed_layer_one_based": 5,
@@ -38,12 +40,46 @@
       "development_seed": 100042,
       "test_seed": 100043,
       "robustness_seed": 314159,
-      "continue_after_article_admission_gate_failure": false
+      "optimization_start_count": 1,
+      "continue_after_article_admission_gate_failure": true,
+      "admission_gate_execution_policy": "advisory for this model-function exercise; record every failed scientific gate and continue without refitting",
+      "scientific_admission_gate_enforced_for_article_eligibility": true,
+      "article_results_eligible_only_if_all_scientific_gates_pass": true,
+      "counts_are_accepted_rows": true,
+      "replace_rejected_mechanistic_candidates": true,
+      "purpose": "User-authorized article workload: exactly 5000 accepted inputs, split into 4000 development and 1000 untouched test rows; rejected mechanistic attempts are audited, excluded, and deterministically replaced."
     }
+  },
+  "workload_revision": {
+    "date": "2026-08-23",
+    "authority": "explicit user instruction",
+    "supersedes_article_total": 1000,
+    "article_total": 5000,
+    "development_fraction": 0.8,
+    "test_fraction": 0.2,
+    "preflight_is_distinct_and_article_ineligible": true,
+    "replacement_policy_revision_date": "2026-08-23",
+    "replacement_policy_authority": "explicit user instruction after initial development candidate generation",
+    "replacement_policy_is_outcome_aware": true,
+    "same_run_migration_required": true,
+    "projection_reconstruction_revision_date": "2026-08-23",
+    "projection_reconstruction_authority": "explicit user instruction after diagnosis of an article-scale out-of-fold projection audit failure",
+    "projection_reconstruction_is_outcome_aware": true,
+    "admission_gate_execution_revision_date": "2026-08-23",
+    "admission_gate_execution_authority": "explicit user instruction for the model-function exercise",
+    "failed_scientific_gate_changes_article_eligibility": true,
+    "failed_scientific_gate_stops_model_function_execution": false,
+    "single_start_exact_qp_revision_date": "2026-08-23",
+    "single_start_exact_qp_authority": "explicit user instruction after the embedded surrogate continuation proved impractically slow",
+    "single_start_exact_qp_revision_is_outcome_aware": true,
+    "prior_multistart_surrogate_continuation_retired_for_production": true,
+    "same_run_generation_fit_and_assessment_reused": true
   },
   "design": {
     "generator": "SplitMix64",
-    "method": "strength-1 Latin hypercube",
+    "method": "candidate round 0 is a strength-1 Latin hypercube; supplemental candidates are row-major open-unit SplitMix64 draws",
+    "initial_candidate_method": "strength-1 Latin hypercube",
+    "final_accepted_design_description": "acceptance-conditioned union of initial-round survivors and deterministic supplemental candidates; not one global Latin hypercube",
     "dimension_order": [
       "H", "a_3", "a_4", "a_5", "r_I", "r_R", "w",
       "S_O", "S_F", "S_A", "S_NH4", "S_NO2", "S_NO3", "S_N2", "S_PO4", "S_I", "S_ALK",
@@ -52,7 +88,8 @@
     "lhs_jitter_formula": "((U >> 11) + 0.5) / 2^53",
     "fisher_yates_traversal": "descending n-1 through 1",
     "fold_seed": 271828,
-    "optimization_start_seed": 271828
+    "optimization_start_seed": 271828,
+    "optimization_start_seed_status": "retired legacy multistart seed; the production start is the deterministic componentwise box center"
   },
   "mechanistic_generation": {
     "bdf_coordinates": "log",
@@ -71,7 +108,31 @@
     "two_start_scaled_tolerance": 1e-6,
     "stability_margin_d_inv": -1e-8,
     "stability_step_agreement_d_inv": 1e-6,
-    "stability_step_agreement_note": "Revised from 1e-9 after the complete 500-row preflight showed that all 21 apparent failures passed every physical, convergence, branch, and stability-margin gate and differed only in the prescribed two-step finite-difference eigenvalue estimate (maximum observed discrepancy 9.281e-7 d^-1); see manuscript revision record."
+    "stability_step_agreement_note": "Revised from 1e-9 after the complete 500-row preflight showed that all 21 apparent failures passed every physical, convergence, branch, and stability-margin gate and differed only in the prescribed two-step finite-difference eigenvalue estimate (maximum observed discrepancy 9.281e-7 d^-1); see manuscript revision record.",
+    "candidate_acceptance_branch_rule": "exact equality of the complete two-start nonsmooth branch-classification tuple; no development-calibrated branch-margin generation screen",
+    "replacement_policy": {
+      "enabled": true,
+      "scope": "article_full production generation and subsequent workflows that explicitly adopt this replacement contract; the completed historical preflight is unchanged",
+      "target_counts_mean": "accepted mechanistic rows",
+      "ordinary_rejection_action": "retain the complete failed attempt, exclude it from the accepted dataset, and generate a replacement",
+      "initial_candidate_round": "the original independent strength-1 Latin-hypercube block",
+      "supplemental_round_size": "current accepted-row deficit",
+      "supplemental_generator": "continue the block-specific persisted SplitMix64 state and draw count",
+      "supplemental_coordinate_order": "row-major, 27 successive words per candidate in the declared dimension order",
+      "supplemental_unit_coordinate_formula": "((U >> 11) + 0.5) / 2^53",
+      "supplemental_design_is_latin_hypercube": false,
+      "accepted_assignment": "accepted supplemental candidates in candidate order fill unoccupied initial slots in ascending slot order",
+      "development_test_streams_independent": true,
+      "cross_block_promotion_allowed": false,
+      "candidate_id_format": "<block>:r<round:06d>:c<index:06d>",
+      "retain_all_attempts": true,
+      "retain_stream_state_and_draw_provenance": true,
+      "same_run_migration": "verify original contract, input bytes, and checkpoint SHA-256; preserve history and accepted states without rewriting",
+      "accepted_set_is_conditioned_on_mechanistic_acceptance": true,
+      "final_accepted_set_is_single_global_lhs": false,
+      "ordinary_candidate_failure_stops_workflow": false,
+      "run_integrity_failure_stops_workflow": true
+    }
   },
   "surrogate": {
     "fold_count": 5,
@@ -84,6 +145,15 @@
   },
   "projection": {
     "solver": "OSQP",
+    "independent_multiplier_reconstruction": "bounded-variable least squares active-set method (BVLS); a deterministic BVLS representation is reported when multipliers are nonunique, without a minimum-multiplier-norm claim",
+    "multiplier_reconstruction_uses_solver_duals": false,
+    "multiplier_reconstruction_revision_reason": "TRF premature termination produced a false stationarity rejection despite an accepted primal OSQP solution; BVLS resolves the fixed finite bounded least-squares problem directly",
+    "cold_retry_sequence": [
+      {"rho": "OSQP default", "adaptive_rho": "OSQP default", "maximum_iterations": 100000},
+      {"rho": 0.01, "adaptive_rho": false, "maximum_iterations": 200000},
+      {"rho": 10.0, "adaptive_rho": false, "maximum_iterations": 200000}
+    ],
+    "retry_changes_qp": false,
     "active_set_tolerance": 1e-7,
     "equality_tolerance": 1e-8,
     "inequality_tolerance": 1e-8,
@@ -92,15 +162,54 @@
     "complementarity_tolerance": 1e-8,
     "nonnegativity_tolerance": 1e-10
   },
+  "assessment_execution": {
+    "scientific_thresholds_remain_unchanged": true,
+    "scientific_gate_failures_are_recorded": true,
+    "scientific_gate_failures_are_advisory_for_workflow_execution": true,
+    "failed_gate_results_are_article_eligible": false,
+    "refit_after_gate_failure": false,
+    "replace_assessment_rows_after_gate_failure": false,
+    "hard_failures": [
+      "non-finite or incomplete arrays required downstream",
+      "undefined feature, response, or physical scale",
+      "rank or factorization failure that prevents construction of the declared problem",
+      "contract, hash, provenance, or checkpoint inconsistency"
+    ]
+  },
   "optimization": {
-    "start_count": 9,
-    "surrogate_gap_sequence": [1e-2, 1e-4, 1e-6, 1e-8],
+    "protocol": "single_start_exact_qp_active_set",
+    "runner_protocol": "single_center_local_exact_qp_v1",
+    "surrogate_protocol": "seven_variable_exact_qp_single_start_v1",
+    "direct_protocol": "smooth_direct_single_center_v1",
+    "start_count": 1,
+    "start_definition": "componentwise center of the normalized seven-control box",
+    "local_solution_accepted": true,
+    "global_optimality_claimed": false,
+    "surrogate_primary_solver": "seven-variable constrained local optimization with exact cold projection-QP evaluation and active-set KKT sensitivities",
+    "surrogate_outer_method": "SLSQP with analytical total derivatives through the active lower-QP KKT system",
+    "surrogate_outer_maximum_iterations": 250,
+    "surrogate_outer_function_tolerance": 1e-10,
+    "surrogate_embedded_kkt_ipopt_enabled": false,
+    "surrogate_gap_sequence": [],
+    "surrogate_stage_warm_start": "not applicable; the embedded-KKT IPOPT continuation is retired",
+    "upper_constraint_normalization": "fixed positive precomputed scale for every row; never iterate-dependent",
+    "surrogate_final_refinement": "retired as a post-continuation refinement; exact cold projection QP with active-set sensitivities is now the primary surrogate optimizer",
+    "surrogate_failure_action": "record the case failure and continue with the remaining cases and downstream audits",
+    "optimization_case_failure_stops_workflow": false,
+    "retain_failed_and_unresolved_case_audits": true,
+    "direct_start_count": 1,
+    "direct_start_definition": "same deterministic componentwise box center",
+    "direct_smoothing_continuation_retained": true,
+    "optimization_case_count": 11,
+    "nominal_case_count": 1,
+    "robustness_case_count": 10,
     "smooth_sequence": [
       {"epsilon": 1e-6, "receiver_half_width_g_m3": 10.0},
       {"epsilon": 1e-7, "receiver_half_width_g_m3": 3.0},
       {"epsilon": 1e-8, "receiver_half_width_g_m3": 1.0}
     ],
     "maximum_iterations_per_stage": 2500,
+    "maximum_iterations_per_stage_scope": "direct smooth-mechanistic continuation only; no surrogate IPOPT stages are executed",
     "derivative_steps": [1e-6, 5e-7],
     "derivative_relative_tolerance": 1e-5,
     "upper_kkt_tolerance": 1e-6,
@@ -127,6 +236,9 @@
     "required_methods": ["raw", "projected", "smooth", "reference"],
     "track_mass_conservation": true,
     "track_nonnegativity": true,
+    "generation_attempt_denominators": ["development_candidates_attempted", "test_candidates_attempted"],
+    "downstream_dataset_denominators": ["development_accepted_4000", "test_accepted_1000"],
+    "report_candidate_to_accepted_slot_provenance": true,
     "retain_zero_count_failure_classes": true
   }
 }

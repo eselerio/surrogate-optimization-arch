@@ -1,87 +1,167 @@
-# Optimization of a Recycling Mixer-Reactor-Clarifier Activated Sludge System Using a Physically-Constrained Statistical Surrogate
+# Physically constrained surrogate optimization
 
-This repository contains the executable study for **“Optimization of a Recycling Mixer-Reactor-Clarifier Activated Sludge System Using a Physically-Constrained Statistical Surrogate.”** The canonical entry points are `main_closed_loop.ipynb` and `scripts/run_closed_loop.py`; both read `config/params_closed_loop.json` and execute the same staged workflow.
+This repository is the executable companion to the manuscript in
+`article/wip_v3`. The canonical study entry point is `main_closed_loop.ipynb`;
+the v3 contract is recorded separately in `config/params_manuscript_v3.json`.
+The earlier five-control/351-feature workflow is retained only as legacy code
+and is not an article-v3 result source.
 
-The process model couples an inlet mixer, five ASM2d-TSN CSTRs, mixed-liquor and return-sludge recycles, sludge wasting, and a ten-layer secondary Clarifier. A fixed 351-feature quadratic surrogate predicts 170 plant-state coordinates. One sparse nonlinear program jointly optimizes five controls and 110 reactor-and-Clarifier states, reconstructs the complete response, imposes the smooth mechanistic balances, and requires both conformal fidelity and development support. One exact nonsmoothed BDF replay validates the selected decision.
+The v3 calculation uses seven controls, twenty influent coordinates, five
+reactors, and a dimension-parametric layered Clarifier. A 406-feature ridge
+surrogate predicts the complete mixer/reactor/outlet/layer response. Each raw
+prediction is reconciled by an independently audited convex physical
+projection. Operational results compare the projected-surrogate route with a
+separate smooth mechanistic NLP and then replay available decisions with the
+nonsmooth reference model.
+
+Every analysis retains mass-conservation and non-negativity diagnostics for
+raw, projected, smooth-mechanistic, and reference/mechanistic responses.
+Rejected mechanistic generations remain in the candidate-attempt denominator
+and audit ledger but are excluded from fitted/test datasets and replaced.
+Optimization failures and missing endpoints remain in their case denominator.
 
 ## Environment
 
-Create the locked Python 3.12 environment from the repository root:
+From the repository root:
 
 ```powershell
 uv sync --frozen
+uv run python -m unittest discover -s tests -v
 ```
 
-CasADi 3.7.2 supplies automatic derivatives and its bundled IPOPT/MUMPS solver. Scientific outputs are written only below `results/closed_loop/<run-id>`. A run ID binds the configuration, source hashes, dependencies, and random-generator records; a sealed run is immutable.
+CasADi supplies IPOPT/MUMPS for the direct smooth-mechanistic comparator.
+OSQP resolves the physical projection QPs used by assessment and by the
+seven-variable surrogate optimizer. Scientific artifacts are written below
+`results/article_v3/<run-id>`.
 
-An unsealed run may be resumed. Before reuse, every completed NLP-start and exact-replay artifact is checked against its case, selected candidate, dimensions, and stored digest. Verified artifacts are reused without another scientific solver call, and the persistent invocation record—not an inferred case multiple—supplies realized NLP and BDF counts. Exact fidelity is judged on the same normalized constraint scale as the NLP: `d_BDF / delta - 1` must not exceed the configured normalized feasibility tolerance (currently `1e-8`). Physical projection QPs and DIRECT searches have no executable route and therefore always have zero evaluations.
+## Mandatory preflight
 
-## Staged 2,000-row verification
+The implementation preflight is deliberately separate from the article
+design:
 
-The `test_2000` profile uses independent blocks of 1,400 development, 200 calibration, and 400 untouched assessment rows. It runs the nominal case, ten fresh-influent robustness cases, and twelve sensitivity cases. Each case uses nine deterministic starts of the combined NLP and permits one exact validation replay, for a maximum of 207 NLP starts and 2,023 BDF routes. Verification data use streams distinct from the full study and are never reused as article results.
+- 400 development plus 100 untouched test inputs;
+- five fresh influent robustness scenarios plus the nominal case;
+- five Clarifier layers, with feed layer 3 and 1,200 m³ per layer;
+- independent seeds 500042, 500043, and 500314159;
+- one deterministic box-center optimization start per route and case;
+- a 600-second wall-time ceiling for each IPOPT stage used by the historical
+  preflight protocol.
 
-The lightweight `unit` profile uses 420/60/120 rows and one robustness case. Its 14 cases require 126 combined-NLP starts and at most 614 BDF routes.
+Resume completed generation, fitting, and assessment artifacts with:
 
 ```powershell
-$env:CLOSED_LOOP_PROFILE = "test_2000"
-$env:CLOSED_LOOP_RUN_ID = "verify_combined_2000_001"
+$env:PYTHONPATH = "."
+uv run python scripts\resume_v3_preflight.py
+uv run python scripts\run_v3_optimization_phase.py --case-limit 6
+```
 
-uv run --frozen jupyter nbconvert `
-  --to notebook `
-  --execute main_closed_loop.ipynb `
-  --output "main_closed_loop.$($env:CLOSED_LOOP_RUN_ID).executed.ipynb" `
+The optimization driver checkpoints every case and completed route. Reporting
+can be refreshed safely while a run is incomplete:
+
+```powershell
+$env:PYTHONPATH = "."
+uv run python -c "from pathlib import Path; from closed_loop.v3_reporting import write_reporting_tables; write_reporting_tables(Path('results/article_v3/test_500_l5_revision_001'))"
+```
+
+Preflight values are implementation evidence only. A failed accuracy, QP, or
+trust gate is retained and may be followed by diagnostic optimization to test
+the code paths, but it can never authorize or populate article results.
+
+## Full article calculation
+
+The article profile uses exactly 5,000 **accepted** mechanistic inputs: 4,000
+development and 1,000 untouched test rows, ten fresh influent
+scenarios plus nominal, and ten Clarifier layers. Its seeds are 100042,
+100043, and 314159. Both optimization routes now use one deterministic
+box-center start per case and accept the resulting validated local solution;
+they make no global-optimality claim. The surrogate route directly solves the
+seven-variable exact-QP active-set problem. It cold-solves and audits the
+original projection QP at each distinct trial control and does not run the
+former approximately 450-variable embedded-KKT IPOPT problem or any of its
+seven gap-continuation stages. The direct smooth-mechanistic route remains an
+IPOPT NLP and retains its separate three-stage smoothing continuation. The
+nominal case and all ten robustness cases are still attempted for both routes.
+An optimization failure is recorded casewise and does not suppress the
+remaining cases, replay, physical audits, timing, or reporting.
+
+The earlier nine-start surrogate gap-continuation protocol is retired for
+production. This explicit revision reuses the verified 5,000-row generation,
+fit, and assessment artifacts in the existing run; it does not restart data
+generation or refit the surrogate.
+
+This 5,000-input workload is an explicit user-authorized revision dated
+2026-08-23. It supersedes the earlier draft's 800/200 article workload without
+changing its seeds or allowing any of the 500 preflight rows into the article
+fit, test, or result tables.
+
+Candidate round 0 retains the original independent development/test Latin
+hypercubes. If a two-start mechanistic candidate fails any generation check,
+the workflow keeps its complete audit, excludes it from the accepted dataset,
+and continues that block's stored SplitMix64 stream. Supplemental rounds are
+sized to the current deficit and consume 27 midpoint-open coordinates per
+candidate in row-major order. Accepted replacements fill failed slots in
+ascending order until the two blocks contain exactly 4,000 and 1,000 accepted
+rows. Development candidates never cross into the test block.
+
+The completed accepted set is conditioned on mechanistic acceptance and is
+not one global strength-one Latin hypercube. Reports therefore use attempted
+candidate counts for generation acceptance/failure rates, accepted counts for
+fitting and test metrics, and retain the candidate-to-final-slot mapping. Here
+"untouched test" means untouched by fitting and tuning; it does not mean an
+unconditional sample of the whole input box.
+
+This replacement policy was explicitly authorized after the first development
+candidate round had been inspected. Resuming the existing run does not start
+from scratch: the runner verifies the old contract and hashes, preserves all
+accepted row checkpoints and failed attempts, records the migration, and only
+generates the missing replacements. A failed migration verification is a
+run-integrity error and is never hidden by recomputation.
+
+The full calculation begins only after the reduced workflow has completed its
+implementation checks. An ordinary mechanistic-candidate failure does not stop
+generation. For the current model-function exercise, later scientific
+admission gates remain unchanged and determine article eligibility, but they
+are advisory for execution: a failure is recorded and propagated while the
+remaining optimization, replay, timing, and reporting paths are attempted
+without refitting. A failed gate is never relabeled as a pass. Non-finite or
+incomplete numerical objects and run-integrity failures still stop execution.
+
+To execute the full article notebook from a resumable named run directory:
+
+```powershell
+$env:ARTICLE_V3_PROFILE = "article_full"
+$env:ARTICLE_V3_RUN_ID = "article_full_5000_001"
+uv run jupyter nbconvert --to notebook --execute main_closed_loop.ipynb `
+  --output "main_closed_loop.$($env:ARTICLE_V3_RUN_ID).executed.ipynb" `
   --output-dir results\executed_notebooks `
   --ExecutePreprocessor.kernel_name=python3 `
   --ExecutePreprocessor.timeout=-1
 ```
 
-The equivalent command-line run is:
+To resume the already-started default run directly, authorizing the pinned
+single-start exact-QP migration while reusing its verified generation, fit,
+and assessment artifacts, use:
 
 ```powershell
-uv run --frozen python scripts\run_closed_loop.py `
-  --profile test_2000 `
-  --run-id verify_combined_2000_001 `
-  --through complete
+$env:PYTHONPATH = "."
+uv run python -u scripts\run_article_v3_5000.py `
+  --run-id article_full_5000_001 `
+  --through complete `
+  --authorize-single-start-exact-qp-migration
 ```
 
-For inspection between expensive stages, advance the same unsealed run in order:
+Generation publishes `all_attempts.csv`, `accepted_provenance.csv`,
+`accepted_inputs.npz`, `mechanistic_accepted_v3.npz`,
+`accepted_diagnostics.csv`, `base_checkpoint_migration.csv`, and
+`replacement_summary.json` separately for the development and test blocks.
+The original row checkpoints and their prior assembled artifacts are retained
+unchanged.
 
-```powershell
-uv run --frozen python scripts\run_closed_loop.py --profile test_2000 --run-id verify_combined_2000_001 --through static
-uv run --frozen python scripts\run_closed_loop.py --profile test_2000 --run-id verify_combined_2000_001 --through pilot
-uv run --frozen python scripts\run_closed_loop.py --profile test_2000 --run-id verify_combined_2000_001 --through dataset
-uv run --frozen python scripts\run_closed_loop.py --profile test_2000 --run-id verify_combined_2000_001 --through fit
-uv run --frozen python scripts\run_closed_loop.py --profile test_2000 --run-id verify_combined_2000_001 --through calibration
-uv run --frozen python scripts\run_closed_loop.py --profile test_2000 --run-id verify_combined_2000_001 --through assessment
-uv run --frozen python scripts\run_closed_loop.py --profile test_2000 --run-id verify_combined_2000_001 --through nlp_preflight
-uv run --frozen python scripts\run_closed_loop.py --profile test_2000 --run-id verify_combined_2000_001 --through optimization
-uv run --frozen python scripts\run_closed_loop.py --profile test_2000 --run-id verify_combined_2000_001 --through report
-uv run --frozen python scripts\run_closed_loop.py --profile test_2000 --run-id verify_combined_2000_001 --through complete
-```
+Set `ARTICLE_V3_PROFILE=test_500_l5` only when intentionally rebuilding the
+article-ineligible preflight; it is not the default article workload.
 
-The pilot persists checkpoints after 4, 16, 64, and 256 accepted design rows. A failed mechanistic row is not replaced. Later stages likewise stop at their declared numerical or scientific gate rather than silently changing the method. The `report` stage writes an immutable summary with `release_status="provisional_pending_terminal_replay"` and `release_authority="COMPLETED.json is created only after terminal replay and sealing"`. Its tables and figures become final scientific outputs only after terminal algebraic, KKT, and exact-state replay succeeds and the `complete` stage writes the immutable seal and `COMPLETED.json`, where `report_release_status="terminally_sealed"` records release authorization.
-
-## Full article calculation
-
-The `full` profile uses 14,000 development, 2,000 independent calibration, and 4,000 untouched assessment rows. It contains 113 optimization cases: nominal, 100 robustness, two additional Clarifier underflow-TSS limits, and ten objective-weight sensitivities. The planned maximum is 1,017 combined-NLP starts and 20,113 BDF routes, with no physical QPs or DIRECT evaluations.
-
-```powershell
-uv run --frozen python scripts\run_closed_loop.py `
-  --profile full `
-  --run-id article_combined_001 `
-  --through complete
-```
-
-Run and review `test_2000` before allocating resources to the full calculation.
-
-## Tests
-
-```powershell
-uv run --frozen python -m unittest discover -s tests -v
-```
-
-The tests cover the kinetic and stoichiometric model, Clarifier closure, independent random-design blocks, feature serialization and OLS audits, conformal calibration, smooth symbolic parity, combined-NLP IPOPT/KKT acceptance, multistart selection, checkpoints, exact replay classification, and immutable resume behavior.
-
-## Scientific record
-
-A completed run contains generator states and draw counts; checkpointed mechanistic data; the development-only surrogate; calibration and assessment records; all combined-NLP starts; independent KKT replays; exact BDF validation states; robustness and sensitivity summaries; timings, hashes, figures, and a completion seal. A directory without a valid seal is an interrupted or failed run, not a finished result set.
+An article result is releasable only when its artifact manifest verifies the
+complete attempt ledger, exactly 4,000/1,000 accepted rows and their provenance,
+all mechanistic and QP audits, trust gates, both optimization
+routes for every case, reference/equivalence checks, physical-violation
+ledger, and required reporting tables.

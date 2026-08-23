@@ -9,7 +9,7 @@ network projection, and a deterministic finite-budget outer search.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from itertools import product
 from typing import Callable, Iterable, Sequence
 
@@ -920,6 +920,8 @@ class ProjectionDiagnostics:
     retried_cold: bool
     active_inequality_count: int = 0
     multipliers_reconstructed: bool = False
+    solver_attempts: int = 1
+    fallback_used: bool = False
 
     def as_dict(self) -> dict[str, str | int | float | bool]:
         return asdict(self)
@@ -1030,6 +1032,9 @@ class PhysicalProjector:
         scaled_inequality: FloatArray,
         inequality_rhs: FloatArray,
         warm_start: ProjectionWarmStart | None,
+        rho: float | None = None,
+        adaptive_rho: bool | None = None,
+        maximum_iterations: int | None = None,
     ) -> object:
         variable_count = self.state_scale.size
         constraint_matrix = sparse.csc_matrix(
@@ -1040,6 +1045,11 @@ class PhysicalProjector:
         )
         upper = np.concatenate((equality_rhs, inequality_rhs))
         solver = osqp.OSQP()
+        setup_options: dict[str, object] = {}
+        if rho is not None:
+            setup_options["rho"] = float(rho)
+        if adaptive_rho is not None:
+            setup_options["adaptive_rho"] = bool(adaptive_rho)
         solver.setup(
             P=sparse.eye(variable_count, format="csc", dtype=np.float64),
             q=np.zeros(variable_count, dtype=np.float64),
@@ -1048,9 +1058,14 @@ class PhysicalProjector:
             u=upper,
             eps_abs=self.absolute_tolerance,
             eps_rel=self.relative_tolerance,
-            max_iter=self.maximum_iterations,
+            max_iter=(
+                self.maximum_iterations
+                if maximum_iterations is None
+                else int(maximum_iterations)
+            ),
             polishing=self.polish,
             verbose=False,
+            **setup_options,
         )
         if warm_start is not None:
             displacement = _finite_array(
@@ -1069,12 +1084,14 @@ class PhysicalProjector:
         scaled_inequality: FloatArray,
         inequality_rhs: FloatArray,
     ) -> tuple[FloatArray, FloatArray, int]:
-        """Recover the manuscript multipliers from the reported primal point.
+        """Recover an independently audited KKT multiplier representation.
 
-        The bounded least-squares fit supplies the unique stationarity vector.
-        If its coefficient representation is not unique, a second strictly
-        convex problem selects the minimum-Euclidean-norm multiplier pair while
-        preserving that fitted vector.  No solver-reported QP dual is used.
+        BVLS is used because its active-set termination directly controls the
+        residual of this small dense bounded problem.  The previous TRF solve
+        could declare first-order convergence while leaving a stationarity
+        residual above the projection gate, and a subsequent minimum-norm QP
+        could introduce another unrelated numerical failure.  No
+        solver-reported projection-QP dual is used.
         """
 
         equality_count = scaled_equality.shape[0]
@@ -1095,9 +1112,8 @@ class PhysicalProjector:
             multiplier_matrix,
             -displacement,
             bounds=(lower, upper),
-            method="trf",
+            method="bvls",
             tol=1.0e-12,
-            lsq_solver="exact",
             max_iter=10_000,
         )
         if not least_squares.success or not np.all(np.isfinite(least_squares.x)):
@@ -1105,85 +1121,6 @@ class PhysicalProjector:
                 "active-set multiplier reconstruction did not solve its bounded least-squares problem."
             )
         multipliers = np.asarray(least_squares.x, dtype=np.float64)
-
-        # The least-squares fitted vector is unique, even when its multiplier
-        # representation is not.  Preserve it and minimize ||(alpha,beta)||_2
-        # over all bounded representations.  An orthonormal row-space basis
-        # removes redundant equalities before the secondary QP.
-        singular_values = linalg.svdvals(multiplier_matrix, check_finite=True)
-        rank_tolerance = (
-            max(multiplier_matrix.shape)
-            * np.finfo(np.float64).eps
-            * singular_values[0]
-        )
-        numerical_rank = int(np.count_nonzero(singular_values > rank_tolerance))
-        if numerical_rank < multiplier_matrix.shape[1]:
-            _, _, right_singular_vectors = linalg.svd(
-                multiplier_matrix,
-                full_matrices=False,
-                check_finite=True,
-                lapack_driver="gesdd",
-            )
-            row_basis = right_singular_vectors[:numerical_rank]
-            row_rhs = row_basis @ multipliers
-            if active.size:
-                selector = sparse.csc_matrix(
-                    (
-                        np.ones(active.size),
-                        (
-                            np.arange(active.size),
-                            equality_count + np.arange(active.size),
-                        ),
-                    ),
-                    shape=(active.size, multipliers.size),
-                )
-                secondary_matrix = sparse.vstack(
-                    (sparse.csc_matrix(row_basis), selector), format="csc"
-                )
-                secondary_lower = np.concatenate((row_rhs, np.zeros(active.size)))
-                secondary_upper = np.concatenate(
-                    (row_rhs, np.full(active.size, np.inf))
-                )
-            else:
-                secondary_matrix = sparse.csc_matrix(row_basis)
-                secondary_lower = row_rhs
-                secondary_upper = row_rhs
-            secondary = osqp.OSQP()
-            secondary.setup(
-                P=sparse.eye(multipliers.size, format="csc", dtype=np.float64),
-                q=np.zeros(multipliers.size, dtype=np.float64),
-                A=secondary_matrix,
-                l=secondary_lower,
-                u=secondary_upper,
-                eps_abs=min(self.absolute_tolerance, 1.0e-12),
-                eps_rel=min(self.relative_tolerance, 1.0e-12),
-                max_iter=self.maximum_iterations,
-                polishing=True,
-                verbose=False,
-            )
-            secondary_result = secondary.solve(raise_error=False)
-            candidate = np.asarray(
-                secondary_result.x
-                if secondary_result.x is not None
-                else np.full(multipliers.size, np.nan),
-                dtype=np.float64,
-            )
-            fit_reference = multiplier_matrix @ multipliers
-            fit_error = float(
-                np.linalg.norm(multiplier_matrix @ candidate - fit_reference, ord=np.inf)
-            )
-            fit_tolerance = 1.0e-9 * max(
-                1.0, float(np.linalg.norm(fit_reference, ord=np.inf))
-            )
-            if (
-                not np.all(np.isfinite(candidate))
-                or (active.size and float(np.min(candidate[equality_count:])) < -1.0e-9)
-                or fit_error > fit_tolerance
-            ):
-                raise ProjectionError(
-                    "minimum-norm multiplier reconstruction failed its independent audit."
-                )
-            multipliers = candidate
 
         # Enforce the declared sign domain exactly; bounded solvers can return
         # negative roundoff at an active lower bound.
@@ -1249,124 +1186,171 @@ class PhysicalProjector:
                 inequality_rhs=inequality_rhs,
                 warm_start=warm_start,
             )
-        solver_result = self._solve_once(
-            scaled_equality=scaled_equality,
-            equality_rhs=required_equality,
-            scaled_inequality=scaled_inequality,
-            inequality_rhs=inequality_rhs,
-            warm_start=None,
-        )
-        displacement = np.asarray(
-            solver_result.x
-            if solver_result.x is not None
-            else np.full(variable_count, np.nan),
-            dtype=np.float64,
-        )
-        state = raw + self.state_scale * displacement
-        slack = inequality_rhs - scaled_inequality @ displacement
+        def audited_result(solver_result: object, attempt: int) -> ProjectionResult:
+            displacement = np.asarray(
+                solver_result.x
+                if solver_result.x is not None
+                else np.full(variable_count, np.nan),
+                dtype=np.float64,
+            )
+            state = raw + self.state_scale * displacement
+            slack = inequality_rhs - scaled_inequality @ displacement
 
-        multipliers_reconstructed = False
-        active_inequality_count = 0
-        if np.all(np.isfinite(displacement)):
-            try:
-                equality_dual, inequality_dual, active_inequality_count = (
-                    self._reconstruct_multipliers(
-                        displacement,
-                        scaled_equality,
-                        scaled_inequality,
-                        inequality_rhs,
+            multipliers_reconstructed = False
+            active_inequality_count = 0
+            if np.all(np.isfinite(displacement)):
+                try:
+                    equality_dual, inequality_dual, active_inequality_count = (
+                        self._reconstruct_multipliers(
+                            displacement,
+                            scaled_equality,
+                            scaled_inequality,
+                            inequality_rhs,
+                        )
                     )
-                )
-                multipliers_reconstructed = True
-            except ProjectionError:
+                    multipliers_reconstructed = True
+                except ProjectionError:
+                    equality_dual = np.full(scaled_equality.shape[0], np.nan)
+                    inequality_dual = np.full(scaled_inequality.shape[0], np.nan)
+            else:
                 equality_dual = np.full(scaled_equality.shape[0], np.nan)
                 inequality_dual = np.full(scaled_inequality.shape[0], np.nan)
-        else:
-            equality_dual = np.full(scaled_equality.shape[0], np.nan)
-            inequality_dual = np.full(scaled_inequality.shape[0], np.nan)
 
-        arrays_finite = all(
-            np.all(np.isfinite(array))
-            for array in (
-                displacement,
-                state,
-                slack,
-                equality_dual,
-                inequality_dual,
-            )
-        )
-        if arrays_finite:
-            equality_residual = float(
-                np.linalg.norm(scaled_equality @ displacement - required_equality, ord=np.inf)
-            )
-            inequality_residual = self._positive_part_norm(
-                physical_scaled_inequality @ state
-            )
-            nonnegativity_residual = self._positive_part_norm(-state / self.state_scale)
-            dual_residual = self._positive_part_norm(-inequality_dual)
-            equality_stationarity = scaled_equality.T @ equality_dual
-            inequality_stationarity = scaled_inequality.T @ inequality_dual
-            stationarity = displacement + equality_stationarity + inequality_stationarity
-            stationarity_residual = float(
-                np.max(
-                    np.abs(stationarity)
-                    / (
-                        1.0
-                        + np.abs(displacement)
-                        + np.abs(equality_stationarity)
-                        + np.abs(inequality_stationarity)
-                    )
+            arrays_finite = all(
+                np.all(np.isfinite(array))
+                for array in (
+                    displacement,
+                    state,
+                    slack,
+                    equality_dual,
+                    inequality_dual,
                 )
             )
-            complementarity_residual = float(
-                np.linalg.norm(inequality_dual * slack, ord=np.inf)
-            )
-        else:
-            equality_residual = inequality_residual = nonnegativity_residual = np.inf
-            dual_residual = stationarity_residual = complementarity_residual = np.inf
+            if arrays_finite:
+                equality_residual = float(
+                    np.linalg.norm(
+                        scaled_equality @ displacement - required_equality,
+                        ord=np.inf,
+                    )
+                )
+                inequality_residual = self._positive_part_norm(
+                    physical_scaled_inequality @ state
+                )
+                nonnegativity_residual = self._positive_part_norm(
+                    -state / self.state_scale
+                )
+                dual_residual = self._positive_part_norm(-inequality_dual)
+                equality_stationarity = scaled_equality.T @ equality_dual
+                inequality_stationarity = scaled_inequality.T @ inequality_dual
+                stationarity = (
+                    displacement + equality_stationarity + inequality_stationarity
+                )
+                stationarity_residual = float(
+                    np.max(
+                        np.abs(stationarity)
+                        / (
+                            1.0
+                            + np.abs(displacement)
+                            + np.abs(equality_stationarity)
+                            + np.abs(inequality_stationarity)
+                        )
+                    )
+                )
+                complementarity_residual = float(
+                    np.linalg.norm(inequality_dual * slack, ord=np.inf)
+                )
+            else:
+                equality_residual = inequality_residual = nonnegativity_residual = np.inf
+                dual_residual = stationarity_residual = complementarity_residual = np.inf
 
-        status = str(solver_result.info.status)
-        status_value = int(solver_result.info.status_val)
-        # The independently reconstructed KKT audit is authoritative.  Solver
-        # status is retained for diagnosis but is not itself an acceptance gate.
-        accepted = (
-            arrays_finite
-            and multipliers_reconstructed
-            and equality_residual <= self.equality_acceptance_tolerance
-            and inequality_residual <= self.inequality_acceptance_tolerance
-            and nonnegativity_residual <= self.nonnegativity_acceptance_tolerance
-            and dual_residual <= self.inequality_acceptance_tolerance
-            and stationarity_residual <= self.inequality_acceptance_tolerance
-            and complementarity_residual <= self.inequality_acceptance_tolerance
+            # The independently reconstructed KKT audit is authoritative.
+            # Solver status is retained for diagnosis but is not itself an
+            # acceptance gate.
+            accepted = (
+                arrays_finite
+                and multipliers_reconstructed
+                and equality_residual <= self.equality_acceptance_tolerance
+                and inequality_residual <= self.inequality_acceptance_tolerance
+                and nonnegativity_residual <= self.nonnegativity_acceptance_tolerance
+                and dual_residual <= self.inequality_acceptance_tolerance
+                and stationarity_residual <= self.inequality_acceptance_tolerance
+                and complementarity_residual <= self.inequality_acceptance_tolerance
+            )
+            diagnostics = ProjectionDiagnostics(
+                status=str(solver_result.info.status),
+                status_value=int(solver_result.info.status_val),
+                iterations=int(solver_result.info.iter),
+                equality_rank_tolerance=float(rank_tolerance),
+                equality_smallest_singular_value=float(singular_values[-1]),
+                equality_condition_number=equality_condition,
+                equality_residual=equality_residual,
+                inequality_residual=inequality_residual,
+                nonnegativity_residual=nonnegativity_residual,
+                dual_feasibility_residual=dual_residual,
+                stationarity_residual=stationarity_residual,
+                complementarity_residual=complementarity_residual,
+                retried_cold=warm_start is not None or attempt > 1,
+                active_inequality_count=active_inequality_count,
+                multipliers_reconstructed=multipliers_reconstructed,
+                solver_attempts=attempt,
+                fallback_used=attempt > 1,
+            )
+            return ProjectionResult(
+                state=state,
+                displacement=displacement,
+                equality_multipliers=equality_dual,
+                inequality_multipliers=inequality_dual,
+                inequality_slack=slack,
+                diagnostics=diagnostics,
+                accepted=accepted,
+            )
+
+        cold_attempts = (
+            {},
+            {"rho": 0.01, "adaptive_rho": False, "maximum_iterations": 200_000},
+            {"rho": 10.0, "adaptive_rho": False, "maximum_iterations": 200_000},
         )
-        diagnostics = ProjectionDiagnostics(
-            status=status,
-            status_value=status_value,
-            iterations=int(solver_result.info.iter),
-            equality_rank_tolerance=float(rank_tolerance),
-            equality_smallest_singular_value=float(singular_values[-1]),
-            equality_condition_number=equality_condition,
-            equality_residual=equality_residual,
-            inequality_residual=inequality_residual,
-            nonnegativity_residual=nonnegativity_residual,
-            dual_feasibility_residual=dual_residual,
-            stationarity_residual=stationarity_residual,
-            complementarity_residual=complementarity_residual,
-            retried_cold=warm_start is not None,
-            active_inequality_count=active_inequality_count,
-            multipliers_reconstructed=multipliers_reconstructed,
+        attempted_results: list[ProjectionResult] = []
+        for attempt, options in enumerate(cold_attempts, start=1):
+            solver_result = self._solve_once(
+                scaled_equality=scaled_equality,
+                equality_rhs=required_equality,
+                scaled_inequality=scaled_inequality,
+                inequality_rhs=inequality_rhs,
+                warm_start=None,
+                **options,
+            )
+            candidate = audited_result(solver_result, attempt)
+            attempted_results.append(candidate)
+            if candidate.accepted:
+                return candidate
+
+        def failure_score(result: ProjectionResult) -> float:
+            diagnostics = result.diagnostics
+            scaled_residuals = (
+                diagnostics.equality_residual / self.equality_acceptance_tolerance,
+                diagnostics.inequality_residual / self.inequality_acceptance_tolerance,
+                diagnostics.nonnegativity_residual
+                / self.nonnegativity_acceptance_tolerance,
+                diagnostics.dual_feasibility_residual
+                / self.inequality_acceptance_tolerance,
+                diagnostics.stationarity_residual
+                / self.inequality_acceptance_tolerance,
+                diagnostics.complementarity_residual
+                / self.inequality_acceptance_tolerance,
+            )
+            return float(max(scaled_residuals))
+
+        final_result = min(attempted_results, key=failure_score)
+        final_result = replace(
+            final_result,
+            diagnostics=replace(
+                final_result.diagnostics,
+                retried_cold=True,
+                solver_attempts=len(attempted_results),
+                fallback_used=True,
+            ),
         )
-        final_result = ProjectionResult(
-            state=state,
-            displacement=displacement,
-            equality_multipliers=equality_dual,
-            inequality_multipliers=inequality_dual,
-            inequality_slack=slack,
-            diagnostics=diagnostics,
-            accepted=accepted,
-        )
-        if accepted:
-            return final_result
 
         if raise_on_failure:
             diagnostics = final_result.diagnostics

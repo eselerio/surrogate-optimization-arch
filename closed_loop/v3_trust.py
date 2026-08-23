@@ -35,6 +35,7 @@ class TrustCalibration:
     split_scale: FloatArray
     development_values: FloatArray
     out_of_fold_projected: FloatArray
+    out_of_fold_projection_accepted: npt.NDArray[np.bool_]
 
 
 def nearest_rank_95(values: npt.ArrayLike) -> float:
@@ -88,6 +89,7 @@ def calibrate_trust_diagnostics(
         absolute_tolerance=1.0e-12, relative_tolerance=1.0e-12,
     )
     projected = np.empty_like(raw)
+    projection_accepted = np.empty(len(theta), dtype=bool)
     for row in range(len(theta)):
         operators = build_network_operators(
             feed[row], internal_recycle=float(theta[row, 4]),
@@ -98,9 +100,13 @@ def calibrate_trust_diagnostics(
             raw[row], operators.equality_matrix, operators.equality_rhs,
             operators.inequality_matrix, raise_on_failure=False,
         )
-        if not result.accepted:
-            raise RuntimeError(f"development OOF projection failed at row {row}")
-        projected[row] = result.state
+        state = np.asarray(result.state, dtype=float)
+        if state.shape != (layout.state_size,) or not np.all(np.isfinite(state)):
+            raise RuntimeError(
+                f"development OOF projection returned an invalid state at row {row}"
+            )
+        projected[row] = state
+        projection_accepted[row] = bool(result.accepted)
 
     particulate = np.flatnonzero(TSS_VECTOR > 0.0)
     final_truth = truth[:, layout.reactor_slice(N_STAGES - 1)]
@@ -158,6 +164,7 @@ def calibrate_trust_diagnostics(
         reactor_limit=limits[2], flux_limit=limits[3],
         split_scale=split_scale, development_values=values,
         out_of_fold_projected=projected,
+        out_of_fold_projection_accepted=projection_accepted,
     )
 
 

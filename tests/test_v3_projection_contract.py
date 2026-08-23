@@ -160,6 +160,8 @@ class PhysicalProjectionNumericalContractTests(unittest.TestCase):
         self.assertIsNone(calls[1])
         self.assertTrue(result.diagnostics.retried_cold)
         self.assertTrue(result.diagnostics.multipliers_reconstructed)
+        self.assertEqual(result.diagnostics.solver_attempts, 1)
+        self.assertFalse(result.diagnostics.fallback_used)
         self.assertTrue(result.accepted)
 
         scaled_equality = equality * state_scale[None, :] / equality_scale[:, None]
@@ -233,6 +235,152 @@ class PhysicalProjectionNumericalContractTests(unittest.TestCase):
             result.inequality_slack,
         ):
             self.assertTrue(np.all(np.isfinite(array)))
+
+    def test_bvls_reconstructs_rank_deficient_active_set_accurately(self) -> None:
+        # This deterministic system has two dependent active-constraint
+        # columns.  Trust-region bounded least squares can stop with an
+        # approximately 1e-7 stationarity defect, whereas BVLS resolves the
+        # active set to roundoff accuracy.
+        rng = np.random.default_rng(1_204_000)
+        variable_count = 12
+        equality_count = 4
+        active_count = 10
+        equality_columns = rng.normal(size=(variable_count, equality_count))
+        inequality_columns = rng.normal(size=(variable_count, active_count))
+        inequality_columns[:, -1] = (
+            inequality_columns[:, 0] + inequality_columns[:, 1]
+        )
+        inequality_columns[:, -2] = (
+            inequality_columns[:, 2]
+            + 1.0e-9 * rng.normal(size=variable_count)
+        )
+        multiplier_matrix = np.column_stack(
+            (equality_columns, inequality_columns)
+        )
+        equality_multiplier = (
+            rng.normal(size=equality_count) * 10.0 ** rng.uniform(0.0, 4.0)
+        )
+        inequality_multiplier = (
+            np.abs(rng.normal(size=active_count))
+            * 10.0 ** rng.uniform(-2.0, 2.0)
+        )
+        inequality_multiplier[
+            rng.choice(active_count, size=active_count // 3, replace=False)
+        ] = 0.0
+        displacement = -multiplier_matrix @ np.concatenate(
+            (equality_multiplier, inequality_multiplier)
+        )
+        scaled_equality = equality_columns.T
+        scaled_inequality = inequality_columns.T
+        inequality_rhs = scaled_inequality @ displacement
+
+        projector = PhysicalProjector(
+            np.ones(variable_count),
+            np.ones(equality_count),
+            np.ones(active_count),
+        )
+        equality_dual, inequality_dual, reconstructed_count = (
+            projector._reconstruct_multipliers(
+                displacement,
+                scaled_equality,
+                scaled_inequality,
+                inequality_rhs,
+            )
+        )
+        stationarity = (
+            displacement
+            + scaled_equality.T @ equality_dual
+            + scaled_inequality.T @ inequality_dual
+        )
+
+        self.assertLess(
+            np.linalg.matrix_rank(multiplier_matrix), multiplier_matrix.shape[1]
+        )
+        self.assertEqual(reconstructed_count, active_count)
+        self.assertTrue(np.all(inequality_dual >= 0.0))
+        self.assertLess(float(np.linalg.norm(stationarity, ord=np.inf)), 1.0e-10)
+
+    def test_failed_audits_use_deterministic_cold_fallback_sequence(self) -> None:
+        state_scale = np.asarray([2.0, 0.5])
+        equality_scale = np.asarray([4.0])
+        inequality_scale = np.asarray([3.0])
+        raw = np.asarray([-2.0, 2.0])
+        equality = np.asarray([[2.0, 8.0]])
+        equality_rhs = np.asarray([8.0])
+        inequality = np.asarray([[1.5, 0.0]])
+        projector = PhysicalProjector(
+            state_scale, equality_scale, inequality_scale
+        )
+        calls: list[dict[str, object]] = []
+
+        def mocked_solve_once(**kwargs: object) -> SimpleNamespace:
+            calls.append(dict(kwargs))
+            attempt = len(calls)
+            displacement = (
+                np.asarray([0.0, 0.0])
+                if attempt < 3
+                else np.asarray([1.0 + 2.0e-9, -2.0])
+            )
+            return SimpleNamespace(
+                x=displacement,
+                y=np.zeros(4),
+                info=SimpleNamespace(
+                    status=f"mock-{attempt}", status_val=attempt, iter=attempt,
+                ),
+            )
+
+        projector._solve_once = mocked_solve_once  # type: ignore[method-assign]
+        result = projector.project(raw, equality, equality_rhs, inequality)
+
+        self.assertTrue(result.accepted)
+        self.assertEqual(len(calls), 3)
+        self.assertTrue(all(call["warm_start"] is None for call in calls))
+        self.assertNotIn("rho", calls[0])
+        self.assertEqual(calls[1]["rho"], 0.01)
+        self.assertIs(calls[1]["adaptive_rho"], False)
+        self.assertEqual(calls[1]["maximum_iterations"], 200_000)
+        self.assertEqual(calls[2]["rho"], 10.0)
+        self.assertIs(calls[2]["adaptive_rho"], False)
+        self.assertEqual(calls[2]["maximum_iterations"], 200_000)
+        self.assertEqual(result.diagnostics.status, "mock-3")
+        self.assertEqual(result.diagnostics.solver_attempts, 3)
+        self.assertTrue(result.diagnostics.fallback_used)
+        self.assertTrue(result.diagnostics.retried_cold)
+
+    def test_finite_failed_candidate_is_returned_for_diagnostic_continuation(self) -> None:
+        projector = PhysicalProjector(
+            np.ones(2), np.ones(1), np.ones(1)
+        )
+        attempts = 0
+
+        def mocked_solve_once(**_kwargs: object) -> SimpleNamespace:
+            nonlocal attempts
+            attempts += 1
+            return SimpleNamespace(
+                x=np.zeros(2),
+                y=np.zeros(4),
+                info=SimpleNamespace(
+                    status=f"finite-failure-{attempts}",
+                    status_val=7,
+                    iter=200_000,
+                ),
+            )
+
+        projector._solve_once = mocked_solve_once  # type: ignore[method-assign]
+        result = projector.project(
+            np.ones(2),
+            np.asarray([[1.0, 0.0]]),
+            np.asarray([3.0]),
+            np.asarray([[0.0, 1.0]]),
+            raise_on_failure=False,
+        )
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(attempts, 3)
+        self.assertTrue(np.all(np.isfinite(result.state)))
+        self.assertTrue(np.all(np.isfinite(result.displacement)))
+        self.assertEqual(result.diagnostics.solver_attempts, 3)
+        self.assertTrue(result.diagnostics.fallback_used)
 
 
 if __name__ == "__main__":

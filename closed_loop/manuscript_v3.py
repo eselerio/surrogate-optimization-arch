@@ -106,7 +106,7 @@ TEST_500 = StudyProfile(
     article_eligible=False, enforce_admission_gate=False,
 )
 ARTICLE_FULL = StudyProfile(
-    name="article_full", development_count=800, test_count=200,
+    name="article_full", development_count=4_000, test_count=1_000,
     robustness_count=10, layer_count=10, development_seed=100_042,
     test_seed=100_043, robustness_seed=314_159,
     parallel_workers=max(1, min(12, (os.cpu_count() or 2) - 1)),
@@ -322,6 +322,14 @@ def generate_mechanistic_block(
         (i, decisions[i], influents[i], profile.layer_count)
         for i in range(len(decisions)) if i not in completed_rows
     ]
+    if completed_rows:
+        print(
+            f"[{output.name}] reusing {len(completed_rows)}/{len(decisions)} "
+            "accepted row checkpoints",
+            flush=True,
+        )
+    progress_interval = max(1, len(decisions) // 100)
+    newly_completed = 0
     with ProcessPoolExecutor(max_workers=profile.parallel_workers) as pool:
         futures = {pool.submit(_solve_design_row, item): item[0] for item in payloads}
         for future in as_completed(futures):
@@ -341,6 +349,14 @@ def generate_mechanistic_block(
                 state_start_2=states_start_2[i],
                 record_json=np.asarray(json.dumps(record, sort_keys=True)),
             )
+            newly_completed += 1
+            total_completed = len(completed_rows) + newly_completed
+            if total_completed % progress_interval == 0 or total_completed == len(decisions):
+                print(
+                    f"[{output.name}] mechanistic checkpoints "
+                    f"{total_completed}/{len(decisions)}",
+                    flush=True,
+                )
     diagnostics = pd.DataFrame(
         [records_by_row[index] for index in sorted(records_by_row)]
     ).reset_index(drop=True)

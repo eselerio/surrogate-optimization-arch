@@ -13,9 +13,11 @@ reported multipliers.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+from hashlib import sha256
+import json
 from time import perf_counter
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 import re
 
 import casadi as ca
@@ -280,9 +282,10 @@ class SolverSettings:
     equality_acceptance: float = 1.0e-8
     inequality_acceptance: float = 1.0e-6
     stationarity_acceptance: float = 1.0e-6
+    maximum_wall_time: float | None = None
 
     def solver_options(self) -> dict[str, Any]:
-        return {
+        options: dict[str, Any] = {
             "print_time": False,
             "error_on_fail": False,
             "ipopt.print_level": 0,
@@ -291,12 +294,23 @@ class SolverSettings:
             "ipopt.mu_strategy": "adaptive",
             "ipopt.hessian_approximation": "exact",
             "ipopt.bound_relax_factor": 0.0,
+            "ipopt.warm_start_init_point": "yes",
+            "ipopt.warm_start_bound_push": 1.0e-9,
+            "ipopt.warm_start_bound_frac": 1.0e-9,
+            "ipopt.warm_start_slack_bound_push": 1.0e-9,
+            "ipopt.warm_start_slack_bound_frac": 1.0e-9,
+            "ipopt.warm_start_mult_bound_push": 1.0e-9,
             "ipopt.max_iter": int(self.maximum_iterations),
             "ipopt.tol": float(self.tolerance),
             "ipopt.constr_viol_tol": float(self.constraint_tolerance),
             "ipopt.dual_inf_tol": float(self.dual_tolerance),
             "ipopt.compl_inf_tol": float(self.complementarity_tolerance),
         }
+        if self.maximum_wall_time is not None:
+            if not np.isfinite(self.maximum_wall_time) or self.maximum_wall_time <= 0.0:
+                raise ValueError("maximum_wall_time must be positive when supplied.")
+            options["ipopt.max_wall_time"] = float(self.maximum_wall_time)
+        return options
 
 
 def _rms_scale(values: FloatArray, unit: float = 1.0) -> float:
@@ -1134,6 +1148,11 @@ def _independent_multipliers(
         matrix, -gradient, bounds=(lower, upper), method="trf",
         tol=1.0e-12, lsmr_tol=1.0e-12, max_iter=10_000,
     )
+    if not result.success or not np.all(np.isfinite(result.x)):
+        raise V3SmoothError(
+            "independent bounded multiplier reconstruction did not converge: "
+            f"{result.message}"
+        )
     coefficients = np.asarray(result.x, dtype=float)
     return coefficients[:equality_count], coefficients[equality_count:]
 
@@ -1303,11 +1322,44 @@ class ContinuationStageResult:
     primal: FloatArray
     feasible: bool
     error: str | None = None
+    constraint_multipliers: FloatArray | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            **self.__dict__,
+            "primal": self.primal.tolist(),
+            "constraint_multipliers": (
+                None
+                if self.constraint_multipliers is None
+                else self.constraint_multipliers.tolist()
+            ),
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "ContinuationStageResult":
+        return cls(
+            epsilon=float(value["epsilon"]),
+            receiver_half_width=float(value["receiver_half_width"]),
+            status=str(value["status"]),
+            solver_success=bool(value["solver_success"]),
+            elapsed_seconds=float(value["elapsed_seconds"]),
+            iterations=int(value["iterations"]),
+            primal=np.asarray(value["primal"], dtype=float),
+            feasible=bool(value["feasible"]),
+            error=None if value.get("error") is None else str(value["error"]),
+            constraint_multipliers=(
+                None
+                if value.get("constraint_multipliers") is None
+                else np.asarray(value["constraint_multipliers"], dtype=float)
+            ),
+        )
 
 
 @dataclass(frozen=True)
 class DirectStartResult:
     start_index: int
+    initial_normalized_controls: FloatArray
+    resume_contract: str
     nearest_development_row: int
     stages: tuple[ContinuationStageResult, ...]
     objective: float
@@ -1323,6 +1375,103 @@ class DirectStartResult:
     feasible: bool
     stationary: bool
     status: str
+    error: str | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "start_index": self.start_index,
+            "initial_normalized_controls": self.initial_normalized_controls.tolist(),
+            "resume_contract": self.resume_contract,
+            "nearest_development_row": self.nearest_development_row,
+            "stages": [stage.as_dict() for stage in self.stages],
+            "objective": self.objective,
+            "normalized_controls": self.normalized_controls.tolist(),
+            "theta": self.theta.tolist(),
+            "state": self.state.tolist(),
+            "feed_tss": self.feed_tss,
+            "response": self.response.tolist(),
+            "engineering": self.engineering.tolist(),
+            "objective_components": self.objective_components.tolist(),
+            "branch": None if self.branch is None else {
+                **self.branch.__dict__,
+                "receiver": list(self.branch.receiver),
+                "storage_capacity": list(self.branch.storage_capacity),
+                "settling_floor": list(self.branch.settling_floor),
+                "settling_cap": list(self.branch.settling_cap),
+                "flux_minimum": list(self.branch.flux_minimum),
+            },
+            "kkt": None if self.kkt is None else {
+                **self.kkt.__dict__,
+                "equality_multipliers": self.kkt.equality_multipliers.tolist(),
+                "inequality_multipliers": self.kkt.inequality_multipliers.tolist(),
+                "lower_bound_multipliers": self.kkt.lower_bound_multipliers.tolist(),
+                "upper_bound_multipliers": self.kkt.upper_bound_multipliers.tolist(),
+            },
+            "feasible": self.feasible,
+            "stationary": self.stationary,
+            "status": self.status,
+            "error": self.error,
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "DirectStartResult":
+        def checkpoint_float(item: Any) -> float:
+            return np.nan if item is None else float(item)
+
+        branch_value = value.get("branch")
+        branch = None if branch_value is None else BranchClassification(
+            receiver=tuple(str(item) for item in branch_value["receiver"]),
+            storage_capacity=tuple(
+                str(item) for item in branch_value["storage_capacity"]
+            ),
+            settling_floor=tuple(str(item) for item in branch_value["settling_floor"]),
+            settling_cap=tuple(str(item) for item in branch_value["settling_cap"]),
+            flux_minimum=tuple(str(item) for item in branch_value["flux_minimum"]),
+            ambiguous=bool(branch_value["ambiguous"]),
+            minimum_normalized_margin=float(branch_value["minimum_normalized_margin"]),
+        )
+        kkt_value = value.get("kkt")
+        kkt = None if kkt_value is None else KKTDiagnostics(
+            finite=bool(kkt_value["finite"]),
+            equality_residual=float(kkt_value["equality_residual"]),
+            inequality_residual=float(kkt_value["inequality_residual"]),
+            bound_residual=float(kkt_value["bound_residual"]),
+            stationarity_residual=float(kkt_value["stationarity_residual"]),
+            dual_feasibility_residual=float(kkt_value["dual_feasibility_residual"]),
+            complementarity_residual=float(kkt_value["complementarity_residual"]),
+            active_inequality_count=int(kkt_value["active_inequality_count"]),
+            feasible=bool(kkt_value["feasible"]),
+            stationary=bool(kkt_value["stationary"]),
+            equality_multipliers=np.asarray(kkt_value["equality_multipliers"], dtype=float),
+            inequality_multipliers=np.asarray(kkt_value["inequality_multipliers"], dtype=float),
+            lower_bound_multipliers=np.asarray(kkt_value["lower_bound_multipliers"], dtype=float),
+            upper_bound_multipliers=np.asarray(kkt_value["upper_bound_multipliers"], dtype=float),
+        )
+        return cls(
+            start_index=int(value["start_index"]),
+            initial_normalized_controls=np.asarray(
+                value["initial_normalized_controls"], dtype=float
+            ),
+            resume_contract=str(value["resume_contract"]),
+            nearest_development_row=int(value["nearest_development_row"]),
+            stages=tuple(
+                ContinuationStageResult.from_dict(item) for item in value["stages"]
+            ),
+            objective=checkpoint_float(value["objective"]),
+            normalized_controls=np.asarray(value["normalized_controls"], dtype=float),
+            theta=np.asarray(value["theta"], dtype=float),
+            state=np.asarray(value["state"], dtype=float),
+            feed_tss=checkpoint_float(value["feed_tss"]),
+            response=np.asarray(value["response"], dtype=float),
+            engineering=np.asarray(value["engineering"], dtype=float),
+            objective_components=np.asarray(value["objective_components"], dtype=float),
+            branch=branch,
+            kkt=kkt,
+            feasible=bool(value["feasible"]),
+            stationary=bool(value["stationary"]),
+            status=str(value["status"]),
+            error=None if value.get("error") is None else str(value["error"]),
+        )
 
 
 @dataclass(frozen=True)
@@ -1331,17 +1480,54 @@ class DirectMultistartResult:
     selected: DirectStartResult | None
     status: str
 
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "starts": [start.as_dict() for start in self.starts],
+            "selected_start": None if self.selected is None else self.selected.start_index,
+            "status": self.status,
+        }
+
+
+def direct_start_resume_contract(
+    assets: DirectAssets,
+    case: DirectCase,
+    settings: SolverSettings,
+) -> str:
+    """Bind a cached direct start to all fixed case and numerical inputs."""
+
+    digest = sha256()
+    digest.update(json.dumps(asdict(settings), sort_keys=True).encode("utf-8"))
+    digest.update(json.dumps(asdict(assets.clarifier), sort_keys=True).encode("utf-8"))
+    digest.update(json.dumps(asdict(assets.smoothing), sort_keys=True).encode("utf-8"))
+    digest.update(np.ascontiguousarray(case.parameter_vector(), dtype="<f8").tobytes())
+    for value in (
+        assets.state_center, assets.state_scale, assets.balance_scale,
+        assets.quality_scale, assets.envelope_scale, assets.engineering_scale,
+        assets.decision_center, assets.decision_scale,
+        assets.influent_center, assets.influent_scale,
+    ):
+        array = np.ascontiguousarray(value, dtype="<f8")
+        digest.update(str(array.shape).encode("ascii"))
+        digest.update(array.tobytes())
+    digest.update(np.asarray(assets.feed_scale, dtype="<f8").tobytes())
+    return digest.hexdigest()
+
 
 def _solve_direct_stage(
     problem: DirectNLP,
     case: DirectCase,
     initial: FloatArray,
-) -> tuple[ContinuationStageResult, FloatArray]:
+    dual_warm_start: tuple[npt.ArrayLike, npt.ArrayLike] | None = None,
+) -> tuple[
+    ContinuationStageResult,
+    FloatArray,
+    tuple[FloatArray, FloatArray] | None,
+]:
     if problem.solver is None:
         raise V3SmoothError("the NLP was built with compile_solver=False.")
     started = perf_counter()
     try:
-        solution = problem.solver(
+        arguments: dict[str, Any] = dict(
             x0=initial,
             p=case.parameter_vector(),
             lbx=problem.lower_bounds,
@@ -1349,6 +1535,16 @@ def _solve_direct_stage(
             lbg=problem.constraint_lower_bounds,
             ubg=problem.constraint_upper_bounds,
         )
+        if dual_warm_start is not None:
+            arguments["lam_x0"] = _finite_vector(
+                dual_warm_start[0], problem.variable_count, "IPOPT bound warm start",
+            )
+            arguments["lam_g0"] = _finite_vector(
+                dual_warm_start[1],
+                problem.equality_count + problem.inequality_count,
+                "IPOPT constraint warm start",
+            )
+        solution = problem.solver(**arguments)
         elapsed = perf_counter() - started
         primal = _flat(solution["x"])
         stats = problem.solver.stats()
@@ -1368,8 +1564,13 @@ def _solve_direct_stage(
             iterations=int(stats.get("iter_count", 0)),
             primal=primal,
             feasible=feasible,
+            constraint_multipliers=_flat(solution["lam_g"]),
         )
-        return stage, primal
+        dual = (
+            _flat(solution["lam_x"]),
+            _flat(solution["lam_g"]),
+        ) if feasible else None
+        return stage, primal, dual
     except Exception as exc:
         stage = ContinuationStageResult(
             epsilon=problem.epsilon,
@@ -1382,7 +1583,7 @@ def _solve_direct_stage(
             feasible=False,
             error=f"{type(exc).__name__}: {exc}",
         )
-        return stage, initial.copy()
+        return stage, initial.copy(), None
 
 
 def solve_direct_multistart(
@@ -1394,13 +1595,50 @@ def solve_direct_multistart(
     *,
     settings: SolverSettings | None = None,
     starts: npt.ArrayLike | None = None,
+    allow_reduced_starts: bool = False,
+    completed_starts: Mapping[int, DirectStartResult] | None = None,
+    progress_callback: Callable[[DirectStartResult], None] | None = None,
 ) -> DirectMultistartResult:
-    """Run all nine starts through the three declared smoothing pairs."""
+    """Run starts through the three declared smoothing pairs.
+
+    Fewer than nine starts require an explicit article-ineligible smoke-test
+    opt-in; the default preserves the manuscript contract.
+    """
 
     settings = settings or SolverSettings()
+    resume_contract = direct_start_resume_contract(assets, case, settings)
     normalized_starts = ordered_normalized_starts() if starts is None else np.asarray(starts, dtype=float)
-    if normalized_starts.shape != (9, 7) or not np.all(np.isfinite(normalized_starts)):
-        raise ValueError("starts must be a finite 9-by-7 matrix.")
+    if (
+        normalized_starts.ndim != 2
+        or normalized_starts.shape[1:] != (7,)
+        or normalized_starts.shape[0] < 1
+        or (not allow_reduced_starts and normalized_starts.shape[0] != 9)
+        or not np.all(np.isfinite(normalized_starts))
+    ):
+        requirement = "one or more" if allow_reduced_starts else "exactly nine"
+        raise ValueError(f"starts must contain {requirement} finite seven-control rows.")
+    completed = dict(completed_starts or {})
+    for index, result in completed.items():
+        stage_pairs = tuple(
+            (stage.epsilon, stage.receiver_half_width) for stage in result.stages
+        )
+        declared_prefix = CONTINUATION_SCHEDULE[: len(stage_pairs)]
+        if (
+            not isinstance(index, int)
+            or not isinstance(result, DirectStartResult)
+            or index != result.start_index
+            or not 0 <= index < len(normalized_starts)
+            or not np.array_equal(
+                result.initial_normalized_controls, normalized_starts[index]
+            )
+            or result.resume_contract != resume_contract
+            or len(stage_pairs) > len(CONTINUATION_SCHEDULE)
+            or stage_pairs != declared_prefix
+            or (result.feasible and len(stage_pairs) != len(CONTINUATION_SCHEDULE))
+        ):
+            raise ValueError(
+                "each completed direct start must match its declared index and controls exactly"
+            )
     problems = tuple(
         build_direct_nlp(
             assets, epsilon=epsilon, receiver_half_width=half_width,
@@ -1408,21 +1646,55 @@ def solve_direct_multistart(
         )
         for index, (epsilon, half_width) in enumerate(CONTINUATION_SCHEDULE)
     )
-    results: list[DirectStartResult] = []
+    results_by_index: dict[int, DirectStartResult] = dict(completed)
     for start_index, normalized in enumerate(normalized_starts):
-        primal, nearest = direct_initial_point(
-            normalized, case, development_decisions, development_influents,
-            development_targets, assets,
-        )
+        if start_index in results_by_index:
+            continue
+        try:
+            primal, nearest = direct_initial_point(
+                normalized, case, development_decisions, development_influents,
+                development_targets, assets,
+            )
+        except Exception as exc:
+            result = DirectStartResult(
+                start_index=start_index,
+                initial_normalized_controls=np.asarray(normalized).copy(),
+                resume_contract=resume_contract,
+                nearest_development_row=-1,
+                stages=(),
+                objective=np.nan,
+                normalized_controls=np.asarray(normalized).copy(),
+                theta=DECISION_LOWER + DECISION_SPAN * normalized,
+                state=np.full(assets.state_count, np.nan),
+                feed_tss=np.nan,
+                response=np.full(assets.response_count, np.nan),
+                engineering=np.full(11, np.nan),
+                objective_components=np.full(6, np.nan),
+                branch=None,
+                kkt=None,
+                feasible=False,
+                stationary=False,
+                status="initialization_exception",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            results_by_index[start_index] = result
+            if progress_callback is not None:
+                progress_callback(result)
+            continue
         stages: list[ContinuationStageResult] = []
+        dual_warm_start: tuple[FloatArray, FloatArray] | None = None
         for problem in problems:
-            stage, primal = _solve_direct_stage(problem, case, primal)
+            stage, primal, dual_warm_start = _solve_direct_stage(
+                problem, case, primal, dual_warm_start,
+            )
             stages.append(stage)
             if not stage.feasible:
                 break
         if len(stages) != len(problems) or not stages[-1].feasible:
-            results.append(DirectStartResult(
+            result = DirectStartResult(
                 start_index=start_index,
+                initial_normalized_controls=np.asarray(normalized).copy(),
+                resume_contract=resume_contract,
                 nearest_development_row=nearest,
                 stages=tuple(stages),
                 objective=np.nan,
@@ -1438,12 +1710,42 @@ def solve_direct_multistart(
                 feasible=False,
                 stationary=False,
                 status="continuation_failed",
-            ))
+            )
+            results_by_index[start_index] = result
+            if progress_callback is not None:
+                progress_callback(result)
             continue
         final_problem = problems[-1]
-        evaluated = evaluate_direct(final_problem, primal, case)
-        kkt = independent_kkt_diagnostics(final_problem, primal, case)
-        branch = classify_branches(evaluated["state"], assets)
+        try:
+            evaluated = evaluate_direct(final_problem, primal, case)
+            kkt = independent_kkt_diagnostics(final_problem, primal, case)
+            branch = classify_branches(evaluated["state"], assets)
+        except Exception as exc:
+            result = DirectStartResult(
+                start_index=start_index,
+                initial_normalized_controls=np.asarray(normalized).copy(),
+                resume_contract=resume_contract,
+                nearest_development_row=nearest,
+                stages=tuple(stages),
+                objective=np.nan,
+                normalized_controls=np.asarray(normalized).copy(),
+                theta=DECISION_LOWER + DECISION_SPAN * normalized,
+                state=np.full(assets.state_count, np.nan),
+                feed_tss=np.nan,
+                response=np.full(assets.response_count, np.nan),
+                engineering=np.full(11, np.nan),
+                objective_components=np.full(6, np.nan),
+                branch=None,
+                kkt=None,
+                feasible=False,
+                stationary=False,
+                status="final_audit_exception",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            results_by_index[start_index] = result
+            if progress_callback is not None:
+                progress_callback(result)
+            continue
         stationary = bool(kkt.stationary and not branch.ambiguous)
         status = (
             "first_order_kkt_stationary_feasible"
@@ -1452,8 +1754,10 @@ def solve_direct_multistart(
             if kkt.feasible
             else "final_feasibility_failed"
         )
-        results.append(DirectStartResult(
+        result = DirectStartResult(
             start_index=start_index,
+            initial_normalized_controls=np.asarray(normalized).copy(),
+            resume_contract=resume_contract,
             nearest_development_row=nearest,
             stages=tuple(stages),
             objective=float(evaluated["objective"]),
@@ -1469,7 +1773,11 @@ def solve_direct_multistart(
             feasible=kkt.feasible,
             stationary=stationary,
             status=status,
-        ))
+        )
+        results_by_index[start_index] = result
+        if progress_callback is not None:
+            progress_callback(result)
+    results = [results_by_index[index] for index in range(len(normalized_starts))]
     stationary = [item for item in results if item.stationary]
     feasible = [item for item in results if item.feasible]
     pool = stationary or feasible
@@ -1585,14 +1893,20 @@ def solve_fixed_input_two_start(
         auxiliary = max(1.0, float(TSS_VECTOR @ base[(N_STAGES - 1) * N_COMPONENTS : N_STAGES * N_COMPONENTS]))
         primal = np.concatenate(((base - assets.state_center) / assets.state_scale, [auxiliary / assets.feed_scale]))
         stages: list[ContinuationStageResult] = []
+        dual_warm_start: tuple[FloatArray, FloatArray] | None = None
         for problem in problems:
             # Fixed-input problems have an empty parameter vector and a state-only primal.
             started = perf_counter()
             try:
-                solution = problem.solver(
-                    x0=primal, p=np.empty(0), lbx=problem.lower_bounds, ubx=problem.upper_bounds,
-                    lbg=problem.constraint_lower_bounds, ubg=problem.constraint_upper_bounds,
+                arguments: dict[str, Any] = dict(
+                    x0=primal, p=np.empty(0), lbx=problem.lower_bounds,
+                    ubx=problem.upper_bounds, lbg=problem.constraint_lower_bounds,
+                    ubg=problem.constraint_upper_bounds,
                 )
+                if dual_warm_start is not None:
+                    arguments["lam_x0"] = dual_warm_start[0]
+                    arguments["lam_g0"] = dual_warm_start[1]
+                solution = problem.solver(**arguments)
                 elapsed = perf_counter() - started
                 primal = _flat(solution["x"])
                 equality = _flat(problem.equality_function(primal, np.empty(0)))
@@ -1607,6 +1921,9 @@ def solve_fixed_input_two_start(
                     str(stats.get("return_status", "unknown")), bool(stats.get("success", False)),
                     elapsed, int(stats.get("iter_count", 0)), primal.copy(), feasible,
                 ))
+                dual_warm_start = (
+                    _flat(solution["lam_x"]), _flat(solution["lam_g"])
+                ) if feasible else None
             except Exception as exc:
                 stages.append(ContinuationStageResult(
                     problem.epsilon, problem.receiver_half_width, "solver_exception", False,
@@ -1679,7 +1996,10 @@ def compare_smooth_reference(
     smooth_result = smooth or solve_fixed_input_two_start(controls, feed, assets, settings=settings)
     operating = ArticleOperatingPoint(*map(float, controls))
     references = tuple(
-        solve_steady_state(operating, feed, starts=(start,), clarifier=assets.clarifier)
+        solve_steady_state(
+            operating, feed, starts=(start,), clarifier=assets.clarifier,
+            logarithmic_only=True, strict_v3=True,
+        )
         for start in (1, 2)
     )
     reference_ok = bool(
@@ -1792,7 +2112,8 @@ __all__ = [
     "FixedInputRoute", "KKTDiagnostics", "SmoothScales", "SolverSettings", "V3SmoothError",
     "build_direct_nlp", "classify_branches", "compare_smooth_reference",
     "branches_match",
-    "direct_initial_point", "engineering_quantities", "evaluate_direct",
+    "direct_initial_point", "direct_start_resume_contract",
+    "engineering_quantities", "evaluate_direct",
     "evaluate_smooth_response", "extract_reduced_states", "fit_direct_assets",
     "independent_kkt_diagnostics", "nearest_development_index", "objective_components",
     "ordered_normalized_starts", "receiver_transition", "smooth_clarifier_fluxes",
