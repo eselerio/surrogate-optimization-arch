@@ -1150,7 +1150,7 @@ class ArticleV3FiveThousandContractTests(unittest.TestCase):
                     result.design["development_decisions"],
                 )
 
-    def test_admission_gate_tracks_raw_but_gates_projected_and_mechanistic(self) -> None:
+    def test_admission_gate_is_development_only_and_tracks_holdout(self) -> None:
         gate = runner.evaluate_admission_gate(
             assessment_fixture(), correction_limit=0.4,
             trust_limits=TRUST_LIMITS,
@@ -1163,6 +1163,30 @@ class ArticleV3FiveThousandContractTests(unittest.TestCase):
         self.assertFalse(gate["physical_audit_maxima"]["raw"]["passed"])
         self.assertTrue(gate["physical_audit_maxima"]["projected"]["passed"])
         self.assertTrue(gate["physical_audit_maxima"]["mechanistic"]["passed"])
+        self.assertEqual(gate["admission_gate_scope"], "development_only")
+        self.assertFalse(gate["post_selection_holdout_checks_are_admission_gates"])
+
+        holdout_failure = assessment_fixture()
+        holdout_failure.qp_diagnostics.loc[:, "accepted"] = False
+        holdout_failure.feasibility.loc[:, "bound_passed"] = False
+        holdout_failure.violations.loc[
+            holdout_failure.violations["method"].isin(["projected", "mechanistic"]),
+            "mass_conservation_violation_max",
+        ] = 2.0
+        descriptive = runner.evaluate_admission_gate(
+            holdout_failure, correction_limit=0.4,
+            trust_limits=TRUST_LIMITS,
+            development_oof_projection_accepted=np.ones(5, dtype=bool),
+            development_oof_complete_nrmse=0.5,
+            development_oof_inventory_nrmse=0.5,
+            test_count=2,
+        )
+        self.assertTrue(descriptive["passed"])
+        self.assertFalse(descriptive["all_projection_qp_audits_passed"])
+        self.assertFalse(descriptive["all_finite_distance_bounds_passed"])
+        self.assertFalse(descriptive["projected_physical_audits_passed"])
+        self.assertFalse(descriptive["mechanistic_physical_audits_passed"])
+
         failed = runner.evaluate_admission_gate(
             assessment_fixture(), correction_limit=0.51,
             trust_limits={**TRUST_LIMITS, "correction": 0.51},
@@ -1225,12 +1249,16 @@ class ArticleV3FiveThousandContractTests(unittest.TestCase):
                 transform=lambda decisions, influents: np.ones((len(decisions), 1)),
             ),
         )
+        callbacks = SimpleNamespace(
+            split_rows=lambda theta, raw, projected, influent: np.array([3.0, 4.0]),
+            reactor_rows=lambda theta, raw, projected, influent: np.array([6.0, 8.0]),
+        )
         accepted = np.array([True, False, True, True, True], dtype=bool)
         trust = SimpleNamespace(
             correction_limit=0.4,
             split_limit=1.0,
             reactor_limit=1.0,
-            callbacks=None,
+            callbacks=callbacks,
             development_values=np.zeros((profile.development_count, 3)),
             out_of_fold_projected=np.zeros((profile.development_count, response_count)),
             out_of_fold_projection_accepted=accepted,
@@ -1239,6 +1267,7 @@ class ArticleV3FiveThousandContractTests(unittest.TestCase):
         surrogate_assets = SimpleNamespace(
             leverage_precision=np.ones((1, 1)),
             trust_thresholds=SimpleNamespace(regularized_leverage=1.0),
+            trust_callbacks=callbacks,
         )
         assessment = assessment_fixture()
         assessment = AssessmentResult(
@@ -1272,7 +1301,7 @@ class ArticleV3FiveThousandContractTests(unittest.TestCase):
                 runner, "assert_source_unchanged",
             ), patch.object(
                 runner, "_artifact_hashes", return_value={},
-            ):
+            ) as artifact_hashes:
                 result = runner.run_assessment(
                     run,
                     design,
@@ -1298,6 +1327,33 @@ class ArticleV3FiveThousandContractTests(unittest.TestCase):
                     (profile.development_count, profile.surrogate_response_count),
                 )
                 self.assertEqual(str(stored["schema"].item()), runner.RESPONSE_SCHEMA)
+            holdout_trust = pd.read_csv(
+                run / "metrics/trust_post_selection_holdout.csv"
+            )
+            self.assertEqual(
+                list(holdout_trust.columns),
+                [
+                    "row", "correction", "regularized_leverage",
+                    "particulate_split", "reactor_residual",
+                ],
+            )
+            np.testing.assert_allclose(
+                holdout_trust[
+                    [
+                        "correction", "regularized_leverage",
+                        "particulate_split", "reactor_residual",
+                    ]
+                ].to_numpy(),
+                np.tile(
+                    [0.0, 1.0, np.sqrt(12.5), np.sqrt(50.0)],
+                    (profile.test_count, 1),
+                ),
+            )
+            published_paths = artifact_hashes.call_args.args[1]
+            self.assertIn(
+                run / "metrics/trust_post_selection_holdout.csv",
+                published_paths,
+            )
             self.assertFalse(result.passed)
             self.assertFalse(
                 result.gate["all_development_oof_projection_qp_audits_passed"]

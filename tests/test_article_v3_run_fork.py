@@ -76,6 +76,15 @@ class ArticleV3RunForkTests(unittest.TestCase):
             for block in ("development", "test"):
                 artifact = source / "datasets" / block / "mechanistic_accepted_v3.npz"
                 runner.atomic_npz(artifact, targets=np.zeros((1, 170)))
+                runner.atomic_npz(
+                    source / "datasets" / block / "rows" / "row_000000.npz",
+                    target=np.zeros(170),
+                )
+                runner.atomic_npz(
+                    source / "datasets" / block
+                    / "surrogate_responses_inventory_v1.npz",
+                    responses=np.zeros((1, 161)),
+                )
                 runner.atomic_json(
                     source / "datasets" / block / "block_complete.json",
                     {
@@ -85,10 +94,32 @@ class ArticleV3RunForkTests(unittest.TestCase):
                         },
                     },
                 )
+            design_path = source / "datasets" / "design.npz"
+            partition_path = source / "inputs" / "frozen_accepted_partition.json"
+            source_design_path = (
+                source / "inputs" / "frozen_accepted" / "source_design_50000.npz"
+            )
+            runner.atomic_npz(design_path, values=np.zeros(1))
+            runner.atomic_json(partition_path, {"schema": 1})
+            runner.atomic_npz(source_design_path, values=np.zeros(1))
+            runner.atomic_json(
+                source / "datasets" / "frozen_accepted_complete.json",
+                {
+                    "source_digest": old_digest,
+                    "artifacts": {
+                        path.relative_to(source).as_posix(): runner.file_digest(path)
+                        for path in (design_path, partition_path, source_design_path)
+                    },
+                },
+            )
             runner.atomic_json(source / "inputs" / "contract.json", source_contract)
             runner.atomic_json(source / "inputs" / "generator_records.json", {"seed": 1})
             _write_bytes(source / "models" / "ridge_surrogate.npz", b"superseded")
             _write_bytes(source / "optimization" / "nominal" / "surrogate.npz", b"superseded")
+            _write_bytes(
+                source / "datasets" / "assessment" / "post_selection_holdout.npz",
+                b"superseded",
+            )
 
             runner._initialize_reduced_response_fork(
                 target,
@@ -100,6 +131,21 @@ class ArticleV3RunForkTests(unittest.TestCase):
             self.assertTrue(
                 (target / "datasets/development/mechanistic_accepted_v3.npz").is_file()
             )
+            self.assertTrue(
+                (target / "datasets/development/rows/row_000000.npz").is_file()
+            )
+            self.assertTrue(
+                (target / "inputs/frozen_accepted/source_design_50000.npz").is_file()
+            )
+            self.assertFalse((
+                target / "datasets/development/surrogate_responses_inventory_v1.npz"
+            ).exists())
+            self.assertFalse((
+                target / "datasets/test/surrogate_responses_inventory_v1.npz"
+            ).exists())
+            self.assertFalse((
+                target / "datasets/assessment/post_selection_holdout.npz"
+            ).exists())
             self.assertFalse((target / "models/ridge_surrogate.npz").exists())
             self.assertFalse((target / "optimization/nominal/surrogate.npz").exists())
             migrated = json.loads((target / "inputs/contract.json").read_text())

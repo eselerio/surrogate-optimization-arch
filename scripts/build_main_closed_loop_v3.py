@@ -395,6 +395,7 @@ STAGE_ARTIFACTS = {
         "metrics/assessment_complete.json",
         "metrics/admission_gate.json",
         "metrics/post_selection_prediction_metrics.csv",
+        "metrics/trust_post_selection_holdout.csv",
         "metrics/physical_violations_assessment.csv",
     ),
     "complete": (
@@ -408,6 +409,7 @@ STAGE_ARTIFACTS = {
         "metrics/robustness_case_timing.csv",
         "metrics/robustness_case_timing_summary.json",
         "metrics/robustness_case_timing_complete.json",
+        "report/tables/scope_specific_nonlinear_audit.csv",
         "report/tables/report_manifest.json",
     ),
 }

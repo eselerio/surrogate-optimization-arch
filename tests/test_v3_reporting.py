@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -153,6 +154,177 @@ class ReportingSnapshotTests(unittest.TestCase):
             table = reporting._trust_table(run, (), [])
             self.assertEqual(tuple(table["diagnostic"]), reporting.TRUST_DIAGNOSTICS)
             self.assertNotIn("clarifier_flux", set(table["diagnostic"]))
+
+    def test_schema_10_trust_uses_only_post_selection_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            run = Path(temporary) / "run"
+            _make_run(run, robustness_count=0)
+            _write_json(run / "inputs" / "contract.json", {
+                "runner_schema": 10,
+                "response_schema": {"name": "clarifier_inventory_v1"},
+                "profile": {"layer_count": 5},
+            })
+            legacy = pd.DataFrame([{
+                "correction": 99.0,
+                "regularized_leverage": 99.0,
+                "particulate_split": 99.0,
+                "reactor_residual": 99.0,
+                "clarifier_flux": 99.0,
+            }])
+            legacy.to_csv(
+                run / "metrics" / "trust_untouched_test.csv", index=False,
+            )
+            warnings: list[str] = []
+            table = reporting._trust_table(run, (), warnings)
+            self.assertTrue((table["test_count"] == 0).all())
+            self.assertTrue(any("superseded schema-9" in item for item in warnings))
+
+            pd.DataFrame([
+                {
+                    "correction": 0.1,
+                    "regularized_leverage": 1.0,
+                    "particulate_split": 0.2,
+                    "reactor_residual": 0.3,
+                },
+                {
+                    "correction": 0.4,
+                    "regularized_leverage": 1.5,
+                    "particulate_split": 0.5,
+                    "reactor_residual": 0.6,
+                },
+            ]).to_csv(
+                run / "metrics" / "trust_post_selection_holdout.csv", index=False,
+            )
+            table = reporting._trust_table(run, (), [])
+            self.assertTrue((table["test_count"] == 2).all())
+            correction = table.set_index("diagnostic").loc["correction"]
+            self.assertEqual(correction["test_p95"], 0.4)
+
+    def test_physical_summary_reports_reduced_inequality_families(self) -> None:
+        detail = pd.DataFrame([{
+            "analysis_scope": "post_selection_holdout",
+            "case": "test_0000",
+            "method": "raw",
+            "mass_conservation_violation_max": 0.0,
+            "mass_conservation_violation_count": 0,
+            "nonnegativity_violation_max": 0.0,
+            "nonnegativity_violation_count": 0,
+            "particulate_densification_violation_max": 0.25,
+            "clarifier_inventory_bound_violation_max": 0.75,
+        }])
+        summary = reporting._physical_summary(detail)
+        row = summary[
+            (summary["analysis_scope"] == "all_analysis")
+            & (summary["method"] == "raw")
+        ].iloc[0]
+        self.assertEqual(row["particulate_densification_violation_max"], 0.25)
+        self.assertEqual(row["clarifier_inventory_bound_violation_max"], 0.75)
+        self.assertNotIn("mass_tss_endpoint_max", summary.columns)
+
+    def test_scope_specific_nonlinear_audit_uses_only_saved_full_states(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            run = Path(temporary) / "run"
+            _make_run(run, robustness_count=0)
+            geometry = reporting.StudyGeometry(5, 1_200.0)
+            states = np.ones((1, geometry.mechanistic_state_count))
+            states[0, -5:] = np.arange(1.0, 6.0)
+            alternate = states.copy()
+            alternate[0, -5:] = np.arange(5.0, 0.0, -1.0)
+            np.savez_compressed(
+                run / "datasets" / "development" / "mechanistic_accepted_v3.npz",
+                targets=np.ones((1, geometry.mechanistic_response_count)),
+                states_start_1=states,
+                states_start_2=alternate,
+            )
+            np.savez_compressed(
+                run / "datasets" / "development" / "accepted_inputs.npz",
+                decisions=THETA[None, :],
+                influents=np.ones((1, 20)),
+            )
+            pd.DataFrame([{
+                "accepted_slot": 0,
+                "largest_real_eigenvalue_start_1": -0.2,
+                "largest_real_eigenvalue_start_2": -0.1,
+                "stability_agreement_start_1": 1.0e-8,
+                "stability_agreement_start_2": 2.0e-8,
+                "locally_stable_start_1": True,
+                "locally_stable_start_2": True,
+            }]).to_csv(
+                run / "datasets" / "development" / "accepted_diagnostics.csv",
+                index=False,
+            )
+            exact_diagnostics = {
+                "diagnostics_start_1": {
+                    "largest_real_eigenvalue": -0.3,
+                    "stability_eigenvalue_agreement": 1.0e-8,
+                    "locally_stable": True,
+                },
+                "diagnostics_start_2": {
+                    "largest_real_eigenvalue": 0.0,
+                    "stability_eigenvalue_agreement": 2.0e-6,
+                    "locally_stable": False,
+                },
+            }
+            snapshot = reporting.RouteSnapshot(
+                case="nominal",
+                route="surrogate",
+                artifact_state="complete",
+                outcome="selected",
+                payload=None,
+                starts=(),
+                selected_start=0,
+                selected={"final": {"theta": THETA.tolist()}},
+                selected_arrays={
+                    "theta": THETA,
+                    "exact_state_start_1": states[0],
+                    "exact_state_start_2": alternate[0],
+                },
+                equivalence=None,
+                reference_arrays={},
+                casewise_reference={
+                    "candidate_available": True,
+                    "reference": exact_diagnostics,
+                },
+                certification=None,
+                recovery=None,
+            )
+
+            def balance_audit(state, *_args, **_kwargs):
+                descending = bool(state[-1] < state[-2])
+                return {
+                    "balance_family_maxima": {
+                        "clarifier_layer": 2.0e-8 if descending else 5.0e-9,
+                    },
+                    "balance_family_violation_counts": {
+                        "clarifier_layer": 1 if descending else 0,
+                    },
+                }
+
+            physical = pd.DataFrame({"method": ["raw", "projected"]})
+            with patch.object(
+                reporting, "mechanistic_balance_audit", side_effect=balance_audit,
+            ) as audit:
+                table = reporting._scope_specific_nonlinear_audit(
+                    run, (snapshot,), ("nominal",), geometry, physical, [],
+                ).set_index("source")
+
+            self.assertEqual(audit.call_count, 4)
+            for source in ("raw_reduced", "projected_reduced"):
+                self.assertEqual(
+                    table.loc[source, "applicability"],
+                    "not_applicable_no_layer_state",
+                )
+                self.assertTrue(np.isnan(
+                    table.loc[source, "layer_residual_max"]
+                ))
+            generation = table.loc["exact_mechanistic_generation"]
+            self.assertEqual(generation["record_count"], 2)
+            self.assertEqual(generation["audited_record_count"], 2)
+            self.assertEqual(generation["layer_residual_violation_count"], 1)
+            replay = table.loc["exact_mechanistic_replay"]
+            self.assertEqual(replay["record_count"], 2)
+            self.assertEqual(replay["layer_envelope_violation_count"], 6)
+            self.assertEqual(replay["stability_violation_count"], 1)
 
     def test_physical_summary_excludes_unavailable_placeholders(self) -> None:
         detail = pd.DataFrame([
@@ -557,12 +729,17 @@ class ReportingSnapshotTests(unittest.TestCase):
             output = Path(temporary) / "report"
             written = bundle.write(output)
             self.assertTrue(written["physical_violation_summary"].is_file())
+            self.assertTrue(written["scope_specific_nonlinear_audit"].is_file())
             self.assertTrue(written["manifest"].is_file())
             manifest = json.loads(written["manifest"].read_text(encoding="utf-8"))
             self.assertEqual(manifest["expected_cases"], ["nominal"])
             self.assertEqual(
                 manifest["table_rows"]["physical_violation_summary"],
                 len(bundle["physical_violation_summary"]),
+            )
+            self.assertEqual(
+                manifest["table_rows"]["scope_specific_nonlinear_audit"],
+                len(bundle["scope_specific_nonlinear_audit"]),
             )
 
 

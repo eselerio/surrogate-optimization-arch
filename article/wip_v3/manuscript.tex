@@ -48,10 +48,10 @@
 \def\floatpagepagefraction{1}
 \def\textpagefraction{.001}
 
-\shorttitle{Projected-Surrogate Optimization of Activated Sludge}
+\shorttitle{Three-Route Optimization of Activated Sludge}
 \shortauthors{Egberto F. Selerio Jr.}
 
-\title[mode=title,size=\Large]{Optimization of a Recycling Mixer-Reactor-Clarifier Activated Sludge System Using a Physically-Constrained Statistical Surrogate}
+\title[mode=title,size=\Large]{Three-Route Optimization of a Recycling Mixer--Reactor--Clarifier Activated-Sludge System Using Whole-System and Shared-Unit Surrogates}
 
 \author[1]{Egberto F. Selerio Jr.}
 \cormark[1]
@@ -65,19 +65,19 @@
 \cortext[cor1]{Corresponding author}
 
 \begin{abstract}
-Activated-sludge optimization is difficult because biological conversion, internal mixed-liquor recycle, return activated sludge, wasting, and secondary clarification form one nonlinear closed loop. This work formulates the system for an arbitrary number $N$ of completely mixed reactors and an arbitrary number $L$ of mechanistic Clarifier layers. The freely varied coordinates may include stage residence times, independent stage aeration settings, recycle ratios, wasting, and other explicitly balanced stage inputs. A quadratic multiresponse surrogate predicts the mixer, every reactor outlet, both Clarifier outlet component-flow vectors, and one aggregate Clarifier-solids inventory. Its $n_\chi=(N+3)F+1$ responses are reconciled by a unique scaled-Euclidean projection that imposes recycle mixing, stoichiometric-invariant transport, Clarifier component conservation, soluble pass-through, particulate densification, tight outlet-derived inventory bounds, and non-negativity. The statistical dimension is therefore independent of the number of layers used by the mechanistic settling model. Operational optimization is constrained by this projected response. A seven-variable local optimizer cold-solves the exact projection quadratic program at each distinct trial control and primarily obtains total response derivatives from a verified active-set KKT sensitivity system. When that derivative system is unavailable, deterministic value-only optimization continues over the unchanged QP. Surrogate convergence is qualified either by a strong first-order KKT certificate or by complete two-scale feasible no-descent polls that make no classical-stationarity claim. The case study uses five equal-volume reactors, independently adjustable aeration in reactors 3--5, a ten-layer mechanistic Clarifier, 16,714 accepted mechanistic design states, five-fold cross-validation, and ten post-selection influent scenarios. Every selected surrogate and direct candidate is replayed on the same exact nonsmooth, layer-resolved aggregate-solids model; shared reduced responses and full layer-resolved mechanistic states receive their applicable physical audits. The formulation separates regression error, physical reconciliation, decision quality, smoothing effects, and computational cost without asserting layer-profile prediction or global optimality.
+Activated-sludge optimization is difficult because biological conversion, internal mixed-liquor recycle, return activated sludge, wasting, and secondary clarification form one nonlinear closed loop. This work formulates and compares three optimization routes for the same plant: an existing whole-system projected surrogate ($S$), a new shared-unit projected surrogate ($U$), and an existing smooth mechanistic nonlinear program ($M$). Route $S$ uses one quadratic multiresponse model for the mixer, every reactor outlet, both Clarifier outlet-flow vectors, and one aggregate Clarifier-solids inventory. Route $U$ instead reuses one fitted CSTR map in every reactor and applies one fitted Clarifier map; an exact mixer equation closes their implicit recycle loop. Both statistical routes assemble the same $n_\chi=(N+3)F+1$ operational response and use the identical scaled-Euclidean projection to impose recycle mixing, stoichiometric-invariant transport, Clarifier component conservation, soluble pass-through, particulate densification, tight outlet-derived inventory bounds, and non-negativity. Thus the comparison changes statistical factorization, not the plant, objective, controls, projection, or mechanistic comparator. The case study uses five equal-volume reactors, independently adjustable aeration in reactors 3--5, a ten-layer mechanistic Clarifier, 16,714 accepted mechanistic design states, five-fold plant-grouped cross-validation, and ten post-selection influent scenarios. Route $U$ is assessed both one step at a time and after free-running recycle closure. Each surrogate optimizer cold-solves its required inner problems at every distinct trial; verified total derivatives may support a strong first-order KKT tier, whereas deterministic value-only optimization and two-scale feasible no-descent polls provide a explicitly finite-resolution tier when derivative conditions fail. Every selected $S$, $U$, and $M$ candidate is replayed on the same exact nonsmooth, layer-resolved aggregate-solids model. The framework separates architectural error, physical reconciliation, recycle-root reliability, decision quality, smoothing effects, and computational cost without asserting layer-profile prediction or global optimality.
 \end{abstract}
 
 \begin{highlights}
-\item Surrogate size is independent of the mechanistic Clarifier layer count.
-\item Stage residence time and aeration can be manipulated independently.
-\item A unique convex projection reconciles the reduced operational response.
-\item Surrogate convergence has strong-KKT and finite-resolution poll tiers.
-\item Every selected decision is judged on one exact ten-layer reference model.
+\item Whole-system and shared-unit surrogates optimize the same recycling plant.
+\item One fitted CSTR map is reused across all biological reactor stages.
+\item Both surrogate routes share one joint convex physical projection.
+\item Recycle-root and projection sensitivities support auditable optimization.
+\item All three routes are judged on one exact ten-layer reference model.
 \end{highlights}
 
 \begin{keywords}
-activated sludge \sep process optimization \sep recycle \sep secondary Clarifier \sep constrained surrogate \sep quadratic projection
+activated sludge \sep process optimization \sep recycle \sep shared-unit surrogate \sep constrained surrogate \sep quadratic projection
 \end{keywords}
 
 \maketitle
@@ -89,7 +89,7 @@ $A\in\R^{K\times F}$ & Full-row-rank stoichiometric-invariant operator\\
 $A_{\rm cl}$ & Clarifier surface area\\
 $a_i$, $k_La_i$ & Normalized aeration setting and oxygen-transfer coefficient in reactor $i$\\
 $c_i,m,c_E,c_U\in\R_+^F$ & Reactor-$i$, mixer, Clarifier-overflow, and Clarifier-underflow concentrations\\
-$D_\chi,D_y,D_b,D_g,D_T$ & Positive response, mechanistic-state, physical-row, and quality scales\\
+$D_\chi,D_R,D_C,D_y,D_b,D_g,D_T$ & Positive plant-response, reactor-response, Clarifier-response, mechanistic-state, physical-row, and quality scales\\
 $d_i$ & Recycle-adjusted dilution rate in reactor $i$, d$^{-1}$\\
 $E_S,E_X$ & Selectors for soluble and particulate components\\
 $F,F_S,F_X$ & Total, soluble, and particulate component counts\\
@@ -101,7 +101,7 @@ $K$ & Number of independent stoichiometric invariants\\
 $L$, $\ell_F$ & Number of Clarifier layers and feed-layer index\\
 $M_{\rm cl}$, $V_{\rm cl}$ & Clarifier solids inventory and total Clarifier volume\\
 $N$, $n_p$ & Numbers of completely mixed biological stages and kinetic processes\\
-$n_\chi,n_y,n_\phi,d_z$ & Surrogate-response, mechanistic-state, feature, and statistical-input dimensions\\
+$n_\chi,n_y,n_{\phi,S},n_{\phi,R},n_{\phi,C},d_z$ & Plant-response, mechanistic-state, feature, and statistical-input dimensions\\
 $q_P,q_C,q_E,q_U$ & Reactor-train, Clarifier-feed, overflow, and underflow flow ratios\\
 $Q_0$ & Fresh-influent flow\\
 $r_I,r_R,w$ & MLR, RAS, and WAS ratios relative to $Q_0$\\
@@ -109,10 +109,11 @@ $s_\ell$ & Mechanistic TSS concentration in Clarifier layer $\ell$\\
 $t_X$ & Component-to-TSS column vector\\
 $\vartheta\in\R^{d_\vartheta}$ & Vector containing exactly the freely varied operating coordinates\\
 $x\in\R_+^F$ & Fresh-influent component vector\\
-$\chi_{\rm raw},\widehat\chi$ & Raw-surrogate and physically projected operational responses\\
+$\chi_{{\rm raw},k},\widehat\chi_k$ & Raw and physically projected operational responses for surrogate route $k\in\{S,U\}$\\
 $y$ & Reactor-and-Clarifier mechanistic state\\
 $\nu,\rho$ & Stoichiometric matrix and process-rate vector\\
-$\phi$ & Standardized unique-monomial feature vector\\
+$\phi_S,\phi_R,\phi_C$ & Standardized unique-monomial feature vectors for the whole-system, reactor, and Clarifier fits\\
+$\mathcal R,\mathcal C,\mathcal F_U$ & Shared reactor map, Clarifier map, and shared-unit recycle-closure residual\\
 $\varpi,\varpi_Q$ & Overall objective priorities and effluent-quality priorities\\
 \end{longtable}
 
@@ -122,7 +123,7 @@ An activated-sludge plant with mixed-liquor recycle (MLR), return activated slud
 
 Activated Sludge Models describe this coupling mechanistically, while multilayer settling models represent clarification and thickening \citep{Henze2006,Takacs1991}. Repeatedly integrating those equations to a stable steady state is expensive inside operational optimization. A statistical surrogate can be evaluated much faster, but an unconstrained regression may predict a negative concentration, lose a conserved inventory between reactors, or create component mass in the Clarifier. Optimization amplifies this risk because its purpose is to search for unusually favorable predictions \citep{Bhosekar2018}.
 
-The present formulation gives regression and physics different, auditable roles, extending invariant-aware surrogate modeling from isolated responses to the recycling plant \citep{Selerio2026}. A quadratic multiresponse model predicts the decision-relevant closed-loop response. Internal Clarifier layers are omitted from that statistical response because they are not needed to close the recycle, calculate outlet quality, or evaluate the operating objective; their volume-weighted total is retained because whole-plant solids retention time depends on Clarifier inventory. A strictly convex quadratic program (QP) then finds the nearest response satisfying a stated set of linear physical relations. The optimizer uses only this projected response. Nonlinear biological rates and the nonlinear settling law are not attributed to the projection; they are checked independently with the full layer-resolved state of the declared aggregate-solids mechanistic model. This distinction is important because satisfying conservation and aggregate inventory bounds is necessary for a credible plant response, but it is not sufficient to establish kinetic or layer-profile accuracy.
+The present formulation gives regression and physics different, auditable roles, extending invariant-aware surrogate modeling from isolated responses to the recycling plant \citep{Selerio2026}. It compares two statistical factorizations without altering the process definition. The whole-system architecture predicts the complete decision-relevant closed-loop response in one quadratic map. The shared-unit architecture reuses one quadratic CSTR map across all reactor stages, couples it to one quadratic Clarifier map, and closes the recycle through the exact mixer equation. Internal Clarifier layers are omitted from both statistical responses because they are not needed to close the recycle, calculate outlet quality, or evaluate the operating objective; their volume-weighted total is retained because whole-plant solids retention time depends on Clarifier inventory. The same strictly convex quadratic program (QP) then finds the nearest response from either surrogate satisfying a stated set of linear physical relations. The two projected-surrogate routes and the smooth mechanistic NLP use identical controls, objective, and engineering limits. Nonlinear biological rates and the nonlinear settling law are not attributed to the projection; they are checked independently with the full layer-resolved state of the declared aggregate-solids mechanistic model. This distinction is important because satisfying conservation and aggregate inventory bounds is necessary for a credible plant response, but it is not sufficient to establish kinetic or layer-profile accuracy.
 
 The derivation is dimension-parametric. It applies to $N$ biological stages, an $L$-layer mechanistic Clarifier, and any declared set of free stage and plant controls. Numerical values---including $N$, $L$, the aerated stages, operating bounds, objective priorities, and engineering limits---are introduced only in the case study. Changing $L$ changes the mechanistic state and the construction of its aggregate inventory, but not the number of statistical response coordinates. The case uses five reactors and ten mechanistic layers, but neither number is built into the theory.
 
@@ -253,9 +254,9 @@ Only this scalar inventory is retained in the statistical response. Eliminating 
 \end{align}
 The interval is necessary and sufficient for the existence of at least one profile satisfying the endpoint envelope: every intermediate inventory is obtained by assigning a common admissible value to the internal layers. It does not assert that such a profile satisfies the nonlinear settling-flux equations; that stronger question remains with the mechanistic model.
 
-\subsection{Raw operational-response surrogate}
+\subsection{Whole-system raw operational-response surrogate}
 
-The regression predicts every quantity needed to close the recycle and evaluate the objective and operating constraints, without reproducing latent spatial detail. Stack the outputs in process order:
+The existing whole-system surrogate, designated route $S$, predicts every quantity needed to close the recycle and evaluate the objective and operating constraints, without reproducing latent spatial detail. Both surrogate architectures use the same output stack in process order:
 \begin{equation}
 \chi=\col(m,c_1,\ldots,c_N,g_E,g_U,M_{\rm cl})
 \in\R^{n_\chi},\qquad n_\chi=(N+3)F+1.
@@ -266,25 +267,50 @@ The endpoint TSS values remain recoverable from $g_E$ and $g_U$, while $M_{\rm c
 Let $z=\col[D_{\vartheta,{\rm fit}}^{-1}(\vartheta-\bar\vartheta),D_{x,{\rm fit}}^{-1}(x-\bar x)]\in\R^{d_z}$, where $d_z=d_\vartheta+F$ and bars and positive diagonal fitting scales are computed from the development data. To admit curvature and interactions without duplicating terms, form
 \begin{equation}
 r(z)=\col[z,\vech(zz^\top)],\qquad
-\phi(\vartheta,x)=\col[1,D_{r,{\rm fit}}^{-1}\{r(z)-\bar r\}]
-\in\R^{n_\phi},
+\phi_S(\vartheta,x)=\col[1,D_{r,{\rm fit}}^{-1}\{r(z)-\bar r\}]
+\in\R^{n_{\phi,S}},
 \label{eq:features}
 \end{equation}
 where $\vech$ lists one triangular copy of the symmetric quadratic matrix. Hence
 \begin{equation}
-n_\phi=1+d_z+\frac{d_z(d_z+1)}2.
+n_{\phi,S}=1+d_z+\frac{d_z(d_z+1)}2.
 \label{eq:featurecount}
 \end{equation}
 The dimension now adapts automatically if another stage control is freed.
 
-With development response mean $\bar\chi$, positive scale $D_\chi$, and fitted coefficient matrix $\widehat C_{\gamma_{\rm R}}$, the raw response is
+With development response mean $\bar\chi$, positive scale $D_\chi$, and fitted coefficient matrix $\widehat C_{S,\gamma_S}$, the route-$S$ raw response is
 \begin{equation}
-\chi_{\rm raw}(\vartheta,x)=\bar\chi+D_\chi\widehat C_{\gamma_{\rm R}}\phi(\vartheta,x).
+\chi_{{\rm raw},S}(\vartheta,x)=\bar\chi+D_\chi\widehat C_{S,\gamma_S}\phi_S(\vartheta,x).
 \label{eq:raw}
 \end{equation}
-The ridge parameter $\gamma_{\rm R}$ controls statistical complexity. At this point Equation~\eqref{eq:raw} is only a regression prediction; no sign or balance property has yet been imposed.
+The ridge parameter $\gamma_S$ controls statistical complexity. At this point Equation~\eqref{eq:raw} is only a regression prediction; no sign or balance property has yet been imposed.
 
-\subsection{From a raw prediction to one physically admissible response}
+\subsection{Shared-unit raw operational-response surrogate}
+
+The added route $U$ preserves the same plant topology but factorizes the statistical prediction by unit operation. One fitted quadratic reactor map is reused, with exactly the same coefficient matrix, in every biological stage; one fitted quadratic Clarifier map is used once:
+\begin{align}
+c_{i,U}^{\rm raw}&=\mathcal R_{\gamma_{\rm rxn}}
+  (c_{i-1,U}^{\rm raw},d_i,a_i),\qquad i=1,\ldots,N,
+\notag\\
+\col(g_{E,U}^{\rm raw},g_{U,U}^{\rm raw},M_{{\rm cl},U}^{\rm raw})
+&=\mathcal C_{\gamma_{\rm cl}}(c_{N,U}^{\rm raw},r_R,w),
+\qquad c_{0,U}^{\rm raw}=m_U^{\rm raw}.
+\label{eq:unitmaps}
+\end{align}
+Here $\mathcal R_{\gamma_{\rm rxn}}:\R^{F+2}\to\R^F$ and $\mathcal C_{\gamma_{\rm cl}}:\R^{F+2}\to\R^{2F+1}$ use separately standardized quadratic feature vectors $\phi_R$ and $\phi_C$, response scales $D_R$ and $D_C$, and independently selected ridge parameters. Sharing $\mathcal R$ assumes identical CSTR kinetics and parameterization; heterogeneous units would require declared unit descriptors or separate fits.
+
+No mixer model is fitted. Given a trial mixer state $m$, the reactor train and Clarifier are evaluated forward with Equation~\eqref{eq:unitmaps}, after which the exact mixer balance defines the $F$-dimensional recycle residual
+\begin{equation}
+\mathcal F_U(m;\vartheta,x)=q_Pm-x-r_Ic_{N,U}^{\rm raw}(m)
+-\frac{r_R}{q_U}g_{U,U}^{\rm raw}(m)=0.
+\label{eq:unitclosure}
+\end{equation}
+A converged, independently audited root assembles
+$\chi_{{\rm raw},U}=\col(m_U^{\rm raw},c_{1,U}^{\rm raw},\ldots,
+c_{N,U}^{\rm raw},g_{E,U}^{\rm raw},g_{U,U}^{\rm raw},M_{{\rm cl},U}^{\rm raw})$
+in the same $n_\chi$ coordinates as route $S$. The root is solved deterministically from two target-independent starts and must pass frozen residual, agreement, and Jacobian-conditioning checks. Recycle-root uniqueness is not inferred from downstream projection uniqueness; failure of the root contract makes that route-$U$ evaluation unavailable.
+
+\subsection{Common physical projection for both surrogate routes}
 
 The projection is built by collecting the physical statements already derived, rather than introducing unrelated constraints at once. Define $\delta_i(\vartheta)=d_i^{-1}A\xi_i(\vartheta)$ and let $\mathcal H(\vartheta)\chi=\mathfrak b(\vartheta,x)$ represent
 \begin{equation}
@@ -319,24 +345,24 @@ q_Eq_UM_{\rm cl}-q_UV_{{\rm cl},1}t_X^\top g_E
 \end{equation}
 Thus $n_g=F_X+2$ inequality rows describe particulate densification and aggregate-inventory feasibility. The last two rows are the division-free form of Equation~\eqref{eq:inventoryenvelope}; they remain linear in $\chi$ at fixed $\vartheta$. Non-negativity contributes another $n_\chi$ inequalities.
 
-The correction is measured in standardized response coordinates so that the large-magnitude inventory coordinate does not overwhelm a small nutrient coordinate. The projected displacement and response are
+The correction is measured in the same standardized plant-response coordinates $D_\chi$ for both architectures, so that the large-magnitude inventory coordinate does not overwhelm a small nutrient coordinate. The local fitting scales $D_R$ and $D_C$ never replace this common projection metric. For each $k\in\{S,U\}$, the projected displacement and response are
 \begin{align}
-\widehat u(\vartheta,x)=\argminop_{u\in\R^{n_\chi}}\quad&\tfrac12\|u\|_2^2
+\widehat u_k(\vartheta,x)=\argminop_{u\in\R^{n_\chi}}\quad&\tfrac12\|u\|_2^2
 \label{eq:projection}\\
 \text{subject to}\quad&
-D_b^{-1}\{\mathcal H(\vartheta)[\chi_{\rm raw}+D_\chi u]-\mathfrak b(\vartheta,x)\}=0,\notag\\
-&\chi_{\rm raw}+D_\chi u\ge0,\notag\\
-&D_g^{-1}\mathcal G(\vartheta)[\chi_{\rm raw}+D_\chi u]\le0,\notag\\[1mm]
-\widehat\chi(\vartheta,x)={}&\chi_{\rm raw}(\vartheta,x)+D_\chi\widehat u(\vartheta,x).
+D_b^{-1}\{\mathcal H(\vartheta)[\chi_{{\rm raw},k}+D_\chi u]-\mathfrak b(\vartheta,x)\}=0,\notag\\
+&\chi_{{\rm raw},k}+D_\chi u\ge0,\notag\\
+&D_g^{-1}\mathcal G(\vartheta)[\chi_{{\rm raw},k}+D_\chi u]\le0,\notag\\[1mm]
+\widehat\chi_k(\vartheta,x)={}&\chi_{{\rm raw},k}(\vartheta,x)+D_\chi\widehat u_k(\vartheta,x).
 \label{eq:projected}
 \end{align}
-$D_b$ and $D_g$ improve numerical conditioning but do not alter the feasible set. Whenever that set is nonempty, the identity Hessian makes the objective strictly convex and coercive, so the projected response exists and is unique. In the no-addition case, nonemptiness holds at every declared design point by construction: set $m=c_i=x$ for all $i$, $g_E=q_Ex$, $g_U=q_Ux$, and $M_{\rm cl}=V_{\rm cl}t_X^\top x$. For nonzero additions, nonemptiness is instead a required domain-admissibility check because the invariant right-hand sides change.
+$D_b$ and $D_g$ improve numerical conditioning but do not alter the feasible set. The projection is applied once after the complete raw plant response is assembled; per-unit projections would change the method and are not used. Whenever that set is nonempty, the identity Hessian makes the objective strictly convex and coercive, so the projected response exists and is unique for an available raw response. In the no-addition case, nonemptiness holds at every declared design point by construction: set $m=c_i=x$ for all $i$, $g_E=q_Ex$, $g_U=q_Ux$, and $M_{\rm cl}=V_{\rm cl}t_X^\top x$. For nonzero additions, nonemptiness is instead a required domain-admissibility check because the invariant right-hand sides change.
 
 The projection has a useful audit property. If a mechanistic reference $\chi_{\rm ref}$ satisfies the projection constraints exactly, Euclidean-projection geometry in standardized coordinates gives
 \begin{equation}
-\|D_\chi^{-1}(\widehat\chi-\chi_{\rm ref})\|_2^2
-\le \|D_\chi^{-1}(\chi_{\rm raw}-\chi_{\rm ref})\|_2^2
--\|\widehat u\|_2^2.
+\|D_\chi^{-1}(\widehat\chi_k-\chi_{\rm ref})\|_2^2
+\le \|D_\chi^{-1}(\chi_{{\rm raw},k}-\chi_{\rm ref})\|_2^2
+-\|\widehat u_k\|_2^2,qquad k\in\{S,U\}.
 \label{eq:nonexpansive}
 \end{equation}
 Thus the physical correction cannot increase standardized squared error to a reduced mechanistic reference point that is actually in the projection set. A numerically near-feasible target requires the finite-distance bound introduced in the methodology; small infeasibility is not treated as exact feasibility. Neither result reconstructs an internal Clarifier profile or proves that the projected response satisfies all kinetic or nonlinear settling equations, which are tested separately by full mechanistic replay.
@@ -380,20 +406,34 @@ The whole-plant solids retention time, surface overflow rate, and Clarifier soli
 \end{align}
 The factor $10^{-3}$ converts grams to kilograms in SLR. Symbolic lower and upper limits on SRT, SOR, SLR, $X_U$, and any effluent targets form $g_{\rm eng}(\vartheta,\chi)\le0$; only the case-study section assigns their values. In computation the SRT bounds are imposed in cross-multiplied form after the positive-loss guard, avoiding division by a small quantity.
 
-Physical feasibility alone does not prevent optimization from asking the projection to make an unusually large repair or from exploiting a state that conserves inventories but is kinetically implausible. Four development-supported diagnostics therefore define $g_{\rm trust}\le0$: standardized correction $\kappa_{\rm corr}=\|\widehat u\|_2/\sqrt{n_\chi}$; regularized feature leverage; deviation from a common particulate recovery; and the scaled smooth reactor-balance residual. Their explicit formulas and thresholds are provided in the Supplementary Material. Each threshold is determined from development data without using the post-selection holdout or optimization responses. No scalar aggregate can reproduce the discarded layer-flux residual, so nonlinear Clarifier plausibility is deliberately reserved for the exact $L$-layer replay rather than represented by a surrogate trust statistic.
+Physical feasibility alone does not prevent optimization from asking the projection to make an unusually large repair or from exploiting a state that conserves inventories but is kinetically implausible. The existing route-$S$ vector $g_{{\rm trust},S}$ retains its four development-supported diagnostics: standardized correction $\kappa_{{\rm corr},S}=\|\widehat u_S\|_2/\sqrt{n_\chi}$; whole-system regularized feature leverage; deviation from a common particulate recovery; and the scaled smooth reactor-balance residual. Route $U$ has a separately calibrated $g_{{\rm trust},U}$ containing the same route-specific correction, particulate, and reactor-residual concepts, together with the maximum shared-reactor leverage over the $N$ realized local inputs, separate Clarifier leverage, and hard recycle-root residual, agreement, and conditioning checks. Its local leverage statistics cannot be replaced by route $S$'s whole-system leverage. Explicit formulas and thresholds are provided in the Supplementary Material. Each threshold is determined from grouped development calculations without using the post-selection holdout or optimization responses. No scalar aggregate can reproduce the discarded layer-flux residual, so nonlinear Clarifier plausibility is deliberately reserved for the exact $L$-layer replay rather than represented by a surrogate trust statistic.
 
-The surrogate-based operational problem is
+The existing whole-system surrogate operational problem is
 \begin{equation}
 \begin{aligned}
-\min_{\vartheta}\quad&J[\vartheta,\widehat\chi(\vartheta,x);\varpi]\\
+\min_{\vartheta}\quad&J[\vartheta,\widehat\chi_S(\vartheta,x);\varpi]\\
 \text{subject to}\quad&\vartheta\in\mathcal V,\\
-&g_{\rm eng}[\vartheta,\widehat\chi(\vartheta,x)]\le0,\\
-&g_{\rm trust}[\vartheta,\chi_{\rm raw},\widehat\chi]\le0,\\
-&\widehat\chi(\vartheta,x)\text{ solves Equation~\eqref{eq:projection}}.
+&g_{\rm eng}[\vartheta,\widehat\chi_S(\vartheta,x)]\le0,\\
+&g_{{\rm trust},S}[\vartheta,\chi_{{\rm raw},S},\widehat\chi_S]\le0,\\
+&\widehat\chi_S(\vartheta,x)\text{ solves Equation~\eqref{eq:projection}}.
 \end{aligned}
 \label{eq:bilevel}
 \end{equation}
-Here $\mathcal V$ contains the declared bounds and any stage-allocation equalities. The lower response is unique; the upper problem remains generally nonconvex and piecewise smooth. Accordingly, $\vartheta_S$ denotes the selected feasible incumbent together with its explicitly reported convergence tier, rather than a certified global minimizer.
+Here $\mathcal V$ contains the declared bounds and any stage-allocation equalities. The lower projected response is unique; the upper problem remains generally nonconvex and piecewise smooth. Accordingly, $\vartheta_S$ denotes the selected feasible incumbent together with its explicitly reported convergence tier, rather than a certified global minimizer.
+
+The added shared-unit route uses the same outer engineering problem but its own statistical-support constraints and its audited inner recycle root:
+\begin{equation}
+\begin{aligned}
+\min_{\vartheta}\quad&J[\vartheta,\widehat\chi_U(\vartheta,x);\varpi]\\
+\text{subject to}\quad&\vartheta\in\mathcal V,\\
+&\mathcal F_U(m_U^{\rm raw};\vartheta,x)=0,\\
+&g_{\rm eng}[\vartheta,\widehat\chi_U(\vartheta,x)]\le0,\\
+&g_{{\rm trust},U}[\vartheta,\chi_{{\rm raw},U},\widehat\chi_U]\le0,\\
+&\widehat\chi_U(\vartheta,x)\text{ solves Equation~\eqref{eq:projection}}.
+\end{aligned}
+\label{eq:unitbilevel}
+\end{equation}
+Its selected feasible incumbent is denoted $\vartheta_U$. The closure root is not declared unique; only a root satisfying the frozen two-start agreement and numerical audits is eligible for projection and optimization.
 
 \subsection{Exact lower-level certificate and active-set sensitivity}
 
@@ -419,13 +459,22 @@ For a primal-feasible $u$, weak duality makes the primal--dual gap non-negative.
 \end{align}
 Consequently, $\Gamma=0$ is equivalent to stationarity and complementarity and certifies that $u$ is the unique lower-QP solution. This strong-duality construction removes the $n_q$ explicit slack variables used by a conventional complementarity lift \citep{Boyd2004}.
 
-Equation~\eqref{eq:gap} remains the independent lower-QP optimality identity, but it is not embedded as a constraint in the production upper problem. Instead, the calculation operates directly in the $d_\vartheta=7$ normalized controls and cold-solves Equation~\eqref{eq:standardqp} with a convex-QP method at every distinct trial control \citep{Stellato2020}. On a stable active set, total derivatives of the projected response and every upper function are obtained by differentiating the equality-plus-active-inequality QP KKT system. If that derivative construction is unavailable, deterministic value-only COBYQA evaluates the same upper problem, with a new cold solve of the unchanged exact QP at each distinct fallback trial. Every upper constraint is divided by a fixed positive, development-frozen scale, so feasibility is unchanged and no row scale depends on the current iterate. The calculation uses the deterministic box center as its only start and cold-replays its selected endpoint independently.
+Equation~\eqref{eq:gap} remains the independent lower-QP optimality identity, but it is not embedded as a constraint in either production surrogate problem. The existing route-$S$ calculation continues to operate directly in the $d_\vartheta=7$ normalized controls and cold-solves Equation~\eqref{eq:standardqp} with a convex-QP method at every distinct trial control \citep{Stellato2020}. On a stable active set, total derivatives of the projected response and every upper function are obtained by differentiating the equality-plus-active-inequality QP KKT system. If that derivative construction is unavailable, deterministic value-only COBYQA evaluates the same upper problem, with a new cold solve of the unchanged exact QP at each distinct fallback trial. Every upper constraint is divided by a fixed positive, development-frozen scale, so feasibility is unchanged and no row scale depends on the current iterate. The calculation uses the deterministic box center as its only start and cold-replays its selected endpoint independently.
 
-Surrogate convergence has two non-interchangeable tiers. The strong tier requires the independent lower active-set audit and seven-control upper KKT audit. If that tier is unavailable, protocol v3 polls the endpoint with exact-QP evaluations at normalized radii $10^{-3}$ and $10^{-4}$. The coarse set contains the 14 signed coordinate directions; the fine set contains those axes, 84 signed pairwise diagonals, and eight Helmert-simplex directions. After an improving poll point is selected, search-only ray trials use geometric multipliers $2,4,\ldots$ along the same coupled direction, with at most 16 probes and the same exact-QP feasibility audit. Those accelerated trials do not count as convergence evidence: the accepted endpoint must still pass fresh complete polls. Each complete poll must include at least one feasible nonzero displacement. Feasible-direction rank is retained as a diagnostic, not an acceptance gate, because the feasible cone at an active constrained point need not span $\mathbb R^7$. A fine-scale accepted move triggers coarse-scale revalidation. Absence of a sufficient feasible decrease in both revalidated polls supports only finite-direction, finite-resolution evidence; it is not KKT or Clarke stationarity and proves neither a local nor global optimum. An incomplete, failed, or evaluation-limited poll leaves the incumbent feasible but stationarity-unresolved.
+Route $U$ additionally requires a valid total derivative through its implicit recycle root. When the closure Jacobian is nonsingular and passes the frozen conditioning audit,
+\begin{equation}
+\frac{d m_U^{\rm raw}}{d\vartheta}
+=-\left(\frac{\partial\mathcal F_U}{\partial m}\right)^{-1}
+\frac{\partial\mathcal F_U}{\partial\vartheta},
+\label{eq:unitrootsensitivity}
+\end{equation}
+and differentiation of Equation~\eqref{eq:unitmaps} completes $d\chi_{{\rm raw},U}/d\vartheta$ before the same active-set projection sensitivity is applied. A route-$U$ strong-KKT classification requires independent finite-difference agreement for this complete root-plus-projection derivative chain as well as all route-$S$-style upper and lower audits. If any root or projection derivative condition fails, route $U$ uses the same deterministic value-only fallback and finite-resolution poll logic, but each distinct value evaluation first cold-solves and audits the recycle root and then cold-solves the projection QP.
+
+Surrogate convergence has two non-interchangeable tiers. The strong tier requires the applicable derivative audit, independent lower active-set audit, and seven-control upper KKT audit. If that tier is unavailable, protocol v3 polls the endpoint with complete route evaluations at normalized radii $10^{-3}$ and $10^{-4}$. The coarse set contains the 14 signed coordinate directions; the fine set contains those axes, 84 signed pairwise diagonals, and eight Helmert-simplex directions. After an improving poll point is selected, search-only ray trials use geometric multipliers $2,4,\ldots$ along the same coupled direction, with at most 16 probes and the same inner-problem feasibility audits. Those accelerated trials do not count as convergence evidence: the accepted endpoint must still pass fresh complete polls. Each complete poll must include at least one feasible nonzero displacement. Feasible-direction rank is retained as a diagnostic, not an acceptance gate, because the feasible cone at an active constrained point need not span $\mathbb R^7$. A fine-scale accepted move triggers coarse-scale revalidation. Absence of a sufficient feasible decrease in both revalidated polls supports only finite-direction, finite-resolution evidence; it is not KKT or Clarke stationarity and proves neither a local nor global optimum. An incomplete, failed, or evaluation-limited poll leaves the incumbent feasible but stationarity-unresolved.
 
 \subsection{Direct smooth mechanistic comparator}
 
-The comparison route removes both regression and projection. Its state contains the concentrations that actually accumulate in the reduced model:
+The third route, $M$, removes both regression and projection. Its state contains the concentrations that actually accumulate in the reduced model:
 \begin{equation}
 y=\col(c_1,\ldots,c_N,s_1,\ldots,s_L)\in\R_+^{n_y},
 \qquad n_y=NF+L.
@@ -444,7 +493,7 @@ The mixer and Clarifier outlet vectors are reconstructed algebraically from $(\v
 \label{eq:mechanisticnlp}
 \end{equation}
 Its selected feasible incumbent, when one exists, is denoted $(\vartheta_M,y_M,\widetilde X_{F,M})$. The auxiliary is algebraically redundant at feasibility but makes every trial-point denominator safe.
-Smooth approximations are used only for the minimum, maximum, positive-part, zero-denominator, and receiver-switch operations in the settling and kinetic equations. A nonzero smoothing width cannot be globally identical to a nonsmooth function. The smooth endpoint is therefore an optimizer-native candidate, not the physical reference used to compare routes. Its selected control is replayed on the same exact nonsmooth model used for the surrogate candidate.
+Smooth approximations are used only for the minimum, maximum, positive-part, zero-denominator, and receiver-switch operations in the settling and kinetic equations. A nonzero smoothing width cannot be globally identical to a nonsmooth function. The smooth endpoint is therefore an optimizer-native candidate, not the physical reference used to compare routes. Its selected control is replayed on the same exact nonsmooth model used for both surrogate candidates.
 
 The scalar-layer Clarifier is an aggregate-solids steady-state model. Particulate outlet components are reconstructed with the steady feed composition; consequently, a BDF march is a pseudo-transient numerical route to the nonsmooth steady equations, not a claim that every particulate species is dynamically inventoried inside every layer. A reference replay means an independently converged solution of those declared nonsmoothed equations. Stability refers only to the reduced numerical state model.
 
@@ -483,7 +532,7 @@ $w$ & 0.001--0.05 & WAS ratio\\
 
 Five equal-volume stages provide a compact anoxic--aerobic train for the comparative calculation, while ten 0.4-m Clarifier layers resolve the specified 4-m depth without making the layer count a structural constant. The operating box deliberately spans low-to-high residence time, aeration, recycle, and wasting settings while preserving $q_E>0$ and $q_U>0$. These choices define the case-study domain; they are not asserted as universal design bounds.
 
-For this case, $d_z=d_\vartheta+F=27$, $n_\phi=406$, $n_\chi=161$, $n_y=110$, $n_h=75$, $n_g=12$, and $n_q=173$. These are evaluations of Equations~\eqref{eq:state}, \eqref{eq:featurecount}, \eqref{eq:eqcount}, and \eqref{eq:G}; they are not fixed architectural constants. Changing $N$ or the free-control set changes the statistical dimensions and requires a newly fitted surrogate. Changing $L$ changes $n_y$, the mechanistic discretization, and the deterministic construction of $M_{\rm cl}$, but not $n_\chi$; it still requires renewed mechanistic and response validation.
+For this case, the whole-system route has $d_z=d_\vartheta+F=27$ and $n_{\phi,S}=406$. Each shared-unit input has $F+2=22$ coordinates, so $n_{\phi,R}=n_{\phi,C}=276$; the reactor and Clarifier coefficient matrices have dimensions $20\times276$ and $41\times276$, respectively. Both surrogate routes assemble $n_\chi=161$ responses and share $n_h=75$, $n_g=12$, and $n_q=173$, while the mechanistic route has $n_y=110$. These are evaluations of Equations~\eqref{eq:state}, \eqref{eq:featurecount}, \eqref{eq:eqcount}, and \eqref{eq:G}; they are not fixed architectural constants. Changing $N$ or the free-control set changes route $S$ and the assembled route-$U$ problem and requires renewed validation. The shared reactor coefficients need not change with $N$ only when reactor kinetics, parameterization, and local input support remain identical. Changing $L$ changes $n_y$, the mechanistic discretization, and the deterministic construction of $M_{\rm cl}$, but not $n_\chi$; it still requires renewed mechanistic and response validation.
 
 The overall objective priorities are
 \begin{equation}
@@ -501,9 +550,9 @@ After the dated protocol revisions documented below, the calculation follows six
 \begin{enumerate}
 \item retain the already completed deterministic candidate attempts over the joint seven-control and twenty-influent domain, including every accepted and rejected outcome, and apply the documented stop that forbids any new supplemental round;
 \item freeze the 16,714 accepted mechanistic states available when generation was stopped and retain their pre-existing partition into 13,371 development states and 3,343 post-selection holdout states in ascending original candidate order;
-\item replace each layer-resolved statistical target by the reduced response in Equation~\eqref{eq:state}, deriving $M_{\rm cl}$ deterministically from the stored mechanistic layers, then select the ridge parameter by five-fold cross-validation entirely within the 13,371 development states and fit one final reduced-response surrogate;
-\item evaluate raw and projected reduced responses once on the 3,343 post-selection holdout states for descriptive assessment only;
-\item attempt the nominal and ten influent scenarios by both Equations~\eqref{eq:bilevel} and \eqref{eq:mechanisticnlp}, certify surrogate convergence by its declared tier, allow at most one conditional direct recovery after a primary direct failure, and retain every success or failure status; and
+\item construct the common reduced plant response, pooled reactor transitions, and Clarifier targets from the stored states; select route $S$ and route $U$ ridge settings by plant-grouped five-fold cross-validation entirely within the 13,371 development states; and fit the final whole-system, shared-reactor, and Clarifier models;
+\item evaluate both surrogate architectures once on the 3,343 post-selection holdout states for descriptive assessment, including route $U$'s teacher-forced unit diagnostics and independently initialized free-running recycle closure before the common projection;
+\item attempt the nominal and ten influent scenarios by Equations~\eqref{eq:bilevel}, \eqref{eq:unitbilevel}, and \eqref{eq:mechanisticnlp}; certify each surrogate by its applicable tier; preserve the existing single route-$S$ conditional recovery for a failed primary direct solve; and retain every success or failure status; and
 \item replay every available selected candidate on the same exact nonsmooth mechanistic model and perform the common-reference and physical audits.
 \end{enumerate}
 Within the revised analysis, holdout responses and optimization responses do not determine feature definitions, scales, ridge selection, objective priorities, limits, smoothing widths, tolerances, or starts. The response architecture itself is an explicitly disclosed exception: layer-wise summaries from the superseded model had been inspected before the 25 August 2026 reduction to $M_{\rm cl}$, so the 3,343 rows are no longer described as an untouched or confirmatory test set.
@@ -530,6 +579,8 @@ After all eleven casewise calculations were complete, the repeated holdout infer
 
 On 25 August 2026, after layer-wise holdout summaries and case artifacts from the 170-coordinate surrogate existed, the author explicitly replaced the ten statistical layer outputs by the single inventory $M_{\rm cl}$. This is an outcome-aware model revision motivated by response parsimony and the fact that internal layers are unnecessary for recycle closure and operational evaluation. The accepted mechanistic checkpoints and their full ten-layer states remain valid source data; $M_{\rm cl}$ is derived from them by Equation~\eqref{eq:inventory} under a new response-schema hash. The former response arrays, ridge fit, response scales, projection and trust thresholds, holdout assessment, surrogate decisions, convergence certificates, replays at those decisions, and surrogate timings are excluded from the revised analysis. The reduced surrogate is refitted and every downstream surrogate assessment, optimization, replay, and timing calculation is repeated. The ten-layer mechanistic generator, direct model, exact reference, accepted-row memberships, nominal input, and ten scenario input vectors are unchanged. Because the old holdout summaries informed this revision, the 3,343 rows are retained only as a frozen post-selection holdout; their new reduced-response metrics are descriptive and do not serve as a confirmatory admission gate. The unchanged scenario inputs likewise form post-selection stress cases, so their casewise results support only descriptive comparisons.
 
+Later on 25 August 2026, explicit author instruction added the shared-unit projected surrogate as a third optimization route; it did not replace or revise the whole-system surrogate or smooth mechanistic NLP. This amendment followed inspection of earlier surrogate outputs and is therefore outcome-aware. The frozen mechanistic states can supply the new reactor-transition and Clarifier training targets, but no route-$U$ fit, cross-validation result, closure audit, optimization, replay, or timing is inherited. All five reactor transitions from a plant state retain that state's fold membership. The existing post-selection holdout and ten scenario inputs remain descriptive for route $U$, and any numerical claim comparing three routes requires the new route to pass its own frozen admission, closure, optimization, and exact-replay contracts.
+
 The ordered component vector is
 \begin{equation}
 \begin{split}
@@ -541,57 +592,63 @@ The interrupted 50,000-target design originally declared 40,000 development and 
 
 The final accepted blocks are consequently acceptance-conditioned samples, and the union of round~0 survivors and supplemental replacements is not one global strength-one Latin hypercube. This sacrifices global Latin-hypercube stratification and can underrepresent regions in which the mechanistic acceptance contract fails. Therefore, article denominators distinguish candidate attempts from accepted rows, report acceptance and rejection by block and reason, and preserve candidate-to-final-slot provenance. Prediction and optimization conclusions are conditional on the accepted, numerically solvable region; they do not establish reliability over the rejected part of the declared box. The post-selection holdout remains excluded from fitting, scaling, ridge selection, and trust calibration under the revised model, but its earlier layer-wise summaries helped motivate the response reduction. It therefore provides a fixed descriptive check rather than an independent test of the revised architecture.
 
-\subsection{Five-fold cross-validation and final ridge fit}
+\subsection{Plant-grouped five-fold cross-validation and final surrogate fits}
 
-The 13,371 development rows are partitioned reproducibly into five folds whose sizes differ by at most one. For a fitting index set $\mathcal I$, let $\Phi_{\mathcal I}$ contain feature rows, $\widetilde Y_{\mathcal I}$ contain standardized responses, and $R_\phi=\diag(0,1,\ldots,1)$ leave the intercept unpenalized. Training solves
+The 13,371 development plant rows are partitioned reproducibly into five folds whose sizes differ by at most one. For a fitting index set $\mathcal I$, let $\Phi_{\mathcal I}$ contain feature rows, $\widetilde Y_{\mathcal I}$ contain standardized responses, and $R_\phi=\diag(0,1,\ldots,1)$ leave the intercept unpenalized. The existing route-$S$ training solves
 \begin{equation}
-\widehat C_{\gamma_{\rm R}}=\argminop_C
+\widehat C_{S,\gamma_S}=\argminop_C
 \left\{\frac{\|\widetilde Y_{\mathcal I}-\Phi_{\mathcal I}C^\top\|_F^2}
-{|\mathcal I|n_\chi}+\frac{\gamma_{\rm R}}{n_\chi}\|CR_\phi\|_F^2\right\}.
+{|\mathcal I|n_\chi}+\frac{\gamma_S}{n_\chi}\|CR_\phi\|_F^2\right\}.
 \label{eq:ridge}
 \end{equation}
-Every center and scale is recomputed within the corresponding fitting fold. Positive candidate values of $\gamma_{\rm R}$ guarantee a unique, stable coefficient solution even if a feature matrix is nearly rank deficient. The fold score is full reduced-response standardized RMSE of the raw response. The one-standard-error rule chooses the largest $\gamma_{\rm R}$ whose mean score is within one standard error of the minimum \citep{Hastie2009}. Projection metrics are recorded but do not select $\gamma_{\rm R}$, so reconciliation cannot hide a weak raw model. Because replacing ten layers by one inventory changes the response weighting, ridge selection and all out-of-fold predictions are recomputed rather than inherited from the old fit. The chosen value is refitted once on all 13,371 development rows.
+Every center and scale is recomputed within the corresponding fitting fold. Positive candidate values of $\gamma_S$ guarantee a unique, stable coefficient solution even if a feature matrix is nearly rank deficient. The fold score is full reduced-response standardized RMSE of the raw response. The one-standard-error rule chooses the largest $\gamma_S$ whose mean score is within one standard error of the minimum \citep{Hastie2009}. Projection metrics are recorded but do not select $\gamma_S$, so reconciliation cannot hide a weak raw model. Because replacing ten layers by one inventory changes the response weighting, ridge selection and all out-of-fold predictions are recomputed rather than inherited from the old fit. The chosen value is refitted once on all 13,371 development rows.
 
-The frozen post-selection holdout reports descriptive RMSE, MAE, bias, normalized RMSE, and $R^2$ for the mixer, each reactor, both outlet-flow blocks, Clarifier solids inventory, and the full reduced response. Raw and projected predictions are reported side by side. For holdout row $i$, let $\mathcal C_i$ be its projection polyhedron and let $P_{\mathcal C_i}$ be metric projection in the norm $\|v\|_{D_\chi^{-1}}:=\|D_\chi^{-1}v\|_2$. Because a numerical mechanistic target $\chi_i$ satisfies equations only to finite tolerance, its feasibility distance $\delta_{{\rm feas},i}=\|P_{\mathcal C_i}(\chi_i)-\chi_i\|_{D_\chi^{-1}}$ is reported. The following general bound is checked for every target:
+For route $U$, each plant row contributes $N=5$ ordered reactor transitions, giving 66,855 development transition rows, and one Clarifier row, giving 13,371 Clarifier rows. The $N$ transitions from a plant state always remain together in that plant's fold, preventing the same trajectory from appearing in both fit and validation subsets. The reactor and Clarifier coefficient matrices use the same ridge form as Equation~\eqref{eq:ridge}, with separate local scales and penalties $\gamma_{\rm rxn}$ and $\gamma_{\rm cl}$. Each penalty is selected independently by the same one-standard-error rule applied to its teacher-forced standardized validation error; pooled and stagewise reactor scores and the Clarifier score are retained. The selected pair is then subjected to a separate, mandatory free-running out-of-fold closure and assembled-response assessment. No target state initializes or selects a closure root, and local scores cannot substitute for this plant-level gate. Final $\mathcal R_{\gamma_{\rm rxn}}$ and $\mathcal C_{\gamma_{\rm cl}}$ fits use all development rows after selection.
+
+For each surrogate route, the frozen post-selection holdout reports descriptive RMSE, MAE, bias, normalized RMSE, and $R^2$ for the mixer, each reactor, both outlet-flow blocks, Clarifier solids inventory, and the full reduced response. Route $U$ additionally reports teacher-forced unit metrics, free-running closure success and two-start agreement, and error growth along the reactor train. Raw and projected assembled predictions are reported side by side. No target state initializes or selects a validation root. For holdout row $i$, let $\mathcal C_i$ be its projection polyhedron and let $P_{\mathcal C_i}$ be metric projection in the norm $\|v\|_{D_\chi^{-1}}:=\|D_\chi^{-1}v\|_2$. Because a numerical mechanistic target $\chi_i$ satisfies equations only to finite tolerance, its feasibility distance $\delta_{{\rm feas},i}=\|P_{\mathcal C_i}(\chi_i)-\chi_i\|_{D_\chi^{-1}}$ is reported. The following general bound is checked for every target and either surrogate architecture:
 \begin{equation}
 \|P_{\mathcal C_i}(\chi_{{\rm raw},i})-\chi_i\|_{D_\chi^{-1}}
 \le \|\chi_{{\rm raw},i}-\chi_i\|_{D_\chi^{-1}}+\delta_{{\rm feas},i}.
 \label{eq:finitefeasibility}
 \end{equation}
-Equation~\eqref{eq:nonexpansive} is invoked only for a target known to be exactly feasible; a merely small positive $\delta_{{\rm feas},i}$ does not justify the stronger squared inequality. Before the post-selection holdout is evaluated, article eligibility requires all development out-of-fold QPs to pass their primal--dual audit, both the full reduced-response and inventory-coordinate raw nRMSE values to be below one, and all four development-supported trust thresholds to be frozen successfully. The separate inventory criterion prevents its single coordinate from being hidden in the 161-coordinate average even though it enters SRT directly. Holdout metrics are descriptive and do not alter these gates. A failed scientific gate is persisted and propagated as a failure status but does not suppress the remaining model-function exercises or trigger refitting. A non-finite or incomplete numerical object from which a downstream problem cannot be defined remains a hard computational failure.
+Equation~\eqref{eq:nonexpansive} is invoked only for a target known to be exactly feasible; a merely small positive $\delta_{{\rm feas},i}$ does not justify the stronger squared inequality. Route $S$ retains its existing admission gates. Route $U$ has separate gates requiring all development out-of-fold closures and QPs to pass their root and primal--dual audits, full assembled-response and inventory-coordinate raw nRMSE values below one, and successful freezing of every route-$U$ trust limit. The separate inventory criterion prevents its single coordinate from being hidden in the 161-coordinate average even though it enters SRT directly. Holdout metrics are descriptive and do not alter either route's gates. Failure of one surrogate route is persisted without reclassifying the other; a three-route comparison is eligible only where all applicable route and replay checks pass. A failed scientific gate does not trigger refitting. A non-finite or incomplete numerical object from which a downstream problem cannot be defined remains a hard computational failure.
 
 \subsection{Nominal optimization and exact common-reference replay}
 
-The nominal influent is the midpoint of each declared influent interval. Both optimization routes use the same free controls, bounds, objective priorities, and engineering constraints. The surrogate route and the primary direct route each begin at the componentwise center of the normalized seven-dimensional box. For the surrogate route, the former primal--dual-gap IPOPT continuation is not executed; the exact-QP active-set problem in the seven normalized controls is the primary solver.
+The nominal influent is the midpoint of each declared influent interval. All three optimization routes use the same free controls, bounds, objective priorities, and engineering constraints. Each route begins at the componentwise center of the normalized seven-dimensional box. For the existing route $S$, the former primal--dual-gap IPOPT continuation is not executed; its exact-QP active-set problem in the seven normalized controls remains the primary solver.
 
-The original projection QP is cold-solved to its acceptance tolerances at every distinct surrogate trial point. On a stable active set, response derivatives follow from the equality-plus-active-inequality QP KKT sensitivity system after rank and conditioning checks; an active-set change triggers a fresh QP and derivative reconstruction. If exact active-set derivatives cannot be constructed, deterministic value-only COBYQA continues within the normalized control bounds. Every distinct fallback trial receives a new cold solve and complete audit of the same projection QP; the fallback introduces neither an approximate projection nor finite-difference derivatives. Its selected best feasible visited point is cold-projected again. A surrogate candidate receives the strong first-order tier only if its independently recomputed lower-QP and upper KKT audits pass. Otherwise, complete feasible no-descent polls at both normalized radii $10^{-3}$ and $10^{-4}$ can qualify it only at finite resolution under protocol v3. After a winning poll step, up to 16 search-only exact-QP trials expand geometrically along that ray; a new complete poll is mandatory after every accepted move, so an acceleration trial never supplies certification evidence. Each completed poll must contain a feasible nonzero displacement; direction rank is diagnostic only. Any accepted fine-scale move forces the coarse poll to be repeated before certification, and the shared certification safety budget is 10,000 exact-QP evaluations. A failed or incomplete poll leaves stationarity unresolved. First-order stationarity is not a certificate of local minimality, and the finite poll is neither KKT/Clarke stationarity nor proof of local or global optimality.
+The original projection QP is cold-solved to its acceptance tolerances at every distinct route-$S$ trial point. On a stable active set, response derivatives follow from the equality-plus-active-inequality QP KKT sensitivity system after rank and conditioning checks; an active-set change triggers a fresh QP and derivative reconstruction. If exact active-set derivatives cannot be constructed, deterministic value-only COBYQA continues within the normalized control bounds. Every distinct fallback trial receives a new cold solve and complete audit of the same projection QP; the fallback introduces neither an approximate projection nor finite-difference derivatives. Its selected best feasible visited point is cold-projected again. This is the existing route-$S$ algorithm and is not changed by adding route $U$.
 
-The primary direct mechanistic solve retains its three-stage smoothing continuation from the center and its full-space endpoint audit. If that primary attempt fails, at most one recovery may be run from the same case's certified surrogate control, using the unchanged three-stage sequence. No recovery is run after a successful primary attempt or when the surrogate candidate is uncertified. Thus recovery is a disclosed dependency on the surrogate route, not an additional independent basin search. A validated feasible but budget-limited or stationarity-unresolved point remains a reportable incumbent. If a route produces no validated candidate, that failure remains in the case denominator and execution proceeds.
+At every distinct route-$U$ trial, two deterministic cold recycle roots are attempted and audited before the same projection QP is cold-solved. Exact duplicate controls alone may reuse the complete cached evaluation; no root or QP warm start crosses distinct controls. Analytical optimization is allowed only when the implicit-root and projection derivative chain passes the declared rank, conditioning, active-set, and finite-difference audits. Otherwise, the same deterministic value-only COBYQA logic is used. For either surrogate route, a candidate receives the strong first-order tier only if its applicable derivative chain and independently recomputed lower-QP and upper KKT audits pass. Otherwise, complete feasible no-descent polls at both normalized radii $10^{-3}$ and $10^{-4}$ can qualify it only at finite resolution under protocol v3. After a winning poll step, up to 16 search-only complete route evaluations expand geometrically along that ray; a new complete poll is mandatory after every accepted move, so an acceleration trial never supplies certification evidence. Each completed poll must contain a feasible nonzero displacement; direction rank is diagnostic only. Any accepted fine-scale move forces the coarse poll to be repeated before certification, and each route has its own 10,000-evaluation certification safety budget. A failed or incomplete poll leaves stationarity unresolved. First-order stationarity is not a certificate of local minimality, and the finite poll is neither KKT/Clarke stationarity nor proof of local or global optimality.
 
-For each available selected candidate $k\in\{S,M\}$, an exact nonsmooth mechanistic replay produces a full layer state that is mapped to the common reduced response $\chi_{{\rm ref},k}$ by Equation~\eqref{eq:state} with Equation~\eqref{eq:inventory}. The optimizer-native response is $\chi_{{\rm nat},S}=\widehat\chi_S$ for the surrogate route and the same reduced mapping of the smooth state, $\chi_{{\rm nat},M}=\chi_{{\rm sm},M}$, for the direct route. Raw and projected surrogate responses are also evaluated at both controls so prediction error is not confounded with decision difference:
+The primary direct mechanistic solve retains its three-stage smoothing continuation from the center and its full-space endpoint audit. To leave route $M$ unchanged, if that primary attempt fails, at most one recovery may be run from the same case's certified route-$S$ control, using the unchanged three-stage sequence. Route $U$ never supplies an additional recovery start. No recovery is run after a successful primary attempt or when the route-$S$ candidate is uncertified. Thus recovery remains a disclosed dependency on the original surrogate route, not an additional independent basin search. A validated feasible but budget-limited or stationarity-unresolved point remains a reportable incumbent. If a route produces no validated candidate, that failure remains in the case denominator and execution proceeds.
+
+For each available selected candidate $k\in\{S,U,M\}$, an exact nonsmooth mechanistic replay produces a full layer state that is mapped to the common reduced response $\chi_{{\rm ref},k}$ by Equation~\eqref{eq:state} with Equation~\eqref{eq:inventory}. The optimizer-native responses are $\chi_{{\rm nat},S}=\widehat\chi_S$, $\chi_{{\rm nat},U}=\widehat\chi_U$, and the reduced mapping of the smooth state, $\chi_{{\rm nat},M}=\chi_{{\rm sm},M}$. Both surrogate architectures are also evaluated, wherever their inner problems succeed, at all three selected controls so prediction error is not confounded with decision difference. For $p\in\{S,U\}$ and $k\in\{S,U,M\}$, define
 \begin{align}
-e_{\rm raw,k}&=D_\chi^{-1}[\chi_{\rm raw}(\vartheta_k,x)-\chi_{\rm ref}(\vartheta_k,x)],\notag\\
-e_{\rm proj,k}&=D_\chi^{-1}[\widehat\chi(\vartheta_k,x)-\chi_{\rm ref}(\vartheta_k,x)],\notag\\
+e_{{\rm raw},p|k}&=D_\chi^{-1}[\chi_{{\rm raw},p}(\vartheta_k,x)-\chi_{{\rm ref},k}],\notag\\
+e_{{\rm proj},p|k}&=D_\chi^{-1}[\widehat\chi_p(\vartheta_k,x)-\chi_{{\rm ref},k}],\notag\\
 e_{\rm nat,k}&=D_\chi^{-1}[\chi_{{\rm nat},k}-\chi_{{\rm ref},k}],\notag\\
 \Delta J_{{\rm nat-ref},k}&=J(\vartheta_k,\chi_{{\rm nat},k})-J(\vartheta_k,\chi_{{\rm ref},k}),\notag\\
-\Delta J_{S-M}&=J(\vartheta_S,\chi_{\rm ref,S})-J(\vartheta_M,\chi_{\rm ref,M}).
+\Delta J_{S-U}&=J(\vartheta_S,\chi_{{\rm ref},S})-J(\vartheta_U,\chi_{{\rm ref},U}),\notag\\
+\Delta J_{S-M}&=J(\vartheta_S,\chi_{{\rm ref},S})-J(\vartheta_M,\chi_{{\rm ref},M}),\notag\\
+\Delta J_{U-M}&=J(\vartheta_U,\chi_{{\rm ref},U})-J(\vartheta_M,\chi_{{\rm ref},M}).
 \label{eq:comparisons}
 \end{align}
-Each valid, physically audited exact replay retains its exact objective and objective components even when the exact response is engineering-infeasible. Such a candidate is reported but cannot enter a paired route comparison. Accordingly, $\Delta J_{S-M}$ is reported only when both candidates have valid, engineering-feasible exact replays. It compares selected feasible incumbents and is not called regret because neither route supplies a global certificate. A symmetric relative objective difference and normalized control RMS and maximum differences accompany it.
+Each valid, physically audited exact replay retains its exact objective and objective components even when the exact response is engineering-infeasible. Such a candidate is reported but cannot enter a paired route comparison. Each difference in Equation~\eqref{eq:comparisons} is independently eligible only when that pair's two candidates have valid, engineering-feasible exact replays; failure of the third route does not suppress an otherwise valid pair. These quantities compare selected feasible incumbents and are not called regret because no route supplies a global certificate. A symmetric relative objective difference and normalized control RMS and maximum differences accompany every eligible pair.
 
 The two exact replays use the declared primary and alternate reference initializations for every selected decision. Their generation-scale and frozen-state-scale root discrepancies must each be no greater than $10^{-6}$. Categorical branch assignments must agree except that a mismatch within either start's declared boundary-ambiguity band is retained as a qualifier rather than used alone to reject an otherwise agreeing root. Exact mass-conservation, non-negativity, layer-residual, domain, and reduced-stability audits must also pass. Proximity to a branch boundary prevents an unqualified differentiable-stationarity or smooth-equivalence interpretation. Whole-holdout smooth/reference validation is retired. The 3,343 post-selection holdout inputs remain excluded from fitting and trust calibration and are used only for descriptive raw and projected reduced-response assessment; any partial legacy equivalence rows are excluded from analysis.
 
 \subsection{Ten-case influent sensitivity scenarios}
 
-Ten influent vectors drawn previously by an independent 20-dimensional Latin hypercube over the stated influent ranges are frozen as post-selection stress cases. Their old layer-output-model responses and decisions are excluded, and no revised response or decision enters fitting or tuning. Both optimization routes are rerun and adjudicated for each case; reference replay is attempted wherever a route supplies a selected decision. The analysis reports each route's status and, where available, all seven selected controls; stagewise dissolved oxygen, TN, TP, and TSS; Clarifier outlet composites and $M_{\rm cl}$ for every shared response; mechanistic layer profiles where defined; SRT, SOR, and SLR; objective components; projection correction; and solve time. Ten post-selection cases support descriptive casewise comparisons, not independent or population-level reliability claims.
+Ten influent vectors drawn previously by an independent 20-dimensional Latin hypercube over the stated influent ranges are frozen as post-selection stress cases. Their old layer-output-model responses and decisions are excluded, and no revised response or decision enters fitting or tuning. All three optimization routes are run and adjudicated for each case; reference replay is attempted wherever a route supplies a selected decision. The analysis reports each route's status and, where available, all seven selected controls; stagewise dissolved oxygen, TN, TP, and TSS; Clarifier outlet composites and $M_{\rm cl}$ for every shared response; mechanistic layer profiles where defined; SRT, SOR, and SLR; objective components; route-specific projection correction; route-$U$ closure diagnostics; and solve time. Ten post-selection cases support descriptive casewise comparisons, not independent or population-level reliability claims.
 
 \subsection{Timing and numerical acceptance}
 
-Timing separates raw regression, one projection QP, complete surrogate optimization, surrogate convergence certification, primary smooth mechanistic optimization, any conditional direct recovery, and exact nonsmooth replay. The same processor allocation and thread count are used for the two optimization routes. Setup and solve times, case attempts and outcomes, iterations, cold QP resolutions, active-set/fallback method, COBYQA evaluation-budget status, poll direction set, feasible-displacement count and rank diagnostic, accepted moves, coarse revalidations, certification budget status and tier, smoothing stages, recovery status, and exact replays are all reported. A solver success flag is never sufficient: the applicable scaled primal, dual, stationarity, complementarity, physical-balance, reduced-stability, domain, engineering-feasibility, and branch-qualification checks must also be reported under the Supplementary Material contract.
+Timing separates route-$S$ regression, route-$U$ reactor and Clarifier evaluations, route-$U$ recycle-root work, the common projection QP, each complete surrogate optimization and convergence certification, primary smooth mechanistic optimization, any conditional direct recovery, and exact nonsmooth replay. The same processor allocation and thread count are used for all three optimization routes. Setup and solve times, case attempts and outcomes, root and QP evaluations, iterations, active-set/fallback method, COBYQA evaluation-budget status, poll direction set, feasible-displacement count and rank diagnostic, accepted moves, coarse revalidations, certification budget status and tier, smoothing stages, recovery status, and exact replays are all reported. A solver success flag is never sufficient: the applicable scaled primal, dual, stationarity, complementarity, root-agreement, physical-balance, reduced-stability, domain, engineering-feasibility, and branch-qualification checks must also be reported under the Supplementary Material contract.
 
 \section{Results and discussion}
 
-No numerical result from the superseded 170-coordinate surrogate is inserted. Results are populated only after the reduced 161-coordinate response has been reconstructed, refitted, cross-validated, projected, and optimized under the revised checks, and after both routes have been attempted in all eleven post-selection optimization cases. Generation reporting uses all 18,211 completed attempts as its denominator and shows how 13,371 development and 3,343 post-selection holdout rows were selected from the accepted checkpoints; downstream prediction denominators use only the applicable accepted rows. Failed or unresolved optimization and replay cases remain visible in their case denominators and result tables rather than being replaced or omitted. Tables~\ref{tab:generation_results}--\ref{tab:timing_results} define the minimum revised result set and prevent selective reporting after outcomes are known.
+No numerical result from the superseded 170-coordinate surrogate is inserted, and no result for the newly specified shared-unit route is inferred before it is run. Results are populated only after both 161-coordinate surrogate architectures have been fitted, plant-group cross-validated, projected, and optimized under their revised checks, and after all three routes have been attempted in all eleven post-selection optimization cases. Generation reporting uses all 18,211 completed attempts as its denominator and shows how 13,371 development and 3,343 post-selection holdout rows were selected from the accepted checkpoints; downstream prediction denominators use only the applicable accepted rows. Failed or unresolved optimization and replay cases remain visible in their case denominators and result tables rather than being replaced or omitted. Tables~\ref{tab:generation_results}--\ref{tab:timing_results} define the minimum revised result set and prevent selective reporting after outcomes are known.
 
 \begin{table}[htbp]
 \centering
@@ -614,36 +671,57 @@ Frozen post-selection holdout & -- & 3,343 & -- & -- & -- & --\\
 
 \begin{table}[htbp]
 \centering
-\caption{Five-fold selection and descriptive post-selection holdout performance. Raw and projected errors are required for every reduced-response block.}
+\caption{Plant-grouped five-fold selection and descriptive post-selection holdout performance. Raw and projected errors are required for every assembled reduced-response block and both surrogate routes.}
 \label{tab:prediction_results}
 \scriptsize
-\begin{tabular}{lrrrrr}
+\begin{tabular}{llrrrrr}
 \toprule
-Block & CV raw & CV projected & Holdout raw & Holdout projected & Correction RMS\\
+Route & Block & CV raw & CV projected & Holdout raw & Holdout projected & Correction RMS\\
 \midrule
-Mixer & -- & -- & -- & -- & --\\
-Reactors 1--$N$ (each reported) & -- & -- & -- & -- & --\\
-Clarifier overflow & -- & -- & -- & -- & --\\
-Clarifier underflow & -- & -- & -- & -- & --\\
-Clarifier solids inventory $M_{\rm cl}$ & -- & -- & -- & -- & --\\
-Full reduced response & -- & -- & -- & -- & --\\
+$S,U$ & Mixer & -- & -- & -- & -- & --\\
+$S,U$ & Reactors 1--$N$ (each reported) & -- & -- & -- & -- & --\\
+$S,U$ & Clarifier overflow & -- & -- & -- & -- & --\\
+$S,U$ & Clarifier underflow & -- & -- & -- & -- & --\\
+$S,U$ & Clarifier solids inventory $M_{\rm cl}$ & -- & -- & -- & -- & --\\
+$S,U$ & Full reduced response & -- & -- & -- & -- & --\\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \begin{table}[htbp]
 \centering
-\caption{Required trust-region audit. Post-selection holdout summaries are descriptive; development-frozen limits constrain surrogate optimization.}
+\caption{Required shared-unit diagnostic decomposition. Teacher-forced module scores diagnose the two fits; only the independently initialized free-running rows assess the assembled route-$U$ plant response.}
+\label{tab:unit_prediction_results}
+\small
+\begin{tabular}{lrrrr}
+\toprule
+Diagnostic & CV nRMSE & Holdout nRMSE & Successful roots / rows & Agreement passes / roots\\
+\midrule
+Reactor, pooled one step & -- & -- & n.a. & n.a.\\
+Reactor, stages 1--5 separately & -- & -- & n.a. & n.a.\\
+Clarifier, one step & -- & -- & n.a. & n.a.\\
+Complete free-running raw response & -- & -- & -- & --\\
+Complete free-running projected response & -- & -- & -- & --\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\caption{Required route-specific trust-region audit. Post-selection holdout summaries are descriptive; development-frozen limits constrain surrogate optimization.}
 \label{tab:trust_results}
 \small
-\begin{tabular}{lrrr}
+\begin{tabular}{llrrr}
 \toprule
-Diagnostic & Frozen limit & Holdout 95th percentile & Largest selected value\\
+Route & Diagnostic & Frozen limit & Holdout 95th percentile & Largest selected value\\
 \midrule
-Projection correction $\kappa_{\rm corr}$ & -- & -- & --\\
-Regularized leverage $\ell_{\rm R}$ & -- & -- & --\\
-Particulate split $\kappa_{\rm split}$ & -- & -- & --\\
-Reactor residual $\kappa_{\rm rxn}$ & -- & -- & --\\
+$S,U$ & Projection correction $\kappa_{\rm corr}$ & -- & -- & --\\
+$S$ & Whole-system leverage $\ell_S$ & -- & -- & --\\
+$U$ & Reactor leverage $\ell_{U,R,i}$, maximum over stages & -- & -- & --\\
+$U$ & Clarifier leverage $\ell_{U,C}$ & -- & -- & --\\
+$S,U$ & Particulate split $\kappa_{\rm split}$ & -- & -- & --\\
+$S,U$ & Reactor residual $\kappa_{\rm rxn}$ & -- & -- & --\\
+$U$ & Recycle residual/agreement/conditioning & -- & -- & --\\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -658,8 +736,10 @@ Reactor residual $\kappa_{\rm rxn}$ & -- & -- & --\\
 \toprule
 Method & Scope & Finite $n$ & Maximum mass residual & Mass rows & Maximum negativity & Negative rows\\
 \midrule
-Raw reduced & Post-selection holdout and selected decisions & -- & -- & -- & -- & --\\
-Projected reduced & Post-selection holdout and selected decisions & -- & -- & -- & -- & --\\
+Route-$S$ raw reduced & Post-selection holdout and selected decisions & -- & -- & -- & -- & --\\
+Route-$S$ projected reduced & Post-selection holdout and selected decisions & -- & -- & -- & -- & --\\
+Route-$U$ raw reduced & Post-selection holdout and selected decisions & -- & -- & -- & -- & --\\
+Route-$U$ projected reduced & Post-selection holdout and selected decisions & -- & -- & -- & -- & --\\
 Smooth-direct native & Every available direct candidate & -- & -- & -- & -- & --\\
 Exact mechanistic & Accepted generations and every replay start & -- & -- & -- & -- & --\\
 \bottomrule
@@ -676,8 +756,10 @@ Exact mechanistic & Accepted generations and every replay start & -- & -- & -- &
 \toprule
 Source & Inventory bounds & Reactor residual & Layer envelope & Layer residual & Stability\\
 \midrule
-Raw reduced & -- & -- & n.a. & n.a. & n.a.\\
-Projected reduced & -- & -- & n.a. & n.a. & n.a.\\
+Route-$S$ raw reduced & -- & -- & n.a. & n.a. & n.a.\\
+Route-$S$ projected reduced & -- & -- & n.a. & n.a. & n.a.\\
+Route-$U$ raw reduced & -- & -- & n.a. & n.a. & n.a.\\
+Route-$U$ projected reduced & -- & -- & n.a. & n.a. & n.a.\\
 Smooth-direct native & -- & -- & -- & -- & --\\
 Exact mechanistic & -- & -- & -- & -- & --\\
 \bottomrule
@@ -692,24 +774,26 @@ Discussion will distinguish native regression accuracy from improvement caused b
 \centering
 \caption{Nominal selected controls and reference-replay performance.}
 \label{tab:nominal_results}
-\begin{tabular}{lrr}
+\scriptsize
+\begin{tabular}{lrrr}
 \toprule
-Quantity & Surrogate-based solution & Direct mechanistic solution\\
+Quantity & Whole-system $S$ & Shared-unit $U$ & Mechanistic $M$\\
 \midrule
-$H,a_3,a_4,a_5,r_I,r_R,w$ & -- & --\\
-Projected-surrogate objective $J(\vartheta_S,\widehat\chi_S)$ & -- & n.a.\\
-Optimizer-native objective $J(\vartheta_M,\chi_{{\rm nat},M})$ & n.a. & --\\
-Reference-replay objective & -- & --\\
-Reference COD, TN, TP, TSS & -- & --\\
-Reference $M_{\rm cl}$, SRT, and underflow TSS & -- & --\\
-Total solution time & -- & --\\
+$H,a_3,a_4,a_5,r_I,r_R,w$ & -- & -- & --\\
+Route-$S$ native objective & -- & n.a. & n.a.\\
+Route-$U$ native objective & n.a. & -- & n.a.\\
+Route-$M$ native objective & n.a. & n.a. & --\\
+Reference-replay objective & -- & -- & --\\
+Reference COD, TN, TP, TSS & -- & -- & --\\
+Reference $M_{\rm cl}$, SRT, and underflow TSS & -- & -- & --\\
+Total solution time & -- & -- & --\\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \begin{table}[htbp]
 \centering
-\caption{Required nominal response and mechanistic-profile comparison. The final table contains separate panels at $\vartheta_S$ and $\vartheta_M$. Shared response rows are available to all methods; layer rows exist only for smooth-direct and exact mechanistic states.}
+\caption{Required nominal response and mechanistic-profile comparison. The final table contains separate panels at $\vartheta_S$, $\vartheta_U$, and $\vartheta_M$. Both surrogate maps are evaluated wherever defined at every selected control; layer rows exist only for smooth-direct and exact mechanistic states.}
 \label{tab:profile_results}
 \scriptsize
 \begin{tabular}{lrrrr}
@@ -726,43 +810,43 @@ Mechanistic layer $\ell=1,\ldots,L$: TSS & n.a. & n.a. & direct only & --\\
 \end{tabular}
 \end{table}
 
-The nominal discussion will trace raw, projected, optimizer-native, and exact shared responses from the mixer through the reactors, outlet streams, and $M_{\rm cl}$. Detailed Clarifier layers will be discussed only for smooth-direct and exact mechanistic states. The discussion will identify which inventories required correction, which controls or engineering constraints were active, whether either replay carries a branch-boundary qualifier, and whether the two exact-reference objectives differ materially.
+The nominal discussion will trace raw, projected, optimizer-native, and exact shared responses from the mixer through the reactors, outlet streams, and $M_{\rm cl}$. Detailed Clarifier layers will be discussed only for smooth-direct and exact mechanistic states. The discussion will identify which inventories required correction, which controls or engineering constraints were active, whether any replay carries a branch-boundary qualifier, and whether the three exact-reference objectives and their pairwise differences differ materially.
 
 \subsection{Casewise exact common-reference validation}
 
 \begin{table}[htbp]
 \centering
-\caption{Exact nonsmooth common-reference adjudication of every available selected candidate (at most 22). Counts use the actual candidate denominator; the post-selection holdout block is not part of this validation.}
+\caption{Exact nonsmooth common-reference adjudication of every available selected candidate (at most 33 decisions and 66 exact starts). Counts use the actual candidate denominator; the post-selection holdout block is not part of this validation.}
 \label{tab:common_reference_results}
-\begin{tabular}{lrrr}
+\begin{tabular}{lrrrr}
 \toprule
-Adjudication count & Surrogate & Direct & Total\\
+Adjudication count & Route $S$ & Route $U$ & Route $M$ & Total\\
 \midrule
-Selected candidates available & -- & -- & --\\
-Valid exact replays & -- & -- & --\\
-Interior-branch replays & -- & -- & --\\
-Branch-boundary-qualified replays & -- & -- & --\\
-Second exact starts required/completed & -- & -- & --\\
-Two-start root-agreement passes & -- & -- & --\\
-Exact physical and stability audit passes & -- & -- & --\\
-Exact engineering-feasible replays & -- & -- & --\\
-Common-reference comparison eligible & -- & -- & --\\
+Selected candidates available & -- & -- & -- & --\\
+Valid exact replays & -- & -- & -- & --\\
+Interior-branch replays & -- & -- & -- & --\\
+Branch-boundary-qualified replays & -- & -- & -- & --\\
+Second exact starts required/completed & -- & -- & -- & --\\
+Two-start root-agreement passes & -- & -- & -- & --\\
+Exact physical and stability audit passes & -- & -- & -- & --\\
+Exact engineering-feasible replays & -- & -- & -- & --\\
+Eligible for at least one pairwise comparison & -- & -- & -- & --\\
 \bottomrule
 \end{tabular}
 \end{table}
 
-This table does not claim whole-domain smooth/nonsmooth equivalence. Branch-boundary-qualified rows remain eligible when the required two-start exact replay, physical and stability audits, and engineering checks pass. A valid exact objective remains reported if the engineering check fails, but its paired-comparison eligibility is false. Candidate absence, direct failure, invalid replay, and comparison ineligibility are retained separately rather than collapsed into a favorable denominator.
+This table does not claim whole-domain smooth/nonsmooth equivalence. Branch-boundary-qualified rows remain eligible when the required two-start exact replay, physical and stability audits, and engineering checks pass. A valid exact objective remains reported if the engineering check fails, but its pairwise-comparison eligibility is false. Separate counts are reported for eligible $S$--$U$, $S$--$M$, and $U$--$M$ pairs and for cases in which all three candidates are jointly eligible. Candidate absence, route failure, invalid replay, and comparison ineligibility are retained separately rather than collapsed into a favorable denominator.
 
 \subsection{Influent scenarios and optimization comparison}
 
 \begin{table}[htbp]
 \centering
-\caption{Required post-selection influent-scenario comparison. The full table contains ten rows. Here $\mathrm{RMS}_{\rm proj,S}=\|e_{\rm proj,S}\|_2/\sqrt{n_\chi}$ and $\mathrm{RMS}_{\rm nat,M}=\|e_{\rm nat,M}\|_2/\sqrt{n_\chi}$ use the reduced $n_\chi=161$ response, and the time ratio is complete mechanistic-route time divided by complete surrogate-route time. Reference objective comparisons are shown only for common-reference-eligible pairs.}
+\caption{Required post-selection influent-scenario comparison. The full table contains ten rows. Every objective and signed difference is calculated on the exact common reference and shown only for the corresponding eligible route or pair. Route-specific response errors and the ratios $t_U/t_S$, $t_M/t_S$, and $t_M/t_U$ accompany this objective panel in the archived table.}
 \label{tab:sensitivity_results}
 \small
 \begin{tabular}{lrrrrrr}
 \toprule
-Case & $J_{S,\rm ref}$ & $J_{M,\rm ref}$ & $\Delta J_{S-M}$ & $\mathrm{RMS}_{\rm proj,S}$ & $\mathrm{RMS}_{\rm nat,M}$ & $t_M/t_S$\\
+Case & $J_{S,\rm ref}$ & $J_{U,\rm ref}$ & $J_{M,\rm ref}$ & $\Delta J_{S-U}$ & $\Delta J_{S-M}$ & $\Delta J_{U-M}$\\
 \midrule
 1--10 & -- & -- & -- & -- & -- & --\\
 \bottomrule
@@ -778,7 +862,7 @@ Case & $J_{S,\rm ref}$ & $J_{M,\rm ref}$ & $\Delta J_{S-M}$ & $\mathrm{RMS}_{\rm
 \toprule
 Case & Route & $H$ & $a_3$ & $a_4$ & $a_5$ & $r_I$ & $r_R$ & $w$\\
 \midrule
-1--10 & S and M & -- & -- & -- & -- & -- & -- & --\\
+1--10 & S, U, and M & -- & -- & -- & -- & -- & -- & --\\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -792,7 +876,7 @@ Case & Route & $H$ & $a_3$ & $a_4$ & $a_5$ & $r_I$ & $r_R$ & $w$\\
 \toprule
 Case & Decision & Response & COD & TN & TP & TSS & $J$\\
 \midrule
-1--10 & $\vartheta_S,\vartheta_M$ & raw/projected/optimizer-native/exact & -- & -- & -- & -- & --\\
+1--10 & $\vartheta_S,\vartheta_U,\vartheta_M$ & raw/projected/optimizer-native/exact & -- & -- & -- & -- & --\\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -805,12 +889,12 @@ Casewise reporting is retained because ten post-selection scenarios are too few 
 \label{tab:case_status}
 \small
 \resizebox{\linewidth}{!}{%
-\begin{tabular}{lllll}
+\begin{tabular}{llllll}
 \toprule
-Case & Surrogate outcome/tier & Direct outcome/recovery & Selected $n$ & Common-reference outcome\\
+Case & Route-$S$ outcome/tier & Route-$U$ outcome/tier/root & Route-$M$ outcome/recovery & Selected $n/3$ & Reference/pair eligibility\\
 \midrule
-Nominal & -- & -- & -- & --\\
-Scenarios 1--10 (each reported) & -- & -- & -- & --\\
+Nominal & -- & -- & -- & -- & --\\
+Scenarios 1--10 (each reported) & -- & -- & -- & -- & --\\
 \bottomrule
 \end{tabular}
 }
@@ -822,25 +906,27 @@ Timing is summarized only from the revised executions of robustness cases 1--10;
 
 \begin{table}[htbp]
 \centering
-\caption{Timing and solver workload for the two optimization routes.}
+\caption{Timing and solver workload for the three optimization routes. Route-$U$ totals include both cold recycle-root attempts and the common projection QP.}
 \label{tab:timing_results}
-\begin{tabular}{lrr}
+\scriptsize
+\begin{tabular}{lrrr}
 \toprule
-Metric & Surrogate plus projection & Smooth mechanistic NLP\\
+Metric & Whole-system $S$ & Shared-unit $U$ & Mechanistic $M$\\
 \midrule
-Mean primary solve time over robustness cases & -- & --\\
-Mean complete-case time over robustness cases & -- & --\\
-Median complete-case time & -- & --\\
-95th-percentile complete-case time & -- & --\\
-Validated cases / attempted cases & -- & --\\
-COBYQA fallback cases / 11 & -- & n.a.\\
-Budget-limited fallback cases / 11 & -- & n.a.\\
-Median fallback exact-QP evaluations & -- & n.a.\\
-Strong-KKT certificates / selected candidates & -- & n.a.\\
-Two-scale feasible-poll certificates / selected candidates & -- & n.a.\\
-Stationarity-unresolved candidates & -- & --\\
-Conditional recovery attempts / primary failures & n.a. & --\\
-Exact common-reference replay time & -- & --\\
+Mean primary solve time over robustness cases & -- & -- & --\\
+Mean complete-case time over robustness cases & -- & -- & --\\
+Median complete-case time & -- & -- & --\\
+95th-percentile complete-case time & -- & -- & --\\
+Validated cases / attempted cases & -- & -- & --\\
+Median cold recycle-root attempts / case & n.a. & -- & n.a.\\
+Median cold projection-QP evaluations / case & -- & -- & n.a.\\
+COBYQA fallback cases / 11 & -- & -- & n.a.\\
+Budget-limited fallback cases / 11 & -- & -- & n.a.\\
+Strong-KKT certificates / selected candidates & -- & -- & --\\
+Two-scale feasible-poll certificates / selected candidates & -- & -- & n.a.\\
+Stationarity-unresolved candidates & -- & -- & --\\
+Conditional recovery attempts / primary failures & n.a. & n.a. & --\\
+Exact common-reference replay time & -- & -- & --\\
 \bottomrule
 \end{tabular}
 \end{table}

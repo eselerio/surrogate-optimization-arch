@@ -169,6 +169,46 @@ DESIGN_ARRAYS = (
     "robustness_influents",
 )
 
+# A reduced-response fork may retain only files that define or audit the
+# mechanistic generation.  In particular, do not copy arbitrary future files
+# merely because they were placed below ``datasets``: fitted-response arrays
+# and other downstream products must be rebuilt under schema 10.
+REDUCED_FORK_DATASET_FILES = frozenset({
+    "datasets/design.npz",
+    "datasets/effective_design.npz",
+    "datasets/effective_design_manifest.json",
+    "datasets/frozen_accepted_complete.json",
+    *(
+        f"datasets/{block}/{name}"
+        for block in ("development", "test")
+        for name in (
+            "mechanistic_accepted_v3.npz",
+            "accepted_inputs.npz",
+            "accepted_diagnostics.csv",
+            "all_attempts.csv",
+            "accepted_provenance.csv",
+            "base_checkpoint_migration.csv",
+            "replacement_summary.json",
+            "accepted_coordinate_coverage.csv",
+            "rejection_reason_summary.csv",
+            "mechanistic_rows_v3.npz",
+            "mechanistic_diagnostics.csv",
+            "block_complete.json",
+        )
+    ),
+})
+REDUCED_FORK_DATASET_PREFIXES = tuple(
+    f"datasets/{block}/{directory}/"
+    for block in ("development", "test")
+    for directory in ("rows", "source_rows", "attempts")
+)
+REDUCED_FORK_INPUT_FILES = (
+    "inputs/generator_records.json",
+    "inputs/partial_generation_fork.json",
+    "inputs/frozen_accepted_partition.json",
+    "inputs/frozen_accepted/source_design_50000.npz",
+)
+
 
 @dataclass(frozen=True)
 class SourceContractMigrationAuthorization:
@@ -3019,19 +3059,27 @@ def _initialize_reduced_response_fork(
     datasets = source_run / "datasets"
     if not datasets.is_dir():
         raise RuntimeError("reduced-response fork source omits the datasets directory")
-    relative_paths.update(
-        path.relative_to(source_run).as_posix()
-        for path in datasets.rglob("*") if path.is_file()
-    )
+    for path in datasets.rglob("*"):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(source_run).as_posix()
+        if (
+            relative in REDUCED_FORK_DATASET_FILES
+            or any(
+                relative.startswith(prefix)
+                for prefix in REDUCED_FORK_DATASET_PREFIXES
+            )
+        ):
+            relative_paths.add(relative)
     migrations = source_run / "inputs" / "contract_migrations"
     if migrations.is_dir():
         relative_paths.update(
             path.relative_to(source_run).as_posix()
             for path in migrations.rglob("*") if path.is_file()
         )
-    generator_record = source_run / "inputs" / "generator_records.json"
-    if generator_record.is_file():
-        relative_paths.add(generator_record.relative_to(source_run).as_posix())
+    for relative in REDUCED_FORK_INPUT_FILES:
+        if (source_run / relative).is_file():
+            relative_paths.add(relative)
     generation_summary = source_run / "metrics" / "mechanistic_generation_summary.csv"
     if generation_summary.is_file():
         relative_paths.add(generation_summary.relative_to(source_run).as_posix())
@@ -3067,6 +3115,22 @@ def _initialize_reduced_response_fork(
             "checkpoint": relative,
             "checkpoint_sha256": file_digest(checkpoint),
             "artifacts": dict(marker.get("artifacts", {})),
+        }
+    frozen_relative = "datasets/frozen_accepted_complete.json"
+    frozen_checkpoint = temporary / frozen_relative
+    if frozen_checkpoint.is_file():
+        frozen_marker = _load_json_object(
+            frozen_checkpoint, description="retained frozen accepted-data marker",
+        )
+        if not _artifacts_match(temporary, frozen_marker.get("artifacts", {})):
+            raise RuntimeError("retained frozen accepted-data artifacts changed")
+        stages["generation/frozen_accepted"] = {
+            "artifact_source_digest": str(
+                frozen_marker.get("source_digest", source_contract["source_digest"])
+            ),
+            "checkpoint": frozen_relative,
+            "checkpoint_sha256": file_digest(frozen_checkpoint),
+            "artifacts": dict(frozen_marker.get("artifacts", {})),
         }
     summary_relative = "metrics/mechanistic_generation_summary.csv"
     if (temporary / summary_relative).is_file():
@@ -3181,7 +3245,7 @@ def _initialize_reduced_response_fork(
     _validate_fork_reuse_manifest(
         temporary, record["reused_artifact_manifest"], verify_files=True,
     )
-    os.replace(temporary, run)
+    _replace_with_retry(temporary, run)
     temporary_owner.cleanup()
 
 
@@ -3511,7 +3575,7 @@ def initialize_reused_run(
     _validate_fork_reuse_manifest(
         temporary, record["reused_artifact_manifest"], verify_files=True,
     )
-    os.replace(temporary, run)
+    _replace_with_retry(temporary, run)
     temporary_owner.cleanup()
 
 
@@ -4621,6 +4685,105 @@ def assessment_gate_allows_optimization(passed: bool) -> bool:
     return bool(passed or ASSESSMENT_GATE_EXECUTION_POLICY == "advisory_continue")
 
 
+def _post_selection_holdout_trust_diagnostics(
+    model: QuadraticSurrogate,
+    surrogate_assets: Any,
+    decisions: np.ndarray,
+    influents: np.ndarray,
+    raw: np.ndarray,
+    projected: np.ndarray,
+) -> pd.DataFrame:
+    """Evaluate the four frozen trust diagnostics on the holdout once.
+
+    This is a descriptive post-selection calculation.  It reuses the stored
+    raw and projected holdout responses and the scales/callbacks frozen from
+    development; its values are not inputs to calibration or admission.
+    """
+
+    theta = np.asarray(decisions, dtype=float)
+    feed = np.asarray(influents, dtype=float)
+    raw_values = np.asarray(raw, dtype=float)
+    projected_values = np.asarray(projected, dtype=float)
+    if (
+        theta.ndim != 2
+        or feed.ndim != 2
+        or len(theta) < 1
+        or len(feed) != len(theta)
+        or raw_values.ndim != 2
+        or raw_values.shape != projected_values.shape
+        or len(raw_values) != len(theta)
+        or not all(
+            np.all(np.isfinite(value))
+            for value in (theta, feed, raw_values, projected_values)
+        )
+    ):
+        raise RuntimeError("post-selection holdout trust inputs are invalid")
+    response_scale = np.asarray(model.response_scale, dtype=float)
+    if (
+        response_scale.shape != (raw_values.shape[1],)
+        or not np.all(np.isfinite(response_scale))
+        or np.any(response_scale <= 0.0)
+    ):
+        raise RuntimeError("frozen surrogate response scales are invalid")
+    features = np.asarray(model.feature_map.transform(theta, feed), dtype=float)
+    leverage_precision = np.asarray(
+        surrogate_assets.leverage_precision, dtype=float,
+    )
+    if (
+        features.ndim != 2
+        or features.shape[0] != len(theta)
+        or leverage_precision.shape != (features.shape[1], features.shape[1])
+        or not np.all(np.isfinite(features))
+        or not np.all(np.isfinite(leverage_precision))
+    ):
+        raise RuntimeError("frozen regularized-leverage assets are invalid")
+    callbacks = surrogate_assets.trust_callbacks
+    split_rows = getattr(callbacks, "split_rows", None)
+    reactor_rows = getattr(callbacks, "reactor_rows", None)
+    if not callable(split_rows) or not callable(reactor_rows):
+        raise RuntimeError("the two frozen residual trust callbacks are unavailable")
+
+    values = np.empty((len(theta), 4), dtype=float)
+    values[:, 0] = np.sqrt(np.mean(
+        ((projected_values - raw_values) / response_scale) ** 2, axis=1,
+    ))
+    values[:, 1] = np.einsum(
+        "ij,jk,ik->i", features, leverage_precision, features,
+    )
+    for row in range(len(theta)):
+        split = np.asarray(
+            split_rows(
+                theta[row], raw_values[row], projected_values[row], feed[row],
+            ),
+            dtype=float,
+        ).reshape(-1)
+        reactor = np.asarray(
+            reactor_rows(
+                theta[row], raw_values[row], projected_values[row], feed[row],
+            ),
+            dtype=float,
+        ).reshape(-1)
+        if (
+            split.size < 1
+            or reactor.size < 1
+            or not np.all(np.isfinite(split))
+            or not np.all(np.isfinite(reactor))
+        ):
+            raise RuntimeError(
+                f"frozen residual trust callbacks failed at holdout row {row}"
+            )
+        values[row, 2] = float(np.sqrt(np.mean(split**2)))
+        values[row, 3] = float(np.sqrt(np.mean(reactor**2)))
+    if not np.all(np.isfinite(values)):
+        raise RuntimeError("post-selection holdout trust diagnostics are non-finite")
+    frame = pd.DataFrame(values, columns=[
+        "correction", "regularized_leverage", "particulate_split",
+        "reactor_residual",
+    ])
+    frame.insert(0, "row", np.arange(len(theta)))
+    return frame
+
+
 def evaluate_admission_gate(
     assessment: AssessmentResult,
     *,
@@ -4689,7 +4852,7 @@ def evaluate_admission_gate(
         raise RuntimeError(
             "development OOF projection acceptance must be a nonempty Boolean vector"
         )
-    checks = {
+    admission_checks = {
         "development_oof_complete_response_nrmse_below_one": (
             development_oof_complete_nrmse < 1.0
         ),
@@ -4699,14 +4862,16 @@ def evaluate_admission_gate(
         "all_development_oof_projection_qp_audits_passed": bool(
             oof_projection_accepted.all()
         ),
+        "all_four_trust_limits_frozen": True,
+        "correction_limit_at_most_0_50": bool(correction_limit <= 0.50),
+    }
+    holdout_diagnostics = {
         "all_projection_qp_audits_passed": bool(qp_accepted.all()),
         "all_finite_distance_bounds_passed": bool(feasibility.all()),
         "projected_physical_audits_passed": bool(physical["projected"]["passed"]),
         "mechanistic_physical_audits_passed": bool(physical["mechanistic"]["passed"]),
-        "all_four_trust_limits_frozen": True,
-        "correction_limit_at_most_0_50": bool(correction_limit <= 0.50),
     }
-    passed = bool(all(checks.values()))
+    passed = bool(all(admission_checks.values()))
     optimization_permitted = assessment_gate_allows_optimization(passed)
     return {
         "passed": passed,
@@ -4716,7 +4881,10 @@ def evaluate_admission_gate(
         "development_oof_complete_response_nrmse": development_oof_complete_nrmse,
         "development_oof_clarifier_inventory_nrmse": development_oof_inventory_nrmse,
         "post_selection_holdout_is_confirmatory": False,
-        **checks,
+        "admission_gate_scope": "development_only",
+        "post_selection_holdout_checks_are_admission_gates": False,
+        **admission_checks,
+        **holdout_diagnostics,
         "trust_limits": limits,
         "physical_audit_maxima": physical,
         "failure_action": (
@@ -4939,6 +5107,7 @@ def run_assessment(
         assessment, test_count=profile.test_count,
         response_count=profile.surrogate_response_count,
     )
+    holdout_trust_path = run / "metrics" / "trust_post_selection_holdout.csv"
     paths = (
         run / "metrics" / "post_selection_prediction_metrics.csv",
         run / "metrics" / "physical_violations_assessment.csv",
@@ -4955,6 +5124,7 @@ def run_assessment(
         run / "metrics" / "ridge_fold_membership.csv",
         run / "datasets" / "development" / "surrogate_responses_inventory_v1.npz",
         run / "datasets" / "test" / "surrogate_responses_inventory_v1.npz",
+        holdout_trust_path,
     )
     atomic_dataframe(paths[0], assessment.metrics)
     atomic_dataframe(paths[1], assessment.violations)
@@ -4981,6 +5151,15 @@ def run_assessment(
         development_oof_inventory_nrmse=development_oof_inventory_nrmse,
         test_count=profile.test_count,
     )
+    holdout_trust = _post_selection_holdout_trust_diagnostics(
+        model,
+        surrogate_assets,
+        np.asarray(design["test_decisions"]),
+        np.asarray(design["test_influents"]),
+        assessment.raw,
+        assessment.projected,
+    )
+    atomic_dataframe(holdout_trust_path, holdout_trust)
     atomic_json(paths[8], gate)
     assert_source_unchanged(source_files)
     atomic_json(run / "metrics" / "assessment_complete.json", {
