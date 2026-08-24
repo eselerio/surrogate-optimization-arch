@@ -1,8 +1,9 @@
-"""Strict, resumable driver for the 5,000-input article-v3 calculation.
+"""Strict, resumable driver for an authorized article-v3 calculation.
 
-The article workload is exactly 4,000 development inputs and 1,000 untouched
-test inputs. This driver creates a source-bound result tree and never reads a
-preflight artifact. Expensive stages finish with atomic manifests.
+The default article workload is 4,000 development inputs and 1,000 untouched
+test inputs. A user-authorized 50,000-input rerun uses the same frozen 80/20
+split (40,000/10,000). This driver creates a source-bound result tree and never
+reads a preflight artifact. Expensive stages finish with atomic manifests.
 
 Optimization enters through :func:`run_optimization_stage`, which evaluates
 one deterministic local attempt for each route in each of eleven article
@@ -78,6 +79,7 @@ from closed_loop.v3_replacement_generation import (
     MechanisticBlockResult,
     generate_mechanistic_block_with_replacements,
 )
+from closed_loop import v3_replacement_generation as replacement_generation
 from closed_loop.v3_smooth import (
     CONTINUATION_SCHEDULE,
     DEFAULT_OBJECTIVE_WEIGHTS,
@@ -126,7 +128,14 @@ DIRECT_SINGLE_CENTER_PROTOCOL = "smooth_direct_single_center_v1"
 OPTIMIZATION_PROTOCOL = "single_center_local_exact_qp_v1"
 COMPARISON_PROTOCOL = "casewise_exact_common_reference_v3"
 TIMING_PROTOCOL = "robustness_casewise_aggregate_v1"
-RUN_ID_PATTERN = re.compile(r"^article_full_5000_[A-Za-z0-9][A-Za-z0-9_-]*$")
+RUN_ID_PATTERN = re.compile(
+    r"^article_full_(?:5000|50000)_[A-Za-z0-9][A-Za-z0-9_-]*$"
+)
+AUTHORIZED_DATASET_TOTALS = (5_000, 50_000)
+FROZEN_ACCEPTED_TOTAL = 16_714
+FROZEN_DEVELOPMENT_COUNT = 13_371
+FROZEN_TEST_COUNT = 3_343
+FROZEN_PROFILE_NAME = "article_frozen_16714"
 
 SOURCE_FILES = (
     "scripts/run_article_v3_5000.py",
@@ -986,7 +995,7 @@ def _runtime_versions() -> dict[str, str]:
 def resolve_run_directory(run_id: str, results_root: Path = RESULTS_ROOT) -> Path:
     if not RUN_ID_PATTERN.fullmatch(run_id) or ".." in run_id:
         raise ValueError(
-            "full-run id must match article_full_5000_<identifier>; "
+            "full-run id must match article_full_<5000-or-50000>_<identifier>; "
             "preflight names and path components are forbidden"
         )
     root = results_root.resolve()
@@ -996,11 +1005,58 @@ def resolve_run_directory(run_id: str, results_root: Path = RESULTS_ROOT) -> Pat
     return run
 
 
+def profile_for_dataset_total(dataset_total: int) -> StudyProfile:
+    """Return the frozen 80/20 article profile for an authorized row count."""
+
+    if dataset_total not in AUTHORIZED_DATASET_TOTALS:
+        raise ValueError(
+            f"dataset total must be one of {AUTHORIZED_DATASET_TOTALS}, "
+            f"not {dataset_total}"
+        )
+    if dataset_total == 5_000:
+        return ARTICLE_FULL
+    return replace(
+        ARTICLE_FULL,
+        name=f"article_full_{dataset_total}",
+        development_count=dataset_total * 4 // 5,
+        test_count=dataset_total // 5,
+    )
+
+
+def frozen_accepted_profile() -> StudyProfile:
+    """Profile for the user-frozen accepted subset of the interrupted 50k run."""
+
+    return replace(
+        ARTICLE_FULL,
+        name=FROZEN_PROFILE_NAME,
+        development_count=FROZEN_DEVELOPMENT_COUNT,
+        test_count=FROZEN_TEST_COUNT,
+    )
+
+
 def validate_authorized_profile(profile: StudyProfile) -> None:
+    dataset_total = profile.development_count + profile.test_count
+    frozen = profile.name == FROZEN_PROFILE_NAME
+    if dataset_total not in AUTHORIZED_DATASET_TOTALS and not frozen:
+        raise RuntimeError(
+            f"article profile requests unauthorized dataset total {dataset_total}"
+        )
+    if frozen and (
+        dataset_total != FROZEN_ACCEPTED_TOTAL
+        or profile.development_count != FROZEN_DEVELOPMENT_COUNT
+        or profile.test_count != FROZEN_TEST_COUNT
+    ):
+        raise RuntimeError("frozen accepted profile violates its fixed 80/20 split")
     expected = {
-        "name": "article_full",
-        "development_count": 4_000,
-        "test_count": 1_000,
+        "name": (
+            FROZEN_PROFILE_NAME if frozen
+            else "article_full" if dataset_total == 5_000
+            else f"article_full_{dataset_total}"
+        ),
+        "development_count": (
+            FROZEN_DEVELOPMENT_COUNT if frozen else dataset_total * 4 // 5
+        ),
+        "test_count": FROZEN_TEST_COUNT if frozen else dataset_total // 5,
         "robustness_count": 10,
         "layer_count": 10,
         "development_seed": 100_042,
@@ -1015,7 +1071,7 @@ def validate_authorized_profile(profile: StudyProfile) -> None:
         for key, value in expected.items() if actual.get(key) != value
     }
     if mismatches:
-        raise RuntimeError(f"ARTICLE_FULL violates the authorized contract: {mismatches}")
+        raise RuntimeError(f"article profile violates the authorized contract: {mismatches}")
 
 
 def _expected_design_shapes(profile: StudyProfile) -> dict[str, tuple[int, int]]:
@@ -1092,8 +1148,8 @@ def _build_contract(
         "runner_schema": RUNNER_SCHEMA,
         "run_id": run_id,
         "profile": asdict(profile),
-        "fixed_dataset_total": 5_000,
-        "development_test_split": [4_000, 1_000],
+        "fixed_dataset_total": profile.development_count + profile.test_count,
+        "development_test_split": [profile.development_count, profile.test_count],
         "source_digest": source_digest(source_files),
         "source_files": dict(source_files),
         "python": platform.python_version(),
@@ -1103,6 +1159,11 @@ def _build_contract(
         "optimization_protocol": OPTIMIZATION_PROTOCOL,
         "validation_protocol": COMPARISON_PROTOCOL,
         "timing_protocol": TIMING_PROTOCOL,
+        "dataset_protocol": (
+            "frozen_accepted_checkpoint_split_80_20_v1"
+            if profile.name == FROZEN_PROFILE_NAME
+            else "complete_declared_generation_with_replacements_v1"
+        ),
         "preflight_artifacts_permitted": False,
         "full_run_admission_gate_bypass_permitted": False,
     }
@@ -3779,6 +3840,317 @@ def run_generation(
         design=effective_design,
         development_targets=blocks["development"][0].targets,
         test_targets=blocks["test"][0].targets,
+    )
+
+
+def freeze_accepted_generation(
+    run: Path,
+    *,
+    profile: StudyProfile,
+    source_files: Mapping[str, str],
+) -> GenerationResult:
+    """Freeze accepted interrupted-run checkpoints into an 80/20 dataset.
+
+    The source checkpoints are validated against the original deterministic
+    50,000-row design.  Accepted candidates are ordered by their original
+    candidate index before the first 13,371 are assigned to development and
+    the remaining 3,343 to the holdout block.  No new mechanistic solve is
+    performed by this operation.
+    """
+
+    validate_authorized_profile(profile)
+    if profile.name != FROZEN_PROFILE_NAME:
+        raise RuntimeError("accepted-checkpoint freezing requires the frozen profile")
+    marker_path = run / "datasets" / "frozen_accepted_complete.json"
+    records_path = run / "inputs" / "generator_records.json"
+    design_path = run / "datasets" / "design.npz"
+    if marker_path.is_file():
+        with np.load(design_path, allow_pickle=False) as stored:
+            design = {name: np.asarray(stored[name]) for name in DESIGN_ARRAYS}
+        design["generators"] = _load_json_object(
+            records_path, description="frozen generator records",
+        )
+        validate_design(design, profile)
+        return run_generation(
+            run, design, profile=profile, source_files=source_files,
+        )
+
+    source_profile = profile_for_dataset_total(50_000)
+    source_design = create_design(source_profile)
+    validate_design(source_design, source_profile)
+    if not design_path.is_file():
+        raise RuntimeError("frozen run is missing its original 50,000-row design")
+    with np.load(design_path, allow_pickle=False) as stored:
+        if set(stored.files) != set(DESIGN_ARRAYS) or any(
+            not np.array_equal(stored[name], np.asarray(source_design[name]))
+            for name in DESIGN_ARRAYS
+        ):
+            raise RuntimeError("frozen source design differs from the declared 50k design")
+    source_archive = (
+        run / "inputs" / "frozen_accepted" / "source_design_50000.npz"
+    )
+    source_archive.parent.mkdir(parents=True, exist_ok=True)
+    if source_archive.is_file():
+        if file_digest(source_archive) != file_digest(design_path):
+            raise RuntimeError("archived 50k source design changed")
+    else:
+        shutil.copy2(design_path, source_archive)
+
+    rows_directory = run / "datasets" / "development" / "rows"
+    paths = sorted(rows_directory.glob("row_*.npz"))
+    if len(paths) != 18_211:
+        raise RuntimeError(
+            f"frozen checkpoint inventory must contain 18,211 rows, found {len(paths)}"
+        )
+    base_contract = replacement_generation._base_contract_hash(
+        np.asarray(source_design["development_decisions"]),
+        np.asarray(source_design["development_influents"]),
+        source_profile,
+    )
+    accepted_items: list[tuple[Any, np.ndarray, np.ndarray, np.ndarray, dict[str, Any]]] = []
+    rejected_items: list[tuple[Any, np.ndarray, np.ndarray, np.ndarray, dict[str, Any]]] = []
+    for path in paths:
+        match = re.fullmatch(r"row_(\d{6})\.npz", path.name)
+        if match is None:
+            raise RuntimeError(f"unexpected frozen checkpoint name: {path.name}")
+        index = int(match.group(1))
+        candidate = replacement_generation._Candidate(
+            block="development", round_index=0, candidate_index=index,
+            candidate_ordinal=index,
+            decision=np.asarray(source_design["development_decisions"])[index],
+            influent=np.asarray(source_design["development_influents"])[index],
+            checkpoint=path,
+        )
+        loaded = replacement_generation._load_attempt(
+            candidate,
+            expected_contract_hash=base_contract,
+            state_size=5 * 20 + source_profile.layer_count,
+            response_count=source_profile.response_count,
+        )
+        if loaded is None:
+            raise RuntimeError(f"frozen checkpoint disappeared: {path}")
+        item = (candidate, *loaded)
+        (accepted_items if bool(loaded[3]["accepted"]) else rejected_items).append(item)
+    accepted_items.sort(key=lambda item: item[0].candidate_index)
+    rejected_items.sort(key=lambda item: item[0].candidate_index)
+    if len(accepted_items) != FROZEN_ACCEPTED_TOTAL or len(rejected_items) != 1_497:
+        raise RuntimeError(
+            "frozen acceptance inventory changed: "
+            f"accepted={len(accepted_items)}, rejected={len(rejected_items)}"
+        )
+
+    development_items = accepted_items[:FROZEN_DEVELOPMENT_COUNT]
+    test_items = accepted_items[FROZEN_DEVELOPMENT_COUNT:]
+    if len(test_items) != FROZEN_TEST_COUNT:
+        raise RuntimeError("frozen 80/20 partition has the wrong holdout size")
+    frozen_design: dict[str, object] = {
+        "development_decisions": np.vstack([item[0].decision for item in development_items]),
+        "development_influents": np.vstack([item[0].influent for item in development_items]),
+        "test_decisions": np.vstack([item[0].decision for item in test_items]),
+        "test_influents": np.vstack([item[0].influent for item in test_items]),
+        "robustness_influents": np.asarray(source_design["robustness_influents"]),
+        "generators": source_design["generators"],
+    }
+    validate_design(frozen_design, profile)
+    atomic_npz(
+        design_path,
+        **{name: np.asarray(frozen_design[name]) for name in DESIGN_ARRAYS},
+    )
+    if records_path.is_file():
+        existing_records = _load_json_object(
+            records_path, description="source generator records",
+        )
+        if existing_records != _json_ready(source_design["generators"]):
+            raise RuntimeError("source generator records changed before freezing")
+    else:
+        atomic_json(records_path, _json_ready(source_design["generators"]))
+
+    source_id = source_digest(source_files)
+    design_id = _design_digest(frozen_design)
+
+    def publish_block(
+        block: str,
+        selected: list[tuple[Any, np.ndarray, np.ndarray, np.ndarray, dict[str, Any]]],
+        attempts_source: list[tuple[Any, np.ndarray, np.ndarray, np.ndarray, dict[str, Any]]],
+    ) -> None:
+        output = run / "datasets" / block
+        output.mkdir(parents=True, exist_ok=True)
+        copied_directory = output / "source_rows"
+        if block == "test":
+            copied_directory.mkdir(parents=True, exist_ok=True)
+        selected_slots = {
+            item[0].candidate_id: slot for slot, item in enumerate(selected)
+        }
+        decisions = np.vstack([item[0].decision for item in selected])
+        influents = np.vstack([item[0].influent for item in selected])
+        targets = np.vstack([item[1] for item in selected])
+        states_start_1 = np.vstack([item[2] for item in selected])
+        states_start_2 = np.vstack([item[3] for item in selected])
+        diagnostics_records: list[dict[str, Any]] = []
+        provenance_records: list[dict[str, Any]] = []
+        for slot, (candidate, _target, _first, _second, record) in enumerate(selected):
+            diagnostic = dict(record)
+            diagnostic.update({
+                "row": slot,
+                "accepted_slot": slot,
+                "source_candidate_id": candidate.candidate_id,
+                "source_candidate_round": candidate.round_index,
+                "source_candidate_index": candidate.candidate_index,
+                "source_candidate_ordinal": candidate.candidate_ordinal,
+            })
+            diagnostics_records.append(diagnostic)
+            provenance_records.append({
+                "accepted_slot": slot,
+                "base_candidate_id": f"{block}:frozen:c{slot:06d}",
+                "source_candidate_id": candidate.candidate_id,
+                "source_candidate_round": candidate.round_index,
+                "source_candidate_index": candidate.candidate_index,
+                "source_candidate_ordinal": candidate.candidate_ordinal,
+                "replaced_base_candidate": False,
+            })
+        diagnostics = pd.DataFrame(diagnostics_records)
+        provenance = pd.DataFrame(provenance_records)
+        attempt_records: list[dict[str, Any]] = []
+        migration_records: list[dict[str, Any]] = []
+        for candidate, _target, _first, _second, record in attempts_source:
+            checkpoint = candidate.checkpoint
+            if block == "test":
+                destination = copied_directory / checkpoint.name
+                if destination.is_file():
+                    if file_digest(destination) != file_digest(checkpoint):
+                        raise RuntimeError("copied frozen holdout checkpoint changed")
+                else:
+                    shutil.copy2(checkpoint, destination)
+                checkpoint = destination
+            item = dict(record)
+            item.update({
+                "checkpoint_path": checkpoint.relative_to(output).as_posix(),
+                "checkpoint_sha256": file_digest(checkpoint),
+                "selected_for_accepted_block": candidate.candidate_id in selected_slots,
+                "accepted_slot": selected_slots.get(candidate.candidate_id, np.nan),
+            })
+            attempt_records.append(item)
+            migration_records.append({
+                "candidate_id": candidate.candidate_id,
+                "candidate_index": candidate.candidate_index,
+                "checkpoint_path": checkpoint.relative_to(output).as_posix(),
+                "checkpoint_sha256": file_digest(checkpoint),
+                "original_contract_hash": base_contract,
+                "preexisting_checkpoint": True,
+                "accepted": bool(record["accepted"]),
+                "preserved_without_rewrite": True,
+            })
+        attempts = pd.DataFrame(attempt_records).sort_values(
+            ["candidate_ordinal"], kind="stable",
+        ).reset_index(drop=True)
+        atomic_npz(
+            output / "accepted_inputs.npz",
+            decisions=decisions,
+            influents=influents,
+            source_candidate_id=provenance["source_candidate_id"].to_numpy(str),
+            source_candidate_round=provenance["source_candidate_round"].to_numpy(int),
+            source_candidate_index=provenance["source_candidate_index"].to_numpy(int),
+            source_candidate_ordinal=provenance["source_candidate_ordinal"].to_numpy(int),
+        )
+        atomic_npz(
+            output / "mechanistic_accepted_v3.npz",
+            contract_hash=np.asarray("frozen_accepted_checkpoint_split_80_20_v1"),
+            targets=targets,
+            states_start_1=states_start_1,
+            states_start_2=states_start_2,
+        )
+        atomic_dataframe(output / "accepted_diagnostics.csv", diagnostics)
+        atomic_dataframe(output / "all_attempts.csv", attempts)
+        atomic_dataframe(output / "accepted_provenance.csv", provenance)
+        atomic_dataframe(output / "base_checkpoint_migration.csv", pd.DataFrame(migration_records))
+        atomic_json(output / "replacement_summary.json", {
+            "schema": replacement_generation.REPLACEMENT_SCHEMA,
+            "block": block,
+            "requested_accepted_count": len(selected),
+            "accepted_count": len(selected),
+            "base_attempt_count": len(attempts),
+            "base_accepted_count": len(selected),
+            "supplemental_attempt_count": 0,
+            "supplemental_accepted_count": 0,
+            "supplemental_round_count": 0,
+            "initial_seed": source_profile.development_seed,
+            "initial_final_state": int(source_design["generators"]["development"]["final_state"]),
+            "initial_draw_count": int(source_design["generators"]["development"]["draw_count"]),
+            "replacement_final_state": int(source_design["generators"]["development"]["final_state"]),
+            "replacement_draw_count": 0,
+            "total_stream_draw_count": int(source_design["generators"]["development"]["draw_count"]),
+            "frozen_from_interrupted_run": True,
+        })
+        result = MechanisticBlockResult(
+            decisions=decisions, influents=influents, targets=targets,
+            diagnostics=diagnostics, attempts=attempts, provenance=provenance,
+        )
+        _validate_generation_block(
+            targets, diagnostics, block=block, count=len(selected), profile=profile,
+        )
+        _validate_attempt_checkpoint_hashes(output, attempts)
+        _write_generation_audits(output, result)
+        publication_paths = _generation_publication_paths(output)
+        elapsed = float(np.nansum(pd.to_numeric(
+            attempts.get("elapsed_seconds", pd.Series(dtype=float)), errors="coerce",
+        )))
+        atomic_json(output / "block_complete.json", {
+            "stage": "frozen_accepted_mechanistic_dataset",
+            "block": block,
+            "source_digest": source_id,
+            "design_digest": design_id,
+            "row_count": len(selected),
+            "accepted_count": len(selected),
+            "target_shape": list(targets.shape),
+            "attempt_count": len(attempts),
+            "rejected_attempt_count": int((~_boolean_series(
+                attempts["accepted"], description="frozen attempt ledger",
+            )).sum()),
+            "replacement_slot_count": 0,
+            "effective_input_digest": array_digest(
+                decisions=np.asarray(decisions, dtype="<f8"),
+                influents=np.asarray(influents, dtype="<f8"),
+            ),
+            "elapsed_seconds": elapsed,
+            "artifacts": _artifact_hashes(run, publication_paths),
+        })
+
+    publish_block(
+        "development", development_items,
+        sorted(development_items + rejected_items, key=lambda item: item[0].candidate_index),
+    )
+    publish_block("test", test_items, test_items)
+    partition_path = run / "inputs" / "frozen_accepted_partition.json"
+    atomic_json(partition_path, {
+        "schema": 1,
+        "protocol": "frozen_accepted_checkpoint_split_80_20_v1",
+        "source_run_id": "article_full_50000_001",
+        "target_run_id": run.name,
+        "completed_source_attempts": len(paths),
+        "accepted_source_attempts": len(accepted_items),
+        "rejected_source_attempts": len(rejected_items),
+        "ordering": "ascending original development candidate index",
+        "development_count": len(development_items),
+        "test_count": len(test_items),
+        "new_mechanistic_solves": 0,
+        "rejected_rows_used_in_analysis": 0,
+    })
+    atomic_json(marker_path, {
+        "stage": "frozen_accepted_dataset",
+        "source_digest": source_id,
+        "design_digest": design_id,
+        "accepted_count": len(accepted_items),
+        "development_count": len(development_items),
+        "test_count": len(test_items),
+        "artifacts": _artifact_hashes(run, (
+            design_path, source_archive, partition_path,
+            run / "datasets" / "development" / "block_complete.json",
+            run / "datasets" / "test" / "block_complete.json",
+        )),
+    })
+    assert_source_unchanged(source_files)
+    return run_generation(
+        run, frozen_design, profile=profile, source_files=source_files,
     )
 
 
@@ -7145,15 +7517,18 @@ def run_optimization_stage(
     """Run searches and compare selected decisions on one exact reference.
 
     The untouched-test set remains reserved for surrogate generalization
-    assessment.  Smooth/reference equivalence is not rerun over those 1,000
-    rows.  Instead, every available nominal/robustness decision is evaluated
+    assessment. Smooth/reference equivalence is not rerun over the untouched
+    rows. Instead, every available nominal/robustness decision is evaluated
     by the same exact nonsmooth mechanistic equations.  Search failures and
     unresolved convergence certificates are recorded casewise and never stop
     the remaining scientific comparisons.
     """
 
-    if profile != ARTICLE_FULL or profile.robustness_count != 10:
-        raise RuntimeError("optimization is restricted to the article 4,000/1,000 profile")
+    validate_authorized_profile(profile)
+    if profile.robustness_count != 10 or profile.layer_count != 10:
+        raise RuntimeError(
+            "optimization requires ten robustness cases and ten clarifier layers"
+        )
     if not assessment_gate_allows_optimization(analysis.passed):
         raise RuntimeError("optimization cannot bypass the enforced admission gate")
     source_id = source_digest(source_files)
@@ -7648,6 +8023,8 @@ def main(
     run_id: str,
     through: str,
     *,
+    profile: StudyProfile = ARTICLE_FULL,
+    use_frozen_accepted_checkpoints: bool = False,
     reuse_from_run_id: str | None = None,
     authorize_generation_replacement_migration: bool = False,
     authorize_assessment_recovery_migration: bool = False,
@@ -7658,10 +8035,18 @@ def main(
 ) -> None:
     if through not in {"generation", "assessment", "complete"}:
         raise ValueError("through must be generation, assessment, or complete")
-    validate_authorized_profile(ARTICLE_FULL)
+    validate_authorized_profile(profile)
+    if use_frozen_accepted_checkpoints != (profile.name == FROZEN_PROFILE_NAME):
+        raise ValueError("frozen checkpoint mode and profile must be selected together")
     run = resolve_run_directory(run_id)
+    dataset_total = profile.development_count + profile.test_count
+    run_id_total = 50_000 if use_frozen_accepted_checkpoints else dataset_total
+    if not run_id.startswith(f"article_full_{run_id_total}_"):
+        raise ValueError(
+            f"run id {run_id!r} does not match the {run_id_total}-row run lineage"
+        )
     source_files = source_file_digests()
-    contract = _build_contract(run_id, ARTICLE_FULL, source_files)
+    contract = _build_contract(run_id, profile, source_files)
     if reuse_from_run_id is not None:
         initialize_reused_run(
             run,
@@ -7689,13 +8074,19 @@ def main(
         ),
         authorize_casewise_timing_migration=authorize_casewise_timing_migration,
     )
-    design = load_or_create_design(run, ARTICLE_FULL)
-    assert_source_unchanged(source_files)
     try:
-        _write_state(run, "generation", "running")
-        generation = run_generation(
-            run, design, profile=ARTICLE_FULL, source_files=source_files,
-        )
+        if use_frozen_accepted_checkpoints:
+            _write_state(run, "dataset_freeze", "running")
+            generation = freeze_accepted_generation(
+                run, profile=profile, source_files=source_files,
+            )
+        else:
+            design = load_or_create_design(run, profile)
+            assert_source_unchanged(source_files)
+            _write_state(run, "generation", "running")
+            generation = run_generation(
+                run, design, profile=profile, source_files=source_files,
+            )
         design = generation.design
         development_targets = generation.development_targets
         test_targets = generation.test_targets
@@ -7727,7 +8118,7 @@ def main(
         _write_state(run, "assessment", "running")
         analysis = run_assessment(
             run, design, development_targets, test_targets,
-            profile=ARTICLE_FULL, source_files=source_files,
+            profile=profile, source_files=source_files,
         )
         if not assessment_gate_allows_optimization(analysis.passed):
             _write_state(run, "assessment", "admission_gate_failed")
@@ -7745,7 +8136,7 @@ def main(
             return
         _write_state(run, "optimization", "running")
         scientific_passed = run_optimization_stage(
-            run=run, profile=ARTICLE_FULL, design=design,
+            run=run, profile=profile, design=design,
             development_targets=development_targets, test_targets=test_targets,
             analysis=analysis, source_files=source_files,
         )
@@ -7781,6 +8172,21 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--run-id", default=os.environ.get("ARTICLE_V3_RUN_ID", DEFAULT_RUN_ID),
+    )
+    parser.add_argument(
+        "--dataset-count",
+        type=int,
+        choices=AUTHORIZED_DATASET_TOTALS,
+        default=int(os.environ.get("ARTICLE_V3_DATASET_COUNT", "5000")),
+        help="accepted development-plus-test rows; the split remains 80/20",
+    )
+    parser.add_argument(
+        "--use-frozen-accepted-checkpoints",
+        action="store_true",
+        help=(
+            "freeze the 16,714 accepted checkpoints in the interrupted 50k "
+            "run into a 13,371/3,343 development/holdout dataset"
+        ),
     )
     parser.add_argument(
         "--reuse-from-run-id",
@@ -7843,6 +8249,11 @@ if __name__ == "__main__":
         ),
     )
     arguments = parser.parse_args()
+    selected_profile = (
+        frozen_accepted_profile()
+        if arguments.use_frozen_accepted_checkpoints
+        else profile_for_dataset_total(arguments.dataset_count)
+    )
     reuse_from_run_id = arguments.reuse_from_run_id
     migration_requested = any((
         arguments.authorize_generation_replacement_migration,
@@ -7861,6 +8272,8 @@ if __name__ == "__main__":
     main(
         arguments.run_id,
         arguments.through,
+        profile=selected_profile,
+        use_frozen_accepted_checkpoints=arguments.use_frozen_accepted_checkpoints,
         reuse_from_run_id=reuse_from_run_id,
         authorize_generation_replacement_migration=(
             arguments.authorize_generation_replacement_migration

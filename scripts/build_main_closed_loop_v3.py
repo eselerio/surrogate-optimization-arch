@@ -33,10 +33,12 @@ untouched-test surrogate assessment, scientific admission gates, paired optimiza
 casewise exact-reference replay, convergence and physical audits, and
 Results/Discussion tables.
 
-The full model-function workload is fixed at **5,000 accepted datasets**: 4,000
-development inputs and 1,000 untouched test inputs. Rejected mechanistic
-candidates remain fully audited but are excluded and deterministically
-replaced. It uses ten robustness cases plus the nominal case and a ten-layer
+The production interface supports the original **5,000 accepted-dataset**
+workload, the interrupted 50,000-target run, and its user-frozen set of
+**16,714 accepted datasets**. The frozen set contains 13,371 development and
+3,343 holdout rows; no further mechanistic rows are generated. Rejected mechanistic candidates remain
+fully audited but are excluded and deterministically replaced. Each uses ten
+robustness cases plus the nominal case and a ten-layer
 Clarifier. Each route uses one deterministic box-center start per case and
 searches only that basin without claiming global optimality. The surrogate
 route primarily runs the seven-variable exact-QP active-set optimizer. If
@@ -99,11 +101,14 @@ from IPython.display import display
 
 from closed_loop.manuscript_v3 import ARTICLE_FULL
 from scripts.run_article_v3_5000 import (
+    AUTHORIZED_DATASET_TOTALS,
     DEFAULT_RUN_ID,
     LEGACY_RUN_ID,
     OPTIMIZATION_PROTOCOL,
     RUN_ID_PATTERN,
+    frozen_accepted_profile,
     main as run_article,
+    profile_for_dataset_total,
     resolve_run_directory,
 )
 
@@ -115,21 +120,46 @@ if not (ROOT / "scripts" / "run_article_v3_5000.py").is_file():
 
 # Every rerun gets its own directory. Configure the target and optional source
 # with environment variables before starting, or edit these assignments.
-RUN_ID = os.environ.get("ARTICLE_V3_RUN_ID", DEFAULT_RUN_ID)
+DATASET_COUNT = int(os.environ.get("ARTICLE_V3_DATASET_COUNT", "5000"))
+USE_FROZEN_ACCEPTED = os.environ.get(
+    "ARTICLE_V3_USE_FROZEN_ACCEPTED_CHECKPOINTS", "0"
+).strip().lower() in {"1", "true", "yes"}
+if DATASET_COUNT not in AUTHORIZED_DATASET_TOTALS:
+    raise ValueError(
+        f"ARTICLE_V3_DATASET_COUNT must be one of {AUTHORIZED_DATASET_TOTALS}."
+    )
+PROFILE = (
+    frozen_accepted_profile()
+    if USE_FROZEN_ACCEPTED
+    else profile_for_dataset_total(DATASET_COUNT)
+)
+default_run_id = (
+    "article_full_50000_003" if USE_FROZEN_ACCEPTED
+    else DEFAULT_RUN_ID if DATASET_COUNT == 5_000
+    else f"article_full_{DATASET_COUNT}_001"
+)
+RUN_ID = os.environ.get("ARTICLE_V3_RUN_ID", default_run_id)
 if RUN_ID_PATTERN.fullmatch(RUN_ID) is None or ".." in RUN_ID:
     raise ValueError(
-        "ARTICLE_V3_RUN_ID must match article_full_5000_<identifier>."
+        "ARTICLE_V3_RUN_ID must match article_full_<5000-or-50000>_<identifier>."
     )
 RUN_ROOT = resolve_run_directory(RUN_ID)
-REUSE_FROM_RUN_ID = os.environ.get("ARTICLE_V3_REUSE_FROM_RUN_ID", LEGACY_RUN_ID)
+REUSE_FROM_RUN_ID = os.environ.get(
+    "ARTICLE_V3_REUSE_FROM_RUN_ID",
+    LEGACY_RUN_ID if DATASET_COUNT == 5_000 and not USE_FROZEN_ACCEPTED else None,
+)
 if REUSE_FROM_RUN_ID == RUN_ID:
     raise ValueError("The rerun source and target run IDs must differ.")
 
-profile = asdict(ARTICLE_FULL)
+profile = asdict(PROFILE)
 expected_profile = {
-    "name": "article_full",
-    "development_count": 4_000,
-    "test_count": 1_000,
+    "name": (
+        "article_frozen_16714" if USE_FROZEN_ACCEPTED
+        else "article_full" if DATASET_COUNT == 5_000
+        else f"article_full_{DATASET_COUNT}"
+    ),
+    "development_count": 13_371 if USE_FROZEN_ACCEPTED else DATASET_COUNT * 4 // 5,
+    "test_count": 3_343 if USE_FROZEN_ACCEPTED else DATASET_COUNT // 5,
     "robustness_count": 10,
     "layer_count": 10,
     "article_eligible": True,
@@ -141,14 +171,15 @@ for field, expected in expected_profile.items():
             f"ARTICLE_FULL contract mismatch for {field}: "
             f"{profile.get(field)!r} != {expected!r}"
         )
-if profile["development_count"] + profile["test_count"] != 5_000:
-    raise RuntimeError("The article profile must require exactly 5,000 accepted inputs.")
+expected_total = 16_714 if USE_FROZEN_ACCEPTED else DATASET_COUNT
+if profile["development_count"] + profile["test_count"] != expected_total:
+    raise RuntimeError("The article profile does not match ARTICLE_V3_DATASET_COUNT.")
 
 contract_config = json.loads(
     (ROOT / "config" / "params_manuscript_v3.json").read_text(encoding="utf-8")
 )
 optimization = contract_config["optimization"]
-article_config = contract_config["profiles"]["article_full"]
+article_config = contract_config["profiles"][profile["name"]]
 required_optimization = {
     "protocol": "single_start_exact_qp_active_set",
     "runner_protocol": "single_center_local_exact_qp_v1",
@@ -360,21 +391,23 @@ def invoke_stage(through: str) -> None:
         run_article(
             run_id=RUN_ID,
             through=through,
+            profile=PROFILE,
+            use_frozen_accepted_checkpoints=USE_FROZEN_ACCEPTED,
             reuse_from_run_id=(None if RUN_ROOT.exists() else REUSE_FROM_RUN_ID),
         )
     finally:
         show_status(through)
 """),
     markdown(r"""
-## 1. Complete the accepted 4,000/1,000 mechanistic blocks
+## 1. Complete the accepted mechanistic blocks
 
 Candidate round 0 retains the independent development/test Latin hypercubes
 and resumes their row-level, two-start nonsmooth mechanistic checkpoints. Each
 rejected candidate remains in the attempt ledger with all available audits but
 is excluded from the accepted dataset. The runner then continues that block's
 persisted SplitMix64 state in deterministic row-major supplemental rounds,
-each sized to the remaining deficit, until exactly 4,000 development and 1,000
-test rows have been accepted. Accepted replacements fill failed original slots
+each sized to the remaining deficit, until the selected profile's 80/20
+development/test targets have been accepted. Accepted replacements fill failed original slots
 in ascending order; neither candidates nor accepted rows cross block boundaries.
 
 The accepted union is conditioned on mechanistic acceptance and is not one
@@ -395,7 +428,10 @@ invoke_stage("generation")
 
 generation_rows = []
 attempt_status_rows = []
-for block, required in (("development", 4_000), ("test", 1_000)):
+for block, required in (
+    ("development", PROFILE.development_count),
+    ("test", PROFILE.test_count),
+):
     attempts_path = RUN_ROOT / "datasets" / block / "all_attempts.csv"
     provenance_path = RUN_ROOT / "datasets" / block / "accepted_provenance.csv"
     attempts = pd.read_csv(attempts_path) if attempts_path.is_file() else pd.DataFrame()
@@ -428,7 +464,7 @@ display(pd.DataFrame(
 ))
 """),
     markdown(r"""
-## 2. Fit and assess on the untouched 1,000-input test block
+## 2. Fit and assess on the untouched test block
 
 This call reuses the generation checkpoints, performs the frozen five-fold
 ridge selection and trust calibration, opens the untouched block once, and
@@ -481,13 +517,13 @@ certified surrogate decision.
 Both returned decisions are evaluated on the same exact, nonsmooth two-start
 mechanistic model in each case. Branch-boundary ambiguity is reported as a
 qualifier instead of being mistaken for solver failure. This casewise replay
-replaces the retired 1,000-row smooth/reference equivalence sweep. The driver
+replaces the retired whole-test smooth/reference equivalence sweep. The driver
 records raw, projected, optimizer-native, and exact-reference mass-conservation
 and non-negativity audits before writing all article tables. A failed or
 unresolved case remains in the denominator and does not suppress subsequent
 cases or downstream audits. Runtime summaries are calculated only from the
 durations recorded in robustness cases 01--10; no repeated timing benchmark is
-run over the 1,000-row untouched test block. There is no 10-minute ceiling in
+run over the untouched test block. There is no 10-minute ceiling in
 this phase.
 """),
     code(r"""
