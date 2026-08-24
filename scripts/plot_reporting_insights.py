@@ -11,13 +11,14 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from closed_loop.manuscript_v3 import clarifier_for_layers
-from closed_loop.v3_smooth import (
-    DEFAULT_OBJECTIVE_WEIGHTS, engineering_quantities, fit_direct_assets, objective_components,
-)
+from closed_loop.model import COMPOSITE_MATRIX
+from closed_loop.v3_smooth import DEFAULT_OBJECTIVE_WEIGHTS, QUALITY_WEIGHTS
 
 
 BLUE, ORANGE, GREEN, RED = "#2563eb", "#d97706", "#16a34a", "#dc2626"
+SHARED_RESPONSE_COUNT = 160
+REDUCED_RESPONSE_COUNT = 161
+CLARIFIER_VOLUME_M3 = 6_000.0
 
 
 def style() -> None:
@@ -37,6 +38,27 @@ def score(truth: np.ndarray, pred: np.ndarray) -> tuple[float, float]:
     r2 = 1 - float(np.sum((pred - truth) ** 2)) / ss_tot
     nrmse = float(np.sqrt(np.mean((pred - truth) ** 2)) / np.ptp(truth))
     return r2, nrmse
+
+
+def reduced_response(values: np.ndarray) -> np.ndarray:
+    """Return the 161-coordinate response, accepting full mechanistic rows."""
+
+    response = np.asarray(values, dtype=float)
+    if response.ndim != 2:
+        raise ValueError("response arrays must be two-dimensional")
+    if response.shape[1] == REDUCED_RESPONSE_COUNT:
+        return response
+    layer_count = response.shape[1] - SHARED_RESPONSE_COUNT
+    if layer_count < 3:
+        raise ValueError(
+            "response arrays must contain 161 reduced coordinates or a full "
+            "mechanistic response with at least three Clarifier layers"
+        )
+    inventory = (
+        CLARIFIER_VOLUME_M3 / layer_count
+        * np.sum(response[:, SHARED_RESPONSE_COUNT:], axis=1)
+    )
+    return np.column_stack((response[:, :SHARED_RESPONSE_COUNT], inventory))
 
 
 def main() -> None:
@@ -62,19 +84,35 @@ def main() -> None:
     ax.text(.01, .97, "Primary optimization: surrogate is faster; complete route includes surrogate local certification.", transform=ax.transAxes, va="top", fontsize=8)
     save(fig, output, "01_computational_timing")
 
-    # Directly derive the exact same effluent composites and quality component used by the objective.
-    with np.load(run / "datasets" / "effective_design.npz") as design, np.load(run / "datasets" / "development" / "mechanistic_accepted_v3.npz") as development, np.load(run / "predictions" / "untouched_test.npz") as test:
-        assets = fit_direct_assets(design["development_decisions"], design["development_influents"], development["targets"], clarifier=clarifier_for_layers(10))
+    # Derive the objective's effluent composites directly from the shared
+    # response coordinates; raw/projected rows intentionally have no layers.
+    with np.load(run / "datasets" / "effective_design.npz") as design, np.load(run / "datasets" / "development" / "mechanistic_accepted_v3.npz") as development, np.load(run / "predictions" / "post_selection_holdout.npz") as test:
         theta = design["test_decisions"]
-        responses = {"Mechanistic": test["mechanistic"], "Raw surrogate": test["raw"], "Projected surrogate": test["projected"]}
+        responses = {
+            "Mechanistic": reduced_response(test["mechanistic"]),
+            "Raw surrogate": reduced_response(test["raw"]),
+            "Projected surrogate": reduced_response(test["projected"]),
+        }
+        development_theta = design["development_decisions"]
+        development_response = reduced_response(development["targets"])
+    development_effluent = (
+        development_response[:, 120:140]
+        / (1.0 - development_theta[:, 6])[:, None]
+    )
+    quality_scale = np.std(
+        development_effluent @ COMPOSITE_MATRIX.T, axis=0, ddof=0,
+    )
+    if np.any(quality_scale <= 0.0):
+        raise ValueError("development effluent-composite scales must be positive")
     composite_names = ["COD", "TN", "TP", "TSS", "Quality objective"]
     composites: dict[str, np.ndarray] = {}
     for label, response in responses.items():
-        values = np.empty((len(theta), 5))
-        for i, (control, y) in enumerate(zip(theta, response, strict=True)):
-            engineering = engineering_quantities(control, y, assets)
-            values[i, :4] = [engineering["effluent_cod"], engineering["effluent_tn"], engineering["effluent_tp"], engineering["effluent_tss"]]
-            values[i, 4] = objective_components(control, y, assets)[0]
+        effluent = response[:, 120:140] / (1.0 - theta[:, 6])[:, None]
+        effluent_composites = effluent @ COMPOSITE_MATRIX.T
+        values = np.column_stack((
+            effluent_composites,
+            (effluent_composites / quality_scale) @ QUALITY_WEIGHTS,
+        ))
         composites[label] = values
     records = []
     for method in ("Raw surrogate", "Projected surrogate"):
@@ -103,10 +141,17 @@ def main() -> None:
     # 3. Per-plant-block response fidelity from the reporting metrics.
     metrics = pd.read_csv(tables / "prediction_metrics.csv")
     blocks = metrics[(metrics.coordinate == "ALL") & (metrics.block != "complete_response") & metrics.method.isin(["raw", "projected"])].copy()
-    block_order = ["mixer", *[f"reactor_{i}" for i in range(1, 6)], "clarifier_overflow", "clarifier_underflow", *[f"clarifier_layer_{i}" for i in range(1, 11)], "clarifier_complete"]
+    block_order = ["mixer", *[f"reactor_{i}" for i in range(1, 6)], "clarifier_overflow", "clarifier_underflow", "clarifier_inventory"]
     blocks["block"] = pd.Categorical(blocks["block"], block_order, ordered=True); blocks = blocks.sort_values("block")
-    label_map = {"clarifier_overflow": "overflow", "clarifier_underflow": "underflow"}
-    labels = [label_map.get(str(v), str(v).replace("clarifier_layer_", "layer ").replace("reactor_", "R")) for v in blocks[blocks.method == "projected"].block]
+    label_map = {
+        "clarifier_overflow": "overflow",
+        "clarifier_underflow": "underflow",
+        "clarifier_inventory": "inventory",
+    }
+    labels = [
+        label_map.get(str(value), str(value).replace("reactor_", "R"))
+        for value in blocks[blocks.method == "projected"].block
+    ]
     fig, axes = plt.subplots(2, 1, figsize=(12.5, 7.2), constrained_layout=True, sharex=True)
     for method, color, label in (("raw", ORANGE, "Raw"), ("projected", BLUE, "Projected")):
         data = blocks[blocks.method == method]

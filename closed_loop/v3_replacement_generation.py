@@ -531,7 +531,7 @@ def _solve_candidates(
     for candidate in candidates:
         cached = _load_attempt(
             candidate, expected_contract_hash=contract_hash, state_size=state_size,
-            response_count=profile.response_count,
+            response_count=profile.mechanistic_response_count,
         )
         if cached is None:
             missing.append(candidate)
@@ -573,7 +573,7 @@ def _solve_candidates(
                     second = np.asarray(result["state_start_2"], dtype=float)
                     record = _record_from_result(result, candidate)
                 except Exception as error:  # an individual candidate is auditable, not fatal
-                    target = np.full(profile.response_count, np.nan)
+                    target = np.full(profile.mechanistic_response_count, np.nan)
                     first = np.full(state_size, np.nan)
                     second = np.full(state_size, np.nan)
                     record = _error_record(candidate, error)
@@ -755,7 +755,7 @@ def generate_mechanistic_block_with_replacements(
 
     accepted_decisions = np.empty((required_count, 7), dtype=float)
     accepted_influents = np.empty((required_count, N_COMPONENTS), dtype=float)
-    targets = np.empty((required_count, profile.response_count), dtype=float)
+    targets = np.empty((required_count, profile.mechanistic_response_count), dtype=float)
     states_start_1 = np.empty((required_count, state_size), dtype=float)
     states_start_2 = np.empty_like(states_start_1)
     diagnostic_records: list[dict[str, object]] = []

@@ -63,7 +63,7 @@
 \cortext[cor1]{Corresponding author}
 
 \begin{abstract}
-This supplement gives the complete coordinate, mechanistic, sampling, training, physical-projection, optimization, and verification definitions for the accompanying article. General equations use $N$ reactors and $L$ Clarifier layers; all numerical values are identified separately as case-study choices.
+This supplement gives the complete coordinate, mechanistic, sampling, training, physical-projection, optimization, and verification definitions for the accompanying article. General equations use $N$ reactors and an $L$-layer mechanistic Clarifier, while the statistical response retains only aggregate Clarifier inventory; all numerical values are identified separately as case-study choices.
 \end{abstract}
 
 \begin{keywords}
@@ -74,20 +74,20 @@ supplementary methods \sep activated sludge \sep Clarifier \sep ridge regression
 
 \section{Scope and coordinate contract}
 
-This supplement completes the mechanistic generator, data design, five-fold cross-validation, ridge estimator, physical-projection quadratic program (QP), exact-QP active-set surrogate optimization, smooth mechanistic nonlinear program (NLP), reference replay, and reporting rules. The structural equations use $N$ reactors, $L$ Clarifier layers, $F=F_S+F_X$ components, and $K$ independent invariants. Their dimensions are
+This supplement completes the mechanistic generator, data design, five-fold cross-validation, ridge estimator, physical-projection quadratic program (QP), exact-QP active-set surrogate optimization, smooth mechanistic nonlinear program (NLP), reference replay, and reporting rules. The structural equations use $N$ reactors, $L$ mechanistic Clarifier layers, $F=F_S+F_X$ components, and $K$ independent invariants. The statistical response replaces the $L$ layer coordinates by one aggregate Clarifier-solids inventory. The resulting dimensions are
 \begin{equation}
-n_\chi=(N+3)F+L,\qquad n_y=NF+L,\qquad
-n_h=2F+NK+F_S+2,
+n_\chi=(N+3)F+1,\qquad n_y=NF+L,\qquad
+n_h=2F+NK+F_S,
 \end{equation}
 \begin{equation}
-n_g=F_X+2(L-2),\qquad n_q=n_\chi+n_g.
+n_g=F_X+2,\qquad n_q=n_\chi+n_g.
 \end{equation}
 \begin{equation}
 n_S=d_\vartheta,\qquad
 n_M=d_\vartheta+NF+L+1,\qquad
 n_{M,=}=NF+L+1+n_{\mathcal V,=}.
 \end{equation}
-Here $n_\chi$ is the complete surrogate-response dimension, $n_y$ is the reduced mechanistic-state dimension, $n_h$ counts projection equalities, $n_g$ counts physical-direction inequalities, and $n_q$ includes response non-negativity. The production surrogate outer problem contains only the $d_\vartheta$ controls; a separate exact QP supplies the projected state and its active-set sensitivities at each trial. The direct NLP adds one feed-TSS auxiliary to its controls and reduced state; $n_{\mathcal V,=}$ counts any stage-allocation equalities in its operating set. These expressions, rather than their numerical case-study values, govern the formulation.
+Here $n_\chi$ is the reduced operational-response dimension, $n_y$ is the full reactor-and-layer mechanistic-state dimension, $n_h$ counts projection equalities, $n_g$ counts physical-direction inequalities, and $n_q$ includes response non-negativity. Thus $n_\chi$ is independent of $L$, whereas $n_y$ and the direct NLP retain all layers. The production surrogate outer problem contains only the $d_\vartheta$ controls; a separate exact QP supplies the projected response and its active-set sensitivities at each trial. The direct NLP adds one feed-TSS auxiliary to its controls and mechanistic state; $n_{\mathcal V,=}$ counts any stage-allocation equalities in its operating set. These expressions, rather than their numerical case-study values, govern the formulation.
 
 Every component vector uses the order
 \begin{equation}
@@ -352,7 +352,14 @@ g_E=q_Ec_E,\quad g_U=q_Uc_U,\quad
 m=\frac{x+r_Ic_N+r_Rc_U}{q_P}.
 \label{eq:Sreconstruction}
 \end{equation}
-In particular, $E_Sc_E=E_Sc_U=E_Sc_N$, while $E_Xc_E=(s_1/X_F)E_Xc_N$ and $E_Xc_U=(s_L/X_F)E_Xc_N$. Equations~\eqref{eq:Scommoncomposition}--\eqref{eq:Sreconstruction}, together with $y$, define the reference response $\chi(\vartheta,x,y)$. In the smooth NLP, every occurrence of $X_F$ in this reconstruction and in the Clarifier residual is replaced by the bounded auxiliary $\widetilde X_F$, with the equality $\widetilde X_F=t_X^\top c_N$ imposed separately. The construction conserves every particulate component at steady state because the summed TSS balance multiplies the common feed fraction. During pseudo-transient relaxation the feed fractions change algebraically; individual particulate layer inventories are therefore not physical dynamic states. Stability and replay statements are explicitly limited to this reduced steady-state model.
+In particular, $E_Sc_E=E_Sc_U=E_Sc_N$, while $E_Xc_E=(s_1/X_F)E_Xc_N$ and $E_Xc_U=(s_L/X_F)E_Xc_N$. The full state $y$ is retained for mechanistic solution, stability analysis, and layer-profile reporting, but its statistical image is
+\begin{equation}
+M_{\rm cl}(y)=\sum_{\ell=1}^{L}V_{{\rm cl},\ell}s_\ell,
+\qquad
+\chi(\vartheta,x,y)=\col(m,c_1,\ldots,c_N,g_E,g_U,M_{\rm cl}(y)).
+\label{eq:Sreducedresponse}
+\end{equation}
+Equations~\eqref{eq:Scommoncomposition}--\eqref{eq:Sreducedresponse} therefore map every full mechanistic state to the common reduced response used for fitting, objectives, constraints, and route comparison. In the smooth NLP, every occurrence of $X_F$ in the reconstruction and Clarifier residual is replaced by the bounded auxiliary $\widetilde X_F$, with the equality $\widetilde X_F=t_X^\top c_N$ imposed separately. The construction conserves every particulate component at steady state because the summed TSS balance multiplies the common feed fraction. During pseudo-transient relaxation the feed fractions change algebraically; individual particulate layer inventories are therefore not physical dynamic states. Stability and replay statements are explicitly limited to this reduced steady-state model.
 
 \begin{table}[htbp]
 \centering
@@ -488,19 +495,19 @@ For reactor coordinates, non-negative inflow supplies the boundary and every con
 
 \section{Sampling, partitioning, and five-fold cross-validation}
 
-For the seven free controls in the case study, the statistical input has $d_z=7+20=27$ coordinates and the complete quadratic has $n_\phi=1+27+27(28)/2=406$ columns. The interrupted 50,000-target design used development-stream state 100042. When generation was stopped, 18,211 attempts were complete and 16,714 were accepted. Ordering accepted candidates by original candidate index gives $n_D=13371$ development rows followed by $n_T=3343$ frozen holdout rows. Ten influent-only scenario rows retain state 314159. The holdout is therefore a deterministic pre-fit partition of the interrupted development stream, not the originally planned independent test stream.
+For the seven free controls in the case study, the statistical input has $d_z=7+20=27$ coordinates and the complete quadratic has $n_\phi=1+27+27(28)/2=406$ columns. The interrupted 50,000-target design used development-stream state 100042. When generation was stopped, 18,211 attempts were complete and 16,714 were accepted. Ordering accepted candidates by original candidate index gives $n_D=13371$ development rows followed by $n_H=3343$ frozen post-selection holdout rows. Ten influent-only scenario rows retain state 314159. The holdout is a deterministic pre-fit partition of the interrupted development stream, not the originally planned independent test stream; after its layer-wise summaries informed the response reduction, it no longer provides untouched or confirmatory evidence for the revised architecture.
 
-For block $b\in\{D,T\}$, candidate $c$ receives a stable identifier containing the block, zero-based round, and zero-based within-round index. Round~0 candidates retain their original identifiers and inputs. After all candidates in a round have been adjudicated, let $d_b$ be the number of still-unfilled accepted slots. If $d_b>0$, the next supplemental round contains exactly $d_b$ candidates. It continues from that block's persisted final SplitMix64 state and draw count and consumes 27 successive midpoint-open coordinates per candidate, in row-major order,
+For block $b\in\{D,H\}$, candidate $c$ receives a stable identifier containing the block, zero-based round, and zero-based within-round index. Round~0 candidates retain their original identifiers and inputs. After all candidates in a round have been adjudicated, let $d_b$ be the number of still-unfilled accepted slots. If $d_b>0$, the next supplemental round contains exactly $d_b$ candidates. It continues from that block's persisted final SplitMix64 state and draw count and consumes 27 successive midpoint-open coordinates per candidate, in row-major order,
 \begin{equation}
 u_{cj}=\frac{(U_{cj}\!\gg11)+1/2}{2^{53}},
 \qquad j=1,\ldots,27,
 \label{eq:Ssupplementaluniform}
 \end{equation}
-followed by the same affine maps to the declared bounds. For the frozen analysis no supplemental round is opened after the stop instruction. Thus the downstream data contain exactly $n_D+n_T=16714$ accepted mechanistic inputs; all 1,497 rejected completed attempts remain audit evidence and are excluded.
+followed by the same affine maps to the declared bounds. For the frozen analysis no supplemental round is opened after the stop instruction. Thus the downstream data contain exactly $n_D+n_H=16714$ accepted mechanistic inputs; all 1,497 rejected completed attempts remain audit evidence and are excluded.
 
-Every attempt persists its candidate identifier, input, solver status, and all available balance, non-negativity, domain, two-start, stability, and branch diagnostics. For every selected accepted row the record additionally stores its frozen partition and source-candidate provenance. The assembled mechanistic arrays and diagnostics used by fitting contain accepted rows only; a separate attempt ledger retains all completed failures. Per block these are published as \texttt{mechanistic\_accepted\_v3.npz}, \texttt{accepted\_inputs.npz}, \texttt{accepted\_diagnostics.csv}, \texttt{all\_attempts.csv}, and \texttt{accepted\_provenance.csv}. Original checkpoint bytes remain unchanged as historical evidence. Attempt acceptance rates use all 18,211 completed attempts as denominator, whereas fitting, cross-validation, and holdout metrics use $n_D=13371$ and $n_T=3343$ accepted rows, respectively.
+Every attempt persists its candidate identifier, input, solver status, and all available balance, non-negativity, domain, two-start, stability, and branch diagnostics. For every selected accepted row the record additionally stores its frozen partition and source-candidate provenance. The assembled mechanistic arrays and diagnostics used by fitting contain accepted rows only; a separate attempt ledger retains all completed failures. Per block these are published as \texttt{mechanistic\_accepted\_v3.npz}, \texttt{accepted\_inputs.npz}, \texttt{accepted\_diagnostics.csv}, \texttt{all\_attempts.csv}, and \texttt{accepted\_provenance.csv}. Original checkpoint bytes remain unchanged as historical evidence. Attempt acceptance rates use all 18,211 completed attempts as denominator, whereas fitting and cross-validation use $n_D=13371$ accepted rows and descriptive holdout metrics use $n_H=3343$ rows.
 
-Only candidate round~0 is a strength-one Latin hypercube. Because rejection is based on the mechanistic solver and physical acceptance contract, the completed accepted block is distributed conditionally on that contract, and its union of round~0 survivors and row-major supplemental draws is not a single global Latin hypercube. This conditioning can reduce coverage near difficult or switching regions. The study therefore reports candidate counts and reasons for rejection, round counts, coordinate coverage of the accepted set, and the complete source-candidate mapping; it does not describe the accepted rows as an unconditional space-filling sample of the whole box. ``Untouched test'' means only that accepted test responses are excluded from every fitting, scaling, ridge-selection, trust-calibration, and tuning operation.
+Only candidate round~0 is a strength-one Latin hypercube. Because rejection is based on the mechanistic solver and physical acceptance contract, the completed accepted block is distributed conditionally on that contract, and its union of round~0 survivors and row-major supplemental draws is not a single global Latin hypercube. This conditioning can reduce coverage near difficult or switching regions. The study therefore reports candidate counts and reasons for rejection, round counts, coordinate coverage of the accepted set, and the complete source-candidate mapping; it does not describe the accepted rows as an unconditional space-filling sample of the whole box. The frozen holdout remains excluded from every revised fitting, scaling, ridge-selection, and trust-calibration operation, but it is explicitly post-selection because its old layer-wise summaries informed the new response definition.
 
 This workload supersedes the earlier draft's 800/200 article split by explicit user authorization dated 23 August 2026. That count revision was frozen before the 5,000-input article calculation was launched and before any article-scale response was inspected; it does not alter the independent 400/100, five-layer implementation preflight. After candidate round~0 had exposed rejected development generations, a second explicit instruction on the same date authorized the replacement policy above. The change is therefore an audited, outcome-aware protocol revision, not a prospective design claim.
 
@@ -509,6 +516,8 @@ After that 5,000-input workflow completed, an explicit instruction dated 24 Augu
 Later that day, generation was explicitly stopped and the 16,714 accepted checkpoints then available were frozen for analysis with a 13,371/3,343 split. This change is outcome-aware and supersedes completion of the 50,000-target workload. No response value, acceptance diagnostic, or rejection reason is used to order the accepted rows beyond the Boolean acceptance requirement; ordering is solely by the pre-existing candidate index, and the partition is fixed before fitting.
 
 The same article run is migrated rather than restarted. Migration verifies every existing round~0 checkpoint against its original contract, input bytes, and SHA-256 digest; preserves the prior contract and failure history in a migration ledger; assigns accepted indices and final slots without rewriting accepted mechanistic states; and then opens the supplemental stream. A migrated checkpoint that fails verification is not trusted or silently recomputed: it is reported as a run-integrity error. The article run records the Git revision, SHA-256 hashes of both manuscript files, configuration and source files, complete generator states and draw counts, candidate and accepted-row execution order, fold membership, Python and package versions from the locked environment, operating-system and processor identifiers, BLAS backend, and numerical thread allocation. Subsequent resumption accepts a checkpoint only when its profile, dimensions, candidate input, provenance, and active contract hashes match exactly.
+
+On 25 August 2026 the response schema was changed after outputs from the 170-coordinate layer-resolved surrogate had been inspected. A new immutable transformation maps each accepted full mechanistic state to Equation~\eqref{eq:Sreducedresponse}; it retains the original mechanistic checkpoint bytes and records new response-array and contract hashes. The old 170-column targets, response scales, coefficient matrices, projection diagnostics, trust limits, assessment rows, selected surrogate decisions, convergence certificates, exact replays at those decisions, and surrogate timing records are archived as superseded and excluded from the revised analysis. Fitting and every downstream surrogate-dependent stage are rerun. The full layer states, accepted-row membership, nominal influent, and ten scenario input vectors remain fixed. The scenario outcomes are consequently post-selection stress evidence, not independent validation of the reduced architecture.
 
 For exact reproducibility, one SplitMix64 word is generated modulo $2^{64}$ by
 \begin{align}
@@ -542,11 +551,13 @@ With $D_{r,{\rm fit}}$ formed from the scales of the coordinates of $r_i$, the f
 \end{equation}
 Here $D_\chi=\diag(\sigma_{\chi,1},\ldots,\sigma_{\chi,n_\chi})$ contains the response scales from Equation~\eqref{eq:Ssd}. Rows $\phi_i^\top$ and $\widetilde\chi_i^\top$ form $\Phi$ and $\widetilde Y$, respectively. All bars and diagonal scales refer only to the current fitting set.
 
-Development rows are permuted once from state 271828 and divided consecutively into five folds of $n_D/5=800$. For each fold and each strictly positive ridge candidate
+In the case study, $D_\chi$ has 161 entries and $C\in\R^{161\times406}$. Its final coordinate is $M_{\rm cl}$ in grams TSS, with its own development-derived center and scale; this one coordinate replaces the ten former layer-concentration centers and scales.
+
+Development rows are permuted once from state 271828 and divided consecutively into five folds whose sizes are 2,674 or 2,675. For each fold and each strictly positive ridge candidate
 \begin{equation}
 \mathcal R_{\rm ridge}=\{10^{-8},10^{-7},10^{-6},10^{-5},10^{-4},10^{-3},10^{-2},10^{-1},1,10,100\},
 \end{equation}
-all input, monomial, and response centers and population standard deviations are recomputed from the $4n_D/5=3200$ fitting rows. A coordinate is accepted only if
+all input, monomial, and response centers and population standard deviations are recomputed from the corresponding 10,696 or 10,697 fitting rows. A coordinate is accepted only if
 \begin{equation}
 \operatorname{sd}_{\mathcal I}(v)>10^{-12}\max(1,\max_{i\in\mathcal I}|v_i|).
 \end{equation}
@@ -591,12 +602,34 @@ The condition number, audit residual, and $\operatorname{df}_{\rm R}$ are report
 
 \section{Physical-projection construction and acceptance}
 
+For the projection, the outlet TSS values are derived rather than fitted as separate coordinates:
+\begin{equation}
+X_E=\frac{t_X^\top g_E}{q_E},\qquad
+X_U=\frac{t_X^\top g_U}{q_U},\qquad
+V_{\rm cl}=\sum_{\ell=1}^{L}V_{{\rm cl},\ell}.
+\end{equation}
+Eliminating $s_1,\ldots,s_L$ from the endpoint identities, the internal-layer envelope, and Equation~\eqref{eq:Sreducedresponse} gives
+\begin{align}
+M_{\rm cl}^{-}&=(V_{\rm cl}-V_{{\rm cl},L})X_E+V_{{\rm cl},L}X_U,\notag\\
+M_{\rm cl}^{+}&=V_{{\rm cl},1}X_E+(V_{\rm cl}-V_{{\rm cl},1})X_U,
+\label{eq:Sinventorybounds}
+\end{align}
+and $M_{\rm cl}^{-}\le M_{\rm cl}\le M_{\rm cl}^{+}$. Particulate densification and the total component balance give $X_E\le X_F\le X_U$, so this interval is ordered. The bounds are necessary and sufficient for the existence of at least one endpoint-envelope-compatible layer profile. The projection implements them without division as
+\begin{align}
+q_U(V_{\rm cl}-V_{{\rm cl},L})t_X^\top g_E
++q_EV_{{\rm cl},L}t_X^\top g_U-q_Eq_UM_{\rm cl}&\le0,\notag\\
+q_Eq_UM_{\rm cl}-q_UV_{{\rm cl},1}t_X^\top g_E
+-q_E(V_{\rm cl}-V_{{\rm cl},1})t_X^\top g_U&\le0.
+\label{eq:Sinventoryrows}
+\end{align}
+Together with the $F_X$ particulate-densification rows, Equation~\eqref{eq:Sinventoryrows} forms the $n_g=F_X+2$ physical-direction inequalities. The equality operator contains the mixer balance, $NK$ invariant transitions, the $F$-component Clarifier balance, and $F_S$ soluble-pass-through rows, for $n_h=2F+NK+F_S$. The removed layer endpoint identities are unnecessary because $X_E$ and $X_U$ are functions of the outlet flows. For ten equal 600~m$^3$ layers, $M_{\rm cl}^{-}=600(9X_E+X_U)$ and $M_{\rm cl}^{+}=600(X_E+9X_U)$.
+
 For equality row $r$, let $\mathcal T_{ir}^{(b)}$ be the signed physical terms at development row $i$ before cancellation. For an inequality row, define $\mathcal T_{ir}^{(g)}$ analogously. Row scales are
 \begin{align}
 (D_b)_{rr}&=\max\left\{\operatorname{unit}_r^{(b)},\left[\frac1{n_D}\sum_{i\in\mathcal I_{\rm dev}}\frac1{|\mathcal T_{ir}^{(b)}|}\sum_{t\in\mathcal T_{ir}^{(b)}}t^2\right]^{1/2}\right\},\\
 (D_g)_{rr}&=\max\left\{\operatorname{unit}_r^{(g)},\left[\frac1{n_D}\sum_{i\in\mathcal I_{\rm dev}}\frac1{|\mathcal T_{ir}^{(g)}|}\sum_{t\in\mathcal T_{ir}^{(g)}}t^2\right]^{1/2}\right\}.
 \end{align}
-Here $\operatorname{unit}_r^{(b)}$ and $\operatorname{unit}_r^{(g)}$ denote one unit in the corresponding row's physical units. These scales are not residual scales and remain positive even when mechanistic balances close exactly.
+Here $\operatorname{unit}_r^{(b)}$ and $\operatorname{unit}_r^{(g)}$ denote one unit in the corresponding row's physical units. For each inventory-envelope row this is one gram TSS, and its termwise scale is evaluated from the three signed mass terms in Equation~\eqref{eq:Sinventoryrows}. These scales are not residual scales and remain positive even when mechanistic balances close exactly.
 
 Write the right-hand side of the projection equalities as $\mathfrak b(\vartheta,x)$, consistently with the main article. The standardized projection matrices are
 \begin{equation}
@@ -607,7 +640,7 @@ e=D_b^{-1}(\mathfrak b-\mathcal H\chi_{\rm raw}),
 \mathsf G_u=\begin{bmatrix}-I_{n_\chi}\\D_g^{-1}\mathcal GD_\chi\end{bmatrix},\qquad
 g=\begin{bmatrix}D_\chi^{-1}\chi_{\rm raw}\\-D_g^{-1}\mathcal G\chi_{\rm raw}\end{bmatrix}.
 \end{equation}
-Thus the QP is $\min_u\|u\|_2^2/2$ subject to $\mathsf Eu=e$ and $\mathsf G_u u\le g$. The equality matrix must have numerical row rank $n_h$; in the case study $n_h=77$. Set $\tau_{\rm act}=10^{-7}$ and define the numerical active set
+Thus the QP is $\min_u\|u\|_2^2/2$ subject to $\mathsf Eu=e$ and $\mathsf G_u u\le g$. In the case study, $\mathsf E\in\R^{75\times161}$, the physical matrix $\mathcal G\in\R^{12\times161}$, and $\mathsf G_u\in\R^{173\times161}$ after response non-negativity is stacked. The equality matrix must have numerical row rank $n_h=75$. Set $\tau_{\rm act}=10^{-7}$ and define the numerical active set
 \begin{equation}
 \mathcal A_Q(u)=\{j:(\mathsf G_u u-g)_j\ge-\tau_{\rm act}\}.
 \label{eq:SQPactive}
@@ -641,9 +674,10 @@ Every final candidate is resolved from a cold start and these residuals are reco
 
 For completeness, the engineering rows are evaluated without unsafe trial-point division. Let
 \begin{equation}
-M_X=\sum_{i=1}^{N}V_i t_X^\top c_i+\sum_{\ell=1}^{L}V_{{\rm cl},\ell}s_\ell,
+M_X=\sum_{i=1}^{N}V_i t_X^\top c_i+M_{\rm cl},
 \qquad B_X=t_X^\top g_E+\frac{w}{q_U}t_X^\top g_U.
 \end{equation}
+For smooth-direct and exact states, $M_{\rm cl}$ in this common expression is evaluated by Equation~\eqref{eq:Sreducedresponse}; for the surrogate route it is the projected scalar response coordinate.
 Because $Q_0B_X$ is the external solids loss rate, the SRT bounds $T_{\rm SRT}^L$ and $T_{\rm SRT}^U$ are imposed as
 \begin{equation}
 T_{\rm SRT}^LQ_0B_X-M_X\le0,\qquad
@@ -684,12 +718,9 @@ f_{{\rm rxn},\epsilon}=\col\!\left(
 \qquad
 \kappa_{\rm rxn}^2=\frac{\|D_{\rm rxn}^{-1}f_{{\rm rxn},\epsilon}\|_2^2}{NF}.
 \end{equation}
-If $f_{{\rm cl},\epsilon}(s;c_N,\vartheta)\in\R^L$ denotes the smooth layer residual defined below, define
-\begin{equation}
-\kappa_{\rm flux}^2=\frac{1}{L}
-\left\|D_{\rm cl}^{-1}f_{{\rm cl},\epsilon}(s;c_N,\vartheta)\right\|_2^2.
-\end{equation}
-For either residual family, let $\mathcal T_{ia}$ be its separately evaluated, volume-scaled physical terms at mechanistic development target $i$ (dilution, reaction, aeration, and addition for a reactor row; incoming flux, outgoing flux, and feed for a Clarifier row). At the final smoothing pair $(\epsilon,\tau_X)=(10^{-8},1\ \mathrm{g\ TSS\ m}^{-3})$, its diagonal scale is
+No scalar function of $(g_E,g_U,M_{\rm cl})$ can reproduce the discarded $L$ layer-flux equations. The surrogate therefore has no Clarifier-flux trust statistic. Its exact inventory interval is enforced by Equation~\eqref{eq:Sinventoryrows}, while nonlinear settling is audited only when a full smooth-direct or exact mechanistic layer state exists.
+
+For either mechanistic residual family, let $\mathcal T_{ia}$ be its separately evaluated, volume-scaled physical terms at mechanistic development target $i$ (dilution, reaction, aeration, and addition for a reactor row; incoming flux, outgoing flux, and feed for a Clarifier row). At the final smoothing pair $(\epsilon,\tau_X)=(10^{-8},1\ \mathrm{g\ TSS\ m}^{-3})$, its diagonal scale is
 \begin{equation}
 (D_f)_{aa}=\max\left\{\operatorname{unit}_a,
 \left[\frac1{n_D}\sum_{i\in\mathcal I_{\rm dev}}\frac1{|\mathcal T_{ia}|}
@@ -697,9 +728,9 @@ For either residual family, let $\mathcal T_{ia}$ be its separately evaluated, v
 \qquad D_f\in\{D_{\rm rxn},D_{\rm cl}\},
 \label{eq:Sbalancescales}
 \end{equation}
-where $\operatorname{unit}_a$ is one unit of concentration per day for that row. Equation~\eqref{eq:Sbalancescales} completely specifies the residual scales used by the trust constraints, optimizer audits, and exact-reference diagnostics.
+where $\operatorname{unit}_a$ is one unit of concentration per day for that row. The reactor scale $D_{\rm rxn}$ is used by the surrogate trust constraint. The Clarifier scale $D_{\rm cl}$ remains necessary for the smooth direct NLP and exact-reference layer audits, but it is not evaluated from a surrogate response.
 
-The optimization imposes the differentiable squared forms $\kappa_{\rm corr}^2\le\bar\kappa_{\rm corr}^2$, $\ell_{\rm R}\le\bar\ell$, $\kappa_{\rm split}^2\le\bar\kappa_{\rm split}^2$, $\kappa_{\rm rxn}^2\le\bar\kappa_{\rm rxn}^2$, and $\kappa_{\rm flux}^2\le\bar\kappa_{\rm flux}^2$. The four $\bar\kappa$ limits are nearest-rank 95th percentiles computed from the corresponding out-of-fold projected development predictions, with the reactor and Clarifier quantities evaluated at the final smoothing pair; $\bar\ell$ is the maximum development-row leverage under the final fit. The scientific model-development gate fails if $\bar\kappa_{\rm corr}>0.50$: that gate prevents a run from being treated as article-eligible when the projection makes an RMS repair larger than one-half development response standard deviation. These screens constrain the upper problem; they do not alter the lower projection. For the model-function execution, every finite out-of-fold projection and its full audit are retained; a failed audit marks the gate and all dependent thresholds as scientifically failed but does not by itself halt subsequent workflow exercises. A non-finite or incomplete projection, undefined scale, or other condition that makes a downstream calculation mathematically undefined remains fatal.
+The optimization imposes the differentiable squared forms $\kappa_{\rm corr}^2\le\bar\kappa_{\rm corr}^2$, $\ell_{\rm R}\le\bar\ell$, $\kappa_{\rm split}^2\le\bar\kappa_{\rm split}^2$, and $\kappa_{\rm rxn}^2\le\bar\kappa_{\rm rxn}^2$. The three $\bar\kappa$ limits are nearest-rank 95th percentiles computed from the corresponding out-of-fold projected development predictions, with the reactor quantity evaluated at the final smoothing pair; $\bar\ell$ is the maximum development-row leverage under the final fit. The scientific model-development gate fails if $\bar\kappa_{\rm corr}>0.50$: that gate prevents a run from being treated as article-eligible when the projection makes an RMS repair larger than one-half development response standard deviation. These screens constrain the upper problem; they do not alter the lower projection. Every limit is recalibrated for the 161-coordinate response. For the model-function execution, every finite out-of-fold projection and its full audit are retained; a failed audit marks the gate and all dependent thresholds as scientifically failed but does not by itself halt subsequent workflow exercises. A non-finite or incomplete projection, undefined scale, or other condition that makes a downstream calculation mathematically undefined remains fatal.
 
 Finite solver tolerance means a generated target need not lie exactly in the ideal projection polyhedron. Let $\mathcal C_i$ denote that polyhedron for row $i$, let $P_{\mathcal C_i}$ denote projection in the norm $\|v\|_{D_\chi^{-1}}:=\|D_\chi^{-1}v\|_2$, and define
 \begin{equation}
@@ -710,7 +741,7 @@ for every target. The valid bound
 \|D_\chi^{-1}[\widehat\chi_i-\chi_i]\|_2
 \le \|D_\chi^{-1}[\chi_{{\rm raw},i}-\chi_i]\|_2+\delta_{{\rm feas},i}
 \end{equation}
-is checked for every numerical target. The stronger squared projection inequality is used only if $\delta_{{\rm feas},i}=0$ in exact arithmetic, never merely because the value is small. The holdout admission gate also requires all $n_T=3343$ QPs to pass the primal--dual contract and complete-state raw nRMSE to be below one. Here complete-state means the row with block ``complete response'' and coordinate ``ALL'', not the first coordinate-level metric. The nRMSE criterion means that the root-mean-square error over all holdout rows and response coordinates, after coordinatewise development scaling, is less than one development response standard deviation on average. It is a predeclared adequacy gate rather than a comparison with a separately fitted baseline. Failure is recorded without changing $\gamma_{\rm R}$ or refitting and makes the run ineligible as scientific article evidence. Under the explicitly authorized model-function policy, however, it does not prevent the remaining optimization, replay, timing, or report paths from being exercised. This is continuation after failure, not a gate bypass: every downstream artifact carries the failed-gate status, and the final scientific-validation flag remains false.
+is checked for every numerical target. The stronger squared projection inequality is used only if $\delta_{{\rm feas},i}=0$ in exact arithmetic, never merely because the value is small. Before the post-selection holdout is evaluated, the development-only admission gate requires every out-of-fold projection QP to pass the primal--dual contract, full reduced-response raw nRMSE to be below one, and the $M_{\rm cl}$ coordinate raw nRMSE to be below one. The full-response criterion means that root-mean-square error over all out-of-fold development rows and 161 response coordinates, after fold-specific coordinate scaling, is less than one development response standard deviation on average. The separate inventory criterion prevents the single storage coordinate from being hidden in that average even though it enters SRT. These are predeclared adequacy gates rather than comparisons with a separately fitted baseline. The $n_H=3343$ post-selection holdout rows are evaluated once for descriptive metrics and projection audits, but neither their errors nor their percentiles alter model selection, trust thresholds, or article eligibility. Failure is recorded without changing $\gamma_{\rm R}$ or refitting. Under the explicitly authorized model-function policy, a scientific failure does not prevent the remaining optimization, replay, timing, or report paths from being exercised; it remains a failure rather than a gate bypass. A non-finite or incomplete downstream object remains fatal.
 
 The execution layer distinguishes scientific rejection from inability to compute. A finite, dimensionally complete result that fails a declared residual or adequacy threshold is a scientific diagnostic and is retained while the model-function workflow proceeds. Missing or non-finite arrays, an undefined feature or response scale, a rank or factorization failure that prevents construction of the stated problem, and a contract, hash, or checkpoint inconsistency are hard computational or integrity failures and stop execution. A failed mechanistic generation is the separately declared exception: it is retained and deterministically replaced before fitting, as specified above. Assessment rows are never discarded or replaced after model fitting.
 
@@ -721,7 +752,7 @@ For primal-feasible $u$ and dual-feasible $\lambda^{\le}$, the non-negative prim
 \Gamma=\tfrac12\|u+\mathsf E^\top\lambda^{=}+\mathsf G_u^\top\lambda^{\le}\|_2^2
 +(\lambda^{\le})^\top(g-\mathsf G_u u).
 \end{equation}
-At zero gap, both stationarity and every complementary product vanish by convex strong duality \citep{Boyd2004}. An earlier production plan embedded the controls, displacement, and both multiplier vectors in a 450-variable single-level NLP and tightened $\overline\Gamma=\Gamma/(n_\chi+n_q)$ through
+At zero gap, both stationarity and every complementary product vanish by convex strong duality \citep{Boyd2004}. An earlier production plan for the superseded layer-output dimensions $n_\chi^{\rm old}=170$, $n_h^{\rm old}=77$, and $n_q^{\rm old}=196$ embedded the controls, displacement, and both multiplier vectors in a 450-variable single-level NLP and tightened $\overline\Gamma_{\rm old}=\Gamma/(170+196)$ through
 \begin{equation}
 \tau\in\{10^{-2},10^{-4},10^{-6},3\times10^{-7},10^{-7},3\times10^{-8},10^{-8}\}.
 \end{equation}
@@ -796,11 +827,11 @@ The best sufficiently improving feasible trial is accepted, with lexicographic c
 
 The final poll point is cold-replayed and the strong KKT audit is retried. If it passes, the endpoint receives the strong first-order certificate. Otherwise, passing both complete poll levels gives the classification ``finite-resolution feasible-poll converged, stationarity unresolved.'' This is evidence of no detected feasible decrease only for the finite declared directions, tolerances, and radii; it is not a KKT, Clarke-stationarity, mathematical local-optimality, or global-optimality certificate. Exhausting the evaluation budget, failing a required QP, finding no feasible nonzero displacement at a completed level, or failing the final replay yields an inconclusive or budget-limited poll and retains the feasible incumbent without a convergence certificate. A low feasible-direction rank is reported but does not itself cause failure. A relative $10^{-10}$ search-objective tie uses lexicographically smaller normalized controls. Even the strong first-order audit is not proof of local or global minimality; nonconvexity precludes a global certificate.
 
-Protocol v1 used only 22 fine directions, a 120-evaluation budget, and a full-rank acceptance requirement. Its preliminary outputs left all eleven cases unresolved: three were budget-limited and eight were rank-inconclusive. Protocol v2 corrected those rules, but its fixed-step fine search in robustness case 05 accepted 36 moves and exhausted 2,500 distinct exact-QP evaluations before completing the next sweep. This was a search-efficiency limitation, not an exact-QP or upper-feasibility failure. The v1 and v2 artifacts are preserved with superseded, excluded-from-analysis status and are not relabeled. Only the uniformly rerun v3 certification outcomes enter the article analysis. The v3 rerun occupies a new self-contained result directory; a hash-complete copy manifest identifies every inherited dataset, fitted, assessment, and primary-search artifact and its source run.
+Protocol v1 used only 22 fine directions, a 120-evaluation budget, and a full-rank acceptance requirement. Its preliminary outputs left all eleven cases unresolved: three were budget-limited and eight were rank-inconclusive. Protocol v2 corrected those rules, but its fixed-step fine search in robustness case 05 accepted 36 moves and exhausted 2,500 distinct exact-QP evaluations before completing the next sweep. This was a search-efficiency limitation, not an exact-QP or upper-feasibility failure. The v1 and v2 artifacts are preserved with superseded, excluded-from-analysis status and are not relabeled. After the response reduction, protocol v3 is rerun uniformly in a new self-contained result directory. A hash-complete manifest may inherit the accepted full mechanistic datasets and unchanged inputs, but not the old fitted surrogate, assessment, primary surrogate search, convergence, replay-at-surrogate-control, or surrogate timing artifacts.
 
 \section{Smooth mechanistic NLP and exact-reference adjudication}
 
-The direct NLP contains the seven case controls, $n_y=110$ reduced mechanistic states, and one Clarifier-feed auxiliary, for 118 primal variables. The auxiliary is not free: it obeys
+The direct NLP contains the seven case controls, $n_y=110$ full reactor-and-layer mechanistic states, and one Clarifier-feed auxiliary, for 118 primal variables. The auxiliary is not free: it obeys
 \begin{equation}
 \widetilde X_F=t_X^\top c_N,\qquad
 \widetilde X_F\ge X_F^{\min}=1\ \mathrm{g\ TSS\ m}^{-3}.
@@ -830,7 +861,7 @@ Here
 \left(\frac1{n_D}\sum_{i\in\mathcal I_{\rm dev}}X_{F,i}^2\right)^{1/2}.
 \label{eq:Sfeedrms}
 \end{equation}
-The internal state variable is $D_y^{-1}(y-\mu_y)$. Reactor and Clarifier residuals use $D_{\rm rxn}$ and $D_{\rm cl}$ defined above. The direct NLP also imposes the same layer envelope as the surrogate route, so neither optimizer can select a profile that target generation would reject.
+The internal state variable is $D_y^{-1}(y-\mu_y)$. Reactor and Clarifier residuals use $D_{\rm rxn}$ and $D_{\rm cl}$ defined above. The direct NLP retains the full layer envelope used by target generation. The surrogate projection imposes only the exact aggregate inventory interval induced by that envelope and does not construct a layer profile.
 
 Only operations that are nonsmooth or have a possible zero denominator are regularized. For a variable with scale $S>0$, define
 \begin{align}
@@ -1007,7 +1038,7 @@ and the dimensionless dual-feasibility and complementarity residuals
 \end{equation}
 are each no greater than $10^{-6}$. These quantities are recalculated from the reported physical variables, rather than copied from a solver status. A primary or permitted recovery endpoint is retained with its provenance when it passes the applicable feasibility audit. If it is validated feasible but stationarity cannot be established, it is explicitly labeled stationarity-unresolved; otherwise the route is a recorded case failure and execution continues. First-order KKT stationarity is not described as proof of local or global optimality.
 
-Whole-test smooth/reference validation is retired and is not an admission gate. The $n_T=3343$ frozen holdout inputs are used for raw and projected surrogate prediction metrics only. Any partial fixed-input smooth/reference rows produced under the legacy protocol remain archived with a retired, excluded-from-analysis status; they do not enter a denominator, gate, or scientific claim.
+Whole-holdout smooth/reference validation is retired and is not an admission gate. The $n_H=3343$ frozen post-selection holdout inputs are used for descriptive raw and projected reduced-response metrics only. Any partial fixed-input smooth/reference rows produced under the legacy protocol remain archived with a retired, excluded-from-analysis status; they do not enter a denominator, gate, or confirmatory scientific claim.
 
 Instead, every available selected surrogate and direct candidate from the nominal and ten scenario cases is evaluated on one common exact nonsmooth mechanistic reference, for at most 22 candidate decisions. A route that supplies no selected candidate contributes an explicit missing-candidate status rather than an invented decision. Every decision is replayed twice, using the declared primary and alternate influent-based mechanistic initializations and never a smooth optimizer state; both exact starts are retained.
 
@@ -1020,7 +1051,7 @@ Every exact start must pass the same scaled mass-conservation, non-negativity, d
 \end{equation}
 A categorical receiver, storage-capacity, settling-floor, settling-cap, or flux-minimum assignment must agree when both starts are outside their declared ambiguity bands. A mismatch for which either start is boundary-ambiguous is retained as a qualifier when Equation~\eqref{eq:Sreplayroots} and all physical checks pass; boundary ambiguity is not by itself a rejection. Root disagreement, non-ambiguous categorical disagreement, solver failure, or a failed exact physical/stability audit makes the replay invalid. Engineering feasibility is calculated from the accepted exact response and is a separate requirement for route comparison.
 
-For each candidate, the physical ledger has distinct source rows for the raw prediction, projected prediction, optimizer-native response, exact start~1, and exact start~2. The optimizer-native response is the projected state for the surrogate route and the smooth-NLP endpoint for the direct route. Each source records its finite status, maximum scaled mass-conservation residual and exceedance count at $10^{-8}$, and maximum scaled negativity and exceedance count at $10^{-10}$; undefined nonlinear quantities are explicitly marked rather than dropped. Thus a projection pass cannot hide a raw violation, and agreement of objective values cannot hide a mechanistic violation.
+For each candidate, the physical ledger has distinct source rows for the raw prediction, projected prediction, optimizer-native response, exact start~1, and exact start~2. The optimizer-native response is the projected reduced response for the surrogate route and the reduced mapping of the smooth-NLP endpoint for the direct route. Raw and projected rows record the applicable reduced-response conservation, inventory-bound, and non-negativity audits. Smooth-direct and exact rows additionally record full layer-envelope, layer-balance, settling-flux, and stability audits. Undefined nonlinear quantities are explicitly marked rather than dropped. Thus a projection pass cannot be mistaken for a layer audit, and agreement of objective values cannot hide a mechanistic violation.
 
 Let $J_{k,{\rm nat}}$ and $J_{k,{\rm ref}}$ denote the optimizer-native and exact-reference objectives for route $k\in\{S,M\}$. Each route reports $J_{k,{\rm nat}}-J_{k,{\rm ref}}$ and all objective-component differences whenever its exact replay is valid. The exact objective therefore remains reportable when the replay is engineering-infeasible; engineering failure changes the separate eligibility field rather than erasing a valid reference value. A paired surrogate/direct comparison is eligible only when both candidates exist, both exact replays are valid, and both exact responses are engineering-feasible. It then reports
 \begin{equation}
@@ -1033,27 +1064,27 @@ the percentage penalty relative to the direct exact-reference objective, objecti
 
 \section{Prediction, decision, and timing metrics}
 
-For response block $\mathcal B$, sample count $n$, and untouched-test prediction method $\mathfrak m\in\{{\rm raw},{\rm proj}\}$, let $\sigma_{\chi,j}=(D_\chi)_{jj}$ and define
+For reduced-response block $\mathcal B$, sample count $n$, and prediction method $\mathfrak m\in\{{\rm raw},{\rm proj}\}$, let $\sigma_{\chi,j}=(D_\chi)_{jj}$ and define
 \begin{align}
 \mathrm{nRMSE}^{(\mathfrak m)}_{\mathcal B}&=\left[\frac1{n|\mathcal B|}\sum_{i=1}^n\sum_{j\in\mathcal B}
 \left(\frac{\chi_{ij}^{(\mathfrak m)}-\chi_{ij}^{\rm ref}}{\sigma_{\chi,j}}\right)^2\right]^{1/2},\\
 \mathrm{nMAE}^{(\mathfrak m)}_{\mathcal B}&=\frac1{n|\mathcal B|}\sum_{i=1}^n\sum_{j\in\mathcal B}
 \left|\frac{\chi_{ij}^{(\mathfrak m)}-\chi_{ij}^{\rm ref}}{\sigma_{\chi,j}}\right|.
 \end{align}
-Bias and $R^2$ are calculated coordinatewise. Blocks are mixer, reactors 1--$N$ separately, overflow flows, underflow flows, layers, complete Clarifier, and complete state. Physical-unit metrics are additionally reported for stage DO/TN/TP/TSS and Clarifier outlet COD/TN/TP/TSS, layer TSS, and inventory.
+Bias and $R^2$ are calculated coordinatewise. Reduced-response blocks are mixer, reactors 1--$N$ separately, overflow flows, underflow flows, Clarifier solids inventory, complete Clarifier $(g_E,g_U,M_{\rm cl})$, and the full 161-coordinate response. Physical-unit metrics are additionally reported for stage DO/TN/TP/TSS, Clarifier outlet COD/TN/TP/TSS, and inventory. Layer-TSS metrics are reported separately only for smooth-direct and exact mechanistic profiles; there is no raw or projected surrogate layer prediction.
 
-At each selected decision, prediction error and decision comparison remain distinct. Raw, projected, optimizer-native, and exact-reference states are evaluated wherever defined at both $\vartheta_S$ and $\vartheta_M$. Their scaled error vectors use the same $D_\chi$. The route-specific native/reference objective discrepancy is separate from the signed common-reference candidate difference in Equation~\eqref{eq:Scommonreferenceobjectives}. Neither is called regret because neither optimization route has a global certificate. Branch qualification and convergence qualification are independent reporting dimensions: a valid boundary-qualified exact replay does not confer stationarity, and a convergence certificate does not establish exact-reference validity.
+At each selected decision, prediction error and decision comparison remain distinct. Raw, projected, optimizer-native, and exact-reference reduced responses are evaluated wherever defined at both $\vartheta_S$ and $\vartheta_M$. Every full smooth or exact state is first mapped through Equation~\eqref{eq:Sreducedresponse}, and the scaled error vectors then use the same $D_\chi$. Detailed layer profiles remain separate mechanistic diagnostics. The route-specific native/reference objective discrepancy is separate from the signed common-reference candidate difference in Equation~\eqref{eq:Scommonreferenceobjectives}. Neither is called regret because neither optimization route has a global certificate. Branch qualification and convergence qualification are independent reporting dimensions: a valid boundary-qualified exact replay does not confer stationarity, and a convergence certificate does not establish exact-reference validity.
 
-No repeated inference benchmark is run on the 3,343-row frozen holdout block. Computational comparison uses only durations already recorded while executing robustness cases 1--10. For each case, surrogate primary-search time includes the seven-control search and its cold projection-QP evaluations; certification time separately includes the active-set audit, feasible polls, ray-acceleration trials, and final replay. Complete surrogate time is primary search plus certification. Direct primary time covers the three-stage smooth continuation, and complete direct time adds the single conditional recovery when one is actually attempted. Exact-reference replay is reported separately by route. The nominal case is excluded from timing aggregation. For each timing category the report gives the number of available robustness cases, total, arithmetic mean, median, interquartile range, nearest-rank 95th percentile, and maximum. A failed route's expended primary-attempt time remains in the computational denominator even when it supplies no selected candidate. The reported casewise ratio is complete direct-route time divided by complete surrogate-route time, so a value above one favors the surrogate route under these definitions.
+No repeated inference benchmark is run on the 3,343-row frozen post-selection holdout block. Computational comparison uses only new durations recorded while rerunning robustness cases 1--10 with the reduced response; old layer-output-surrogate timings are excluded. For each case, surrogate primary-search time includes the seven-control search and its cold projection-QP evaluations; certification time separately includes the active-set audit, feasible polls, ray-acceleration trials, and final replay. Complete surrogate time is primary search plus certification. Direct primary time covers the three-stage smooth continuation, and complete direct time adds the single conditional recovery when one is actually attempted. Exact-reference replay is reported separately by route. The nominal case is excluded from timing aggregation. For each timing category the report gives the number of available robustness cases, total, arithmetic mean, median, interquartile range, nearest-rank 95th percentile, and maximum. A failed route's expended primary-attempt time remains in the computational denominator even when it supplies no selected candidate. The reported casewise ratio is complete direct-route time divided by complete surrogate-route time, so a value above one favors the surrogate route under these definitions.
 
 \section{Required reporting tables and failure accounting}
 
 The journal record contains:
 \begin{enumerate}
 \item foldwise ridge scores, selected $\gamma_{\rm R}$, penalized-system condition number, effective degrees of freedom, and coefficient audit;
-\item raw and projected test metrics for every response block and coordinate;
-\item projection feasibility, correction, leverage, particulate-recovery, reactor-residual, and Clarifier-flux diagnostics;
-\item nominal raw, projected, optimizer-native, and exact-mechanistic stage/Clarifier profiles;
+\item raw and projected development out-of-fold and descriptive post-selection-holdout metrics for every reduced-response block and coordinate, including a separate $M_{\rm cl}$ adequacy result;
+\item projection feasibility, correction, leverage, particulate-recovery, and reactor-residual diagnostics, with full Clarifier-flux audits restricted to smooth-direct and exact mechanistic states;
+\item nominal raw, projected, optimizer-native, and exact shared responses, plus detailed Clarifier profiles only where a mechanistic layer state exists;
 \item ten casewise scenario rows for both optimization routes and exact common-reference replays;
 \item exact-reference validity and objective, branch qualifier, engineering feasibility, and paired-comparison eligibility for every available selected candidate, retaining valid objectives even when engineering-infeasible;
 \item source-specific mass-conservation and non-negativity audits for raw, projected, optimizer-native, and both exact starts when present;

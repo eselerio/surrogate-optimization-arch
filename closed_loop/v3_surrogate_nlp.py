@@ -195,13 +195,12 @@ class TrustThresholds:
     regularized_leverage: float
     split_rms: float | None = None
     reactor_rms: float | None = None
-    flux_rms: float | None = None
 
     def __post_init__(self) -> None:
         required = (self.correction_rms, self.regularized_leverage)
         if not all(np.isfinite(value) and value >= 0.0 for value in required):
             raise ValueError("native trust thresholds must be finite and nonnegative.")
-        for value in (self.split_rms, self.reactor_rms, self.flux_rms):
+        for value in (self.split_rms, self.reactor_rms):
             if value is not None and (not np.isfinite(value) or value < 0.0):
                 raise ValueError("optional trust thresholds must be finite and nonnegative.")
 
@@ -228,11 +227,10 @@ class NamedTrustRows:
 
 @dataclass(frozen=True)
 class TrustDiagnosticCallbacks:
-    """Optional v3 split, smooth-reactor, and Clarifier-flux residual rows."""
+    """Optional v3 particulate-split and smooth-reactor residual rows."""
 
     split_rows: TrustRowCallback | None = None
     reactor_rows: TrustRowCallback | None = None
-    flux_rows: TrustRowCallback | None = None
     additional: tuple[NamedTrustRows, ...] = ()
 
 
@@ -308,7 +306,6 @@ class SurrogateNLPAssets:
             2 * component_count
             + self.layout.stage_count * invariant.shape[0]
             + len(self.layout.soluble_indices)
-            + 2
         )
         equality_scale = _vector(
             self.row_scales.equality, equality_count, "equality row scales", positive=True
@@ -354,7 +351,6 @@ class SurrogateNLPAssets:
         pairs = (
             (self.trust_callbacks.split_rows, self.trust_thresholds.split_rms, "split"),
             (self.trust_callbacks.reactor_rows, self.trust_thresholds.reactor_rms, "reactor"),
-            (self.trust_callbacks.flux_rows, self.trust_thresholds.flux_rms, "flux"),
         )
         for callback, threshold, name in pairs:
             if (callback is None) != (threshold is None):
@@ -363,7 +359,7 @@ class SurrogateNLPAssets:
                 )
         names = [item.name for item in self.trust_callbacks.additional]
         if len(set(names)) != len(names) or any(
-            name in {"correction", "leverage", "split", "reactor", "flux"}
+            name in {"correction", "leverage", "split", "reactor"}
             for name in names
         ):
             raise ValueError("additional trust diagnostic names must be unique and reserved-name free.")
@@ -444,12 +440,11 @@ def build_surrogate_assets(
     trust_callbacks: TrustDiagnosticCallbacks | None = None,
     split_rms_threshold: float | None = None,
     reactor_rms_threshold: float | None = None,
-    flux_rms_threshold: float | None = None,
     engineering: EngineeringLimits | None = None,
 ) -> SurrogateNLPAssets:
     """Fit the projection scales, leverage contract, and quality normalization.
 
-    Optional split/reactor/flux callbacks must return *already scaled* residual
+    Optional split/reactor callbacks must return *already scaled* residual
     rows.  Their thresholds are the frozen RMS limits computed from the
     development/out-of-fold calculations described by the supplement.
     """
@@ -464,6 +459,7 @@ def build_surrogate_assets(
         raise ValueError("development_influents have inconsistent dimensions.")
     if targets.shape != (decisions.shape[0], layout.state_size):
         raise ValueError("development_targets have inconsistent dimensions.")
+    engineering_limits = engineering or EngineeringLimits()
     row_scales = fit_network_row_scales(
         targets,
         influents,
@@ -473,6 +469,7 @@ def build_surrogate_assets(
         invariant_operator=invariant_operator,
         tss_weights=tss_weights,
         layout=layout,
+        clarifier_volume_m3=engineering_limits.clarifier_volume_m3,
         minimum_scale=1.0,
     )
     precision, leverage_limit = regularized_leverage_contract(model, decisions, influents)
@@ -486,7 +483,6 @@ def build_surrogate_assets(
         regularized_leverage=leverage_limit,
         split_rms=split_rms_threshold,
         reactor_rms=reactor_rms_threshold,
-        flux_rms=flux_rms_threshold,
     )
     return SurrogateNLPAssets(
         model=model,
@@ -499,7 +495,7 @@ def build_surrogate_assets(
         quality_operator=quality_matrix,
         quality_scale=quality_scale,
         trust_callbacks=trust_callbacks or TrustDiagnosticCallbacks(),
-        engineering=engineering or EngineeringLimits(),
+        engineering=engineering_limits,
     )
 
 
@@ -631,14 +627,6 @@ def symbolic_network_operators(
         equality[row, final_reactor.start + component] = -underflow
         row += 1
 
-    first_layer = layout.layer_slice.start
-    last_layer = layout.layer_slice.stop - 1
-    equality[row, first_layer] = effluent
-    equality[row, layout.overflow_flow_slice] = -ca.DM(assets.tss_weights).T
-    row += 1
-    equality[row, last_layer] = underflow
-    equality[row, layout.underflow_flow_slice] = -ca.DM(assets.tss_weights).T
-    row += 1
     if row != equality_count:
         raise AssertionError("symbolic equality-row construction is inconsistent.")
 
@@ -648,14 +636,17 @@ def symbolic_network_operators(
         inequality[row, final_reactor.start + component] = underflow
         inequality[row, layout.underflow_flow_slice.start + component] = -1.0
         row += 1
-    for layer in range(1, layout.layer_count - 1):
-        inequality[row, first_layer] = 1.0
-        inequality[row, first_layer + layer] = -1.0
-        row += 1
-    for layer in range(1, layout.layer_count - 1):
-        inequality[row, first_layer + layer] = 1.0
-        inequality[row, last_layer] = -1.0
-        row += 1
+    endpoint_layer_volume = assets.engineering.clarifier_volume_m3 / layout.layer_count
+    remaining_volume = assets.engineering.clarifier_volume_m3 - endpoint_layer_volume
+    tss = ca.DM(assets.tss_weights).T
+    inequality[row, layout.overflow_flow_slice] = underflow * remaining_volume * tss
+    inequality[row, layout.underflow_flow_slice] = effluent * endpoint_layer_volume * tss
+    inequality[row, layout.inventory_index] = -effluent * underflow
+    row += 1
+    inequality[row, layout.overflow_flow_slice] = -underflow * endpoint_layer_volume * tss
+    inequality[row, layout.underflow_flow_slice] = -effluent * remaining_volume * tss
+    inequality[row, layout.inventory_index] = effluent * underflow
+    row += 1
     if row != layout.inequality_count:
         raise AssertionError("symbolic inequality-row construction is inconsistent.")
     return SymbolicNetworkOperators(
@@ -680,7 +671,7 @@ def _engineering_expressions(
     final = state[layout.reactor_slice(layout.stage_count - 1)]
     overflow = state[layout.overflow_flow_slice]
     underflow_flow = state[layout.underflow_flow_slice]
-    layers = state[layout.layer_slice]
+    clarifier_inventory = state[layout.inventory_index]
     returned, waste = theta[5], theta[6]
     q_underflow = returned + waste
     q_effluent = 1.0 - waste
@@ -692,8 +683,7 @@ def _engineering_expressions(
     reactor_inventory = 0.0
     for stage in range(layout.stage_count):
         reactor_inventory += stage_volume * ca.dot(tss, state[layout.reactor_slice(stage)])
-    layer_volume = limits.clarifier_volume_m3 / layout.layer_count
-    inventory = reactor_inventory + layer_volume * ca.sum1(layers)
+    inventory = reactor_inventory + clarifier_inventory
     sor = limits.fresh_flow_m3_d * q_effluent / limits.clarifier_area_m2
     slr = (
         1.0e-3
@@ -848,11 +838,6 @@ def _trust_expressions(
             "reactor",
             assets.trust_callbacks.reactor_rows,
             thresholds.reactor_rms,
-        ),
-        (
-            "flux",
-            assets.trust_callbacks.flux_rows,
-            thresholds.flux_rms,
         ),
     )
     for name, callback, threshold in specifications:
@@ -1412,6 +1397,7 @@ def cold_reproject(
         invariant_operator=assets.invariant_operator,
         tss_weights=assets.tss_weights,
         layout=assets.layout,
+        clarifier_volume_m3=assets.engineering.clarifier_volume_m3,
     )
     # A new projector means a new OSQP workspace; no primal or dual warm start
     # can leak from the continuation or a preceding outer trial.

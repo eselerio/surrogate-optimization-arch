@@ -6,6 +6,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+import numpy as np
+
 from scripts import run_article_v3_5000 as runner
 
 
@@ -43,14 +45,71 @@ def _retained_stage(source: Path) -> dict[str, object]:
 
 
 class ArticleV3RunForkTests(unittest.TestCase):
-    def test_schema_nine_defaults_name_a_new_folder_and_v3_protocol(self) -> None:
+    def test_schema_ten_defaults_name_a_new_folder_and_v3_protocol(self) -> None:
         self.assertEqual(runner.LEGACY_RUN_ID, "article_full_5000_001")
         self.assertEqual(runner.DEFAULT_RUN_ID, "article_full_5000_002")
-        self.assertEqual(runner.RUNNER_SCHEMA, 9)
+        self.assertEqual(runner.RUNNER_SCHEMA, 10)
         self.assertEqual(
             runner.COMPARISON_PROTOCOL,
             "casewise_exact_common_reference_v3",
         )
+
+    def test_reduced_response_fork_copies_generation_but_not_old_models(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, target = root / "source", root / "target"
+            old_files, new_files = {"unit.py": "old"}, {"unit.py": "new"}
+            old_digest = runner.source_digest(old_files)
+            source_contract = {
+                "runner_schema": 9,
+                "source_digest": old_digest,
+                "source_files": old_files,
+                "contract_migrations": [],
+            }
+            successor_contract = {
+                "runner_schema": 10,
+                "run_id": target.name,
+                "source_digest": runner.source_digest(new_files),
+                "source_files": new_files,
+                "response_schema": {"name": runner.RESPONSE_SCHEMA},
+            }
+            for block in ("development", "test"):
+                artifact = source / "datasets" / block / "mechanistic_accepted_v3.npz"
+                runner.atomic_npz(artifact, targets=np.zeros((1, 170)))
+                runner.atomic_json(
+                    source / "datasets" / block / "block_complete.json",
+                    {
+                        "source_digest": old_digest,
+                        "artifacts": {
+                            artifact.relative_to(source).as_posix(): runner.file_digest(artifact),
+                        },
+                    },
+                )
+            runner.atomic_json(source / "inputs" / "contract.json", source_contract)
+            runner.atomic_json(source / "inputs" / "generator_records.json", {"seed": 1})
+            _write_bytes(source / "models" / "ridge_surrogate.npz", b"superseded")
+            _write_bytes(source / "optimization" / "nominal" / "surrogate.npz", b"superseded")
+
+            runner._initialize_reduced_response_fork(
+                target,
+                source_run=source,
+                source_contract=source_contract,
+                successor_contract=successor_contract,
+            )
+
+            self.assertTrue(
+                (target / "datasets/development/mechanistic_accepted_v3.npz").is_file()
+            )
+            self.assertFalse((target / "models/ridge_surrogate.npz").exists())
+            self.assertFalse((target / "optimization/nominal/surrogate.npz").exists())
+            migrated = json.loads((target / "inputs/contract.json").read_text())
+            record = json.loads((
+                target / migrated["contract_migrations"][-1]["record"]
+            ).read_text())
+            self.assertEqual(
+                record["run_fork"]["recomputed_scope"],
+                "response_transform_fit_assessment_optimization_replay_timing_reporting",
+            )
 
     def test_copy_reusable_files_is_hash_verified_and_excludes_new_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

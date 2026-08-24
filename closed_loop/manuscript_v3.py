@@ -38,7 +38,6 @@ from .model import (
     assemble_target,
     branch_classification,
     generation_scale,
-    mechanistic_balance_audit,
     solve_steady_state,
     target_size,
     unpack_state,
@@ -75,7 +74,19 @@ class StudyProfile:
 
     @property
     def response_count(self) -> int:
+        """Full layer-resolved mechanistic response width (checkpoint format)."""
+
+        return self.mechanistic_response_count
+
+    @property
+    def mechanistic_response_count(self) -> int:
         return (N_STAGES + 3) * N_COMPONENTS + self.layer_count
+
+    @property
+    def surrogate_response_count(self) -> int:
+        """Reduced operational-response width, independent of layer count."""
+
+        return (N_STAGES + 3) * N_COMPONENTS + 1
 
 
 @dataclass(frozen=True)
@@ -96,6 +107,52 @@ class RidgeSelectionResult:
     fold_membership: np.ndarray
     out_of_fold_raw: np.ndarray
     elapsed_seconds: float
+
+
+def reduce_mechanistic_responses(
+    responses: np.ndarray,
+    layer_count: int,
+    *,
+    layer_volumes_m3: np.ndarray | None = None,
+) -> np.ndarray:
+    """Map full mechanistic responses to ``(m,c_1,...,c_N,g_E,g_U,M_cl)``.
+
+    The full response remains the immutable generation/checkpoint format.  The
+    returned array is the statistical response and replaces all layer-wise TSS
+    coordinates by their volume-weighted clarifier solids inventory.
+    """
+
+    count = int(layer_count)
+    if count < 1 or count != layer_count:
+        raise ValueError("layer_count must be a positive integer")
+    values = np.asarray(responses, dtype=np.float64)
+    single = values.ndim == 1
+    if single:
+        values = values[None, :]
+    shared_count = (N_STAGES + 3) * N_COMPONENTS
+    expected = shared_count + count
+    if values.ndim != 2 or values.shape[1] != expected or not np.all(np.isfinite(values)):
+        raise ValueError(
+            f"mechanistic responses must be finite with {expected} coordinates"
+    )
+    if layer_volumes_m3 is None:
+        volumes = np.full(count, 6_000.0 / count)
+    else:
+        volumes = np.asarray(layer_volumes_m3, dtype=np.float64)
+    if (
+        volumes.shape != (count,)
+        or not np.all(np.isfinite(volumes))
+        or np.any(volumes <= 0.0)
+    ):
+        raise ValueError("layer_volumes_m3 must contain one positive finite volume per layer")
+    if not np.all(volumes == volumes[0]):
+        raise ValueError(
+            "layer_volumes_m3 must be equal because the reduced projection "
+            "uses an equal-volume layer envelope"
+        )
+    inventory = values[:, shared_count:] @ volumes
+    reduced = np.concatenate((values[:, :shared_count], inventory[:, None]), axis=1)
+    return reduced[0] if single else reduced
 
 
 TEST_500 = StudyProfile(
@@ -232,7 +289,7 @@ def generate_mechanistic_block(
     rows_directory.mkdir(parents=True, exist_ok=True)
     cache = output / "mechanistic_rows_v3.npz"
     diagnostics_path = output / "mechanistic_diagnostics.csv"
-    targets = np.full((len(decisions), profile.response_count), np.nan)
+    targets = np.full((len(decisions), profile.mechanistic_response_count), np.nan)
     states_start_1 = np.full((len(decisions), N_STAGES * N_COMPONENTS + profile.layer_count), np.nan)
     states_start_2 = np.full_like(states_start_1, np.nan)
     contract_payload = (
@@ -302,7 +359,7 @@ def generate_mechanistic_block(
                     str(stored["contract_hash"].item()) == contract_hash
                     and np.array_equal(stored["decision"], decisions[index])
                     and np.array_equal(stored["influent"], influents[index])
-                    and stored["target"].shape == (profile.response_count,)
+                    and stored["target"].shape == (profile.mechanistic_response_count,)
                     and stored["state_start_1"].shape == (states_start_1.shape[1],)
                     and stored["state_start_2"].shape == (states_start_2.shape[1],)
                 )
@@ -454,7 +511,7 @@ def response_coordinate_names(layout: NetworkLayout) -> tuple[str, ...]:
         names.extend(f"reactor_{stage + 1}:{name}" for name in COMPONENTS)
     names.extend(f"overflow_flow:{name}" for name in COMPONENTS)
     names.extend(f"underflow_flow:{name}" for name in COMPONENTS)
-    names.extend(f"clarifier_layer_{layer + 1}:TSS" for layer in range(layout.layer_count))
+    names.append("clarifier_inventory:TSS_mass")
     return tuple(names)
 
 
@@ -468,6 +525,8 @@ def violation_record(
     equality = equality_physical / equality_scale
     inequality_physical = operators.inequality_matrix @ state
     inequality = inequality_physical / inequality_scale
+    particulate_inequality = inequality[: len(layout.particulate_indices)]
+    inventory_inequality = inequality[len(layout.particulate_indices) :]
     negative = np.maximum(-state / state_scale, 0.0)
     invariant_count = INVARIANT_MATRIX.shape[0]
     family_slices = {
@@ -483,7 +542,6 @@ def violation_record(
             2 * N_COMPONENTS + layout.stage_count * invariant_count,
             2 * N_COMPONENTS + layout.stage_count * invariant_count + len(layout.soluble_indices),
         ),
-        "tss_endpoint": slice(len(equality) - 2, len(equality)),
     }
     family_maxima = {
         name: float(np.max(np.abs(equality[index])))
@@ -505,21 +563,12 @@ def violation_record(
     combined_mass = np.concatenate((np.abs(equality), external_scaled))
     names = response_coordinate_names(layout)
     negative_indices = np.flatnonzero(negative > 1.0e-10)
-    reduced = np.concatenate((
-        *(state[layout.reactor_slice(stage)] for stage in range(layout.stage_count)),
-        state[layout.layer_slice],
-    ))
-    nonlinear_status = "evaluated"
-    try:
-        nonlinear = mechanistic_balance_audit(
-            reduced, _operating(theta), influent, clarifier_for_layers(layout.layer_count),
-        )
-        nonlinear_max = float(nonlinear["maximum_balance_residual"])
-        rate_negativity = float(nonlinear["rate_negativity_max"])
-    except (ValueError, FloatingPointError, OverflowError):
-        nonlinear_status = "undefined outside nonnegative mechanistic domain"
-        nonlinear_max = math.nan
-        rate_negativity = math.nan
+    # A reduced response contains no internal layer profile.  Nonlinear layer
+    # balances and settling-flux audits are therefore performed only on the
+    # retained full mechanistic state, never reconstructed from this vector.
+    nonlinear_status = "not_applicable_to_reduced_response"
+    nonlinear_max = math.nan
+    rate_negativity = math.nan
     return {
         "case": case, "method": method,
         "mass_conservation_violation_max": float(np.max(combined_mass)),
@@ -528,6 +577,12 @@ def violation_record(
         "mass_physical_residual_max": float(np.max(np.abs(equality_physical))),
         "network_inequality_violation_max": float(np.max(np.maximum(inequality, 0.0))),
         "network_inequality_violation_count": int(np.count_nonzero(inequality > 1e-8)),
+        "particulate_densification_violation_max": float(
+            np.max(np.maximum(particulate_inequality, 0.0))
+        ),
+        "clarifier_inventory_bound_violation_max": float(
+            np.max(np.maximum(inventory_inequality, 0.0))
+        ),
         "nonnegativity_violation_max": float(np.max(negative)),
         "nonnegativity_violation_count": int(np.count_nonzero(negative > 1e-10)),
         "negative_coordinates": ";".join(names[index] for index in negative_indices),
@@ -561,12 +616,9 @@ def _response_blocks(layout: NetworkLayout) -> dict[str, np.ndarray]:
     blocks["clarifier_underflow"] = np.arange(
         layout.underflow_flow_slice.start, layout.underflow_flow_slice.stop,
     )
-    for layer in range(layout.layer_count):
-        blocks[f"clarifier_layer_{layer + 1}"] = np.asarray([
-            layout.layer_slice.start + layer,
-        ])
+    blocks["clarifier_inventory"] = np.asarray([layout.inventory_index])
     blocks["clarifier_complete"] = np.arange(
-        layout.overflow_flow_slice.start, layout.layer_slice.stop,
+        layout.overflow_flow_slice.start, layout.inventory_slice.stop,
     )
     blocks["complete_response"] = np.arange(layout.state_size)
     return blocks
@@ -722,17 +774,22 @@ def engineering_quantities(
     theta: np.ndarray, state: np.ndarray, layout: NetworkLayout,
     profile: StudyProfile,
 ) -> dict[str, float]:
+    values = np.asarray(state, dtype=float)
+    if values.shape != (layout.state_size,) or not np.all(np.isfinite(values)):
+        raise ValueError(
+            f"state must be a finite reduced response with {layout.state_size} coordinates"
+        )
     operating = _operating(theta)
-    reactors = np.vstack([state[layout.reactor_slice(i)] for i in range(N_STAGES)])
-    g_e = state[layout.overflow_flow_slice]
-    g_u = state[layout.underflow_flow_slice]
-    layers = state[layout.layer_slice]
+    reactors = np.vstack([values[layout.reactor_slice(i)] for i in range(N_STAGES)])
+    g_e = values[layout.overflow_flow_slice]
+    g_u = values[layout.underflow_flow_slice]
+    clarifier_inventory = float(values[layout.inventory_index])
     feed_tss = float(TSS_VECTOR @ reactors[-1])
     underflow_tss = float(TSS_VECTOR @ g_u / operating.q_underflow)
     external_loss = float(TSS_VECTOR @ g_e + theta[6] * TSS_VECTOR @ g_u / operating.q_underflow)
     reactor_volume = 10_000.0 * theta[0] / (24.0 * N_STAGES)
     inventory = reactor_volume * float(np.sum(reactors @ TSS_VECTOR))
-    inventory += (6_000.0 / profile.layer_count) * float(np.sum(layers))
+    inventory += clarifier_inventory
     loss_rate = 10_000.0 * external_loss
     return {
         "srt_d": inventory / loss_rate if loss_rate > 0.0 else np.inf,
@@ -869,7 +926,7 @@ def replay_selected_case(
     operating = _operating(theta)
     first = solve_steady_state(operating, influent, starts=(1,), clarifier=clarifier)
     second = solve_steady_state(operating, influent, starts=(2,), clarifier=clarifier)
-    mechanistic = first.target
+    mechanistic = reduce_mechanistic_responses(first.target, profile.layer_count)
     layout = NetworkLayout(layer_count=profile.layer_count)
     row_scales = fit_network_row_scales(
         development_targets, development_influents,
@@ -913,5 +970,5 @@ __all__ = [
     "assess_raw_projected_mechanistic", "clarifier_for", "create_design",
     "engineering_quantities", "generate_mechanistic_block", "objective_value",
     "optimize_surrogate_case", "replay_selected_case", "select_ridge",
-    "violation_record", "write_json",
+    "reduce_mechanistic_responses", "violation_record", "write_json",
 ]

@@ -1,4 +1,4 @@
-"""Calibration of the five manuscript-v3 surrogate trust diagnostics."""
+"""Calibration of the reduced-response manuscript-v3 trust diagnostics."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from .projection import (
     build_network_operators,
     fit_network_row_scales,
 )
-from .v3_smooth import DirectAssets, _smooth_response_residual
+from .v3_smooth import DirectAssets, _smooth_reactor_residual
 from .v3_surrogate_nlp import TrustDiagnosticCallbacks
 
 
@@ -31,7 +31,6 @@ class TrustCalibration:
     correction_limit: float
     split_limit: float
     reactor_limit: float
-    flux_limit: float
     split_scale: FloatArray
     development_values: FloatArray
     out_of_fold_projected: FloatArray
@@ -43,14 +42,6 @@ def nearest_rank_95(values: npt.ArrayLike) -> float:
     if not len(data) or not np.all(np.isfinite(data)):
         raise ValueError("the trust sample must be nonempty and finite")
     return float(data[math.ceil(0.95 * len(data)) - 1])
-
-
-def _reduced_state(response: Any, layout: NetworkLayout) -> Any:
-    blocks = [response[layout.reactor_slice(i)] for i in range(N_STAGES)]
-    blocks.append(response[layout.layer_slice])
-    if isinstance(response, (ca.MX, ca.SX, ca.DM)):
-        return ca.vertcat(*blocks)
-    return np.concatenate([np.asarray(item, dtype=float) for item in blocks])
 
 
 def _dot(left: npt.ArrayLike, right: Any) -> Any:
@@ -69,7 +60,7 @@ def calibrate_trust_diagnostics(
     *,
     layout: NetworkLayout,
 ) -> TrustCalibration:
-    """Project OOF predictions and freeze all four nearest-rank limits."""
+    """Project OOF predictions and freeze three nearest-rank RMS limits."""
 
     theta = np.asarray(decisions, dtype=float)
     feed = np.asarray(influents, dtype=float)
@@ -77,12 +68,18 @@ def calibrate_trust_diagnostics(
     raw = np.asarray(out_of_fold_raw, dtype=float)
     if raw.shape != truth.shape or truth.shape != (len(theta), layout.state_size):
         raise ValueError("OOF predictions and development targets have inconsistent shapes")
+    if direct_assets.clarifier.layer_count != layout.layer_count:
+        raise ValueError("direct and surrogate Clarifier layer geometries must match")
 
     row_scales = fit_network_row_scales(
         truth, feed,
         internal_recycle=theta[:, 4], return_recycle=theta[:, 5],
         waste_fraction=theta[:, 6], invariant_operator=INVARIANT_MATRIX,
-        tss_weights=TSS_VECTOR, layout=layout, minimum_scale=1.0,
+        tss_weights=TSS_VECTOR, layout=layout,
+        clarifier_volume_m3=(
+            direct_assets.clarifier.layer_volume * direct_assets.clarifier.layer_count
+        ),
+        minimum_scale=1.0,
     )
     projector = PhysicalProjector(
         model.response_scale, row_scales.equality, row_scales.inequality,
@@ -95,6 +92,10 @@ def calibrate_trust_diagnostics(
             feed[row], internal_recycle=float(theta[row, 4]),
             return_recycle=float(theta[row, 5]), waste_fraction=float(theta[row, 6]),
             invariant_operator=INVARIANT_MATRIX, tss_weights=TSS_VECTOR, layout=layout,
+            clarifier_volume_m3=(
+                direct_assets.clarifier.layer_volume
+                * direct_assets.clarifier.layer_count
+            ),
         )
         result = projector.project(
             raw[row], operators.equality_matrix, operators.equality_rhs,
@@ -125,43 +126,35 @@ def calibrate_trust_diagnostics(
         scale = ca.DM(split_scale) if isinstance(response, (ca.MX, ca.SX, ca.DM)) else split_scale
         return (lhs - rhs) / scale
 
-    def balance_rows(_theta: Any, _raw: Any, response: Any, case_feed: Any) -> Any:
-        state = _reduced_state(response, layout)
-        final = response[layout.reactor_slice(N_STAGES - 1)]
-        feed_tss = _dot(TSS_VECTOR, final)
-        _, residual = _smooth_response_residual(
-            _theta, case_feed, state, feed_tss, direct_assets, 1.0e-8, 1.0,
+    def reactor_rows(theta_v: Any, _raw: Any, response: Any, _feed_v: Any) -> Any:
+        residual = _smooth_reactor_residual(
+            theta_v, response, direct_assets, 1.0e-8,
         )
-        scale = ca.DM(direct_assets.balance_scale) if isinstance(
+        reactor_scale = np.asarray(
+            direct_assets.balance_scale[: N_STAGES * N_COMPONENTS], dtype=float
+        )
+        scale = ca.DM(reactor_scale) if isinstance(
             response, (ca.MX, ca.SX, ca.DM)
-        ) else direct_assets.balance_scale
+        ) else reactor_scale
         return residual / scale
 
-    def reactor_rows(theta_v: Any, raw_v: Any, response: Any, feed_v: Any) -> Any:
-        return balance_rows(theta_v, raw_v, response, feed_v)[: N_STAGES * N_COMPONENTS]
-
-    def flux_rows(theta_v: Any, raw_v: Any, response: Any, feed_v: Any) -> Any:
-        return balance_rows(theta_v, raw_v, response, feed_v)[N_STAGES * N_COMPONENTS :]
-
-    values = np.empty((len(theta), 4), dtype=float)
+    values = np.empty((len(theta), 3), dtype=float)
     for row in range(len(theta)):
         correction = (projected[row] - raw[row]) / model.response_scale
         split = np.asarray(split_rows(theta[row], raw[row], projected[row], feed[row]), dtype=float)
         reactor = np.asarray(reactor_rows(theta[row], raw[row], projected[row], feed[row]), dtype=float)
-        flux = np.asarray(flux_rows(theta[row], raw[row], projected[row], feed[row]), dtype=float)
         values[row] = (
             np.sqrt(np.mean(correction**2)),
             np.sqrt(np.mean(split**2)),
             np.sqrt(np.mean(reactor**2)),
-            np.sqrt(np.mean(flux**2)),
         )
-    limits = [nearest_rank_95(values[:, column]) for column in range(4)]
+    limits = [nearest_rank_95(values[:, column]) for column in range(3)]
     return TrustCalibration(
         callbacks=TrustDiagnosticCallbacks(
-            split_rows=split_rows, reactor_rows=reactor_rows, flux_rows=flux_rows,
+            split_rows=split_rows, reactor_rows=reactor_rows,
         ),
         correction_limit=limits[0], split_limit=limits[1],
-        reactor_limit=limits[2], flux_limit=limits[3],
+        reactor_limit=limits[2],
         split_scale=split_scale, development_values=values,
         out_of_fold_projected=projected,
         out_of_fold_projection_accepted=projection_accepted,

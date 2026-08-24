@@ -7,7 +7,7 @@ optional: an absent case is represented explicitly, a partial case remains
 result.  The public :func:`build_reporting_tables` function is read-only.
 
 Mass-conservation and non-negativity records are gathered from both the
-untouched-test assessment and selected optimization decisions.  If a selected
+post-selection holdout assessment and selected optimization decisions.  If a selected
 response has been saved before its audit CSV, the audit is reconstructed with
 the frozen development row scales used by the projection.
 
@@ -31,8 +31,15 @@ import zipfile
 import numpy as np
 import pandas as pd
 
-from .manuscript_v3 import DECISION_LOWER, DECISION_UPPER, violation_record
+from .manuscript_v3 import (
+    DECISION_LOWER,
+    DECISION_UPPER,
+    clarifier_for_layers,
+    reduce_mechanistic_responses,
+    violation_record,
+)
 from .model import (
+    ArticleOperatingPoint,
     COMPOSITE_MATRIX,
     COMPONENTS,
     INVARIANT_MATRIX,
@@ -42,6 +49,8 @@ from .model import (
     N_STAGES,
     NOMINAL_INFLUENT,
     TSS_VECTOR,
+    mechanistic_balance_audit,
+    stability_audit,
 )
 from .projection import NetworkLayout, fit_network_row_scales
 
@@ -54,6 +63,7 @@ OBJECTIVE_COMPONENT_NAMES: tuple[str, ...] = (
 )
 ENGINEERING_QUANTITY_NAMES: tuple[str, ...] = (
     "solids_inventory",
+    "clarifier_solids_inventory",
     "external_solids_loss",
     "srt_d",
     "sor_m_d",
@@ -67,7 +77,7 @@ ENGINEERING_QUANTITY_NAMES: tuple[str, ...] = (
 )
 TRUST_DIAGNOSTICS: tuple[str, ...] = (
     "correction", "regularized_leverage", "particulate_split",
-    "reactor_residual", "clarifier_flux",
+    "reactor_residual",
 )
 FAILURE_CLASSES: tuple[str, ...] = (
     "no accepted optimization start",
@@ -110,7 +120,29 @@ class StudyGeometry:
 
     @property
     def response_count(self) -> int:
+        """Width of the shared reduced operational response."""
+
+        return self.surrogate_response_count
+
+    @property
+    def surrogate_response_count(self) -> int:
+        return (N_STAGES + 3) * N_COMPONENTS + 1
+
+    @property
+    def mechanistic_response_count(self) -> int:
         return (N_STAGES + 3) * N_COMPONENTS + self.layer_count
+
+    @property
+    def mechanistic_state_count(self) -> int:
+        return N_STAGES * N_COMPONENTS + self.layer_count
+
+    @property
+    def inventory_index(self) -> int:
+        return (N_STAGES + 3) * N_COMPONENTS
+
+    @property
+    def clarifier_volume_m3(self) -> float:
+        return self.layer_count * self.layer_volume_m3
 
 
 @dataclass(frozen=True)
@@ -383,17 +415,20 @@ def _expected_cases(
 
 
 def _infer_geometry(run_directory: Path, warnings: list[str]) -> StudyGeometry:
-    candidates: list[int] = []
-    predictions = _safe_npz(run_directory / "predictions" / "untouched_test.npz", warnings)
-    for value in predictions.values():
-        if value.ndim == 2:
-            candidates.append(int(value.shape[1]))
+    contract = _safe_json(run_directory / "inputs" / "contract.json", warnings)
+    profile = _mapping(contract.get("profile")) if contract is not None else None
+    if profile is not None:
+        layer_count = _as_int(profile.get("layer_count"))
+        if layer_count is not None and layer_count >= 3:
+            return StudyGeometry(layer_count, 6_000.0 / layer_count)
+
+    # The statistical response has 161 coordinates for every layer count and
+    # therefore cannot identify the mechanistic discretization.  Infer L only
+    # from a full, layer-resolved generation artifact.
     development = _accepted_development(run_directory, warnings)
     targets = development.get("targets")
     if targets is not None and targets.ndim == 2:
-        candidates.append(int(targets.shape[1]))
-    for count in candidates:
-        layers = count - (N_STAGES + 3) * N_COMPONENTS
+        layers = int(targets.shape[1]) - (N_STAGES + 3) * N_COMPONENTS
         if layers >= 3:
             return StudyGeometry(layers, 6_000.0 / layers)
     warnings.append("Could not infer the clarifier layer count; defaulted to the 10-layer article geometry.")
@@ -542,12 +577,42 @@ def _selected_theta(snapshot: RouteSnapshot) -> np.ndarray | None:
     return values if values.shape == (len(CONTROL_NAMES),) and np.all(np.isfinite(values)) else None
 
 
+def _as_reduced_response(
+    value: Any,
+    geometry: StudyGeometry,
+    *,
+    allow_mechanistic: bool,
+) -> np.ndarray | None:
+    """Return a finite reduced response without inventing a layer profile."""
+
+    candidate = np.asarray(value, dtype=float)
+    if candidate.shape == (geometry.surrogate_response_count,) and np.all(
+        np.isfinite(candidate)
+    ):
+        return candidate
+    if (
+        allow_mechanistic
+        and candidate.shape == (geometry.mechanistic_response_count,)
+        and np.all(np.isfinite(candidate))
+    ):
+        return reduce_mechanistic_responses(
+            candidate,
+            geometry.layer_count,
+            layer_volumes_m3=np.full(
+                geometry.layer_count, geometry.layer_volume_m3, dtype=float,
+            ),
+        )
+    return None
+
+
 def _selected_response_map(snapshot: RouteSnapshot, geometry: StudyGeometry) -> dict[str, np.ndarray]:
     responses: dict[str, np.ndarray] = {}
 
-    def retain(name: str, value: Any) -> None:
-        candidate = np.asarray(value, dtype=float)
-        if candidate.shape == (geometry.response_count,) and np.all(np.isfinite(candidate)):
+    def retain(name: str, value: Any, *, allow_mechanistic: bool = False) -> None:
+        candidate = _as_reduced_response(
+            value, geometry, allow_mechanistic=allow_mechanistic,
+        )
+        if candidate is not None:
             responses[name] = candidate
 
     if snapshot.route == "surrogate":
@@ -561,14 +626,26 @@ def _selected_response_map(snapshot: RouteSnapshot, geometry: StudyGeometry) -> 
                     retain(name, final[name])
     else:
         if "response" in snapshot.selected_arrays:
-            retain("smooth", snapshot.selected_arrays["response"])
+            retain(
+                "smooth", snapshot.selected_arrays["response"],
+                allow_mechanistic=True,
+            )
         for name in ("raw", "projected", "smooth", "reference"):
             if name in snapshot.selected_arrays:
-                retain(name, snapshot.selected_arrays[name])
+                retain(
+                    name, snapshot.selected_arrays[name],
+                    allow_mechanistic=name in {"smooth", "reference"},
+                )
     if "response" in snapshot.reference_arrays:
-        retain("reference", snapshot.reference_arrays["response"])
+        retain(
+            "reference", snapshot.reference_arrays["response"],
+            allow_mechanistic=True,
+        )
     elif "reference" in snapshot.reference_arrays:
-        retain("reference", snapshot.reference_arrays["reference"])
+        retain(
+            "reference", snapshot.reference_arrays["reference"],
+            allow_mechanistic=True,
+        )
     return responses
 
 
@@ -750,7 +827,7 @@ def _active_constraint_table(snapshots: Sequence[RouteSnapshot]) -> pd.DataFrame
     )
     trust_names = (
         "correction", "regularized_leverage", "particulate_split",
-        "reactor_residual", "clarifier_flux",
+        "reactor_residual",
     )
     rows: list[dict[str, Any]] = []
     for snapshot in snapshots:
@@ -820,7 +897,7 @@ def _quality_scale(run_directory: Path, geometry: StudyGeometry, warnings: list[
     if (
         decisions is None or targets is None or decisions.ndim != 2 or targets.ndim != 2
         or len(decisions) != len(targets) or decisions.shape[1] < 7
-        or targets.shape[1] != geometry.response_count
+        or targets.shape[1] != geometry.mechanistic_response_count
     ):
         warnings.append("Development targets were unavailable for the four objective quality scales.")
         return np.full(4, math.nan)
@@ -840,14 +917,18 @@ def _response_quantities(
     geometry: StudyGeometry,
     quality_scale: np.ndarray,
 ) -> tuple[dict[str, float], np.ndarray, float]:
-    layer_start = (N_STAGES + 3) * N_COMPONENTS
+    if response.shape != (geometry.surrogate_response_count,):
+        raise ValueError(
+            "response must use the reduced operational-response geometry"
+        )
+    shared_count = (N_STAGES + 3) * N_COMPONENTS
     reactors = [
         response[(index + 1) * N_COMPONENTS : (index + 2) * N_COMPONENTS]
         for index in range(N_STAGES)
     ]
     g_e = response[(N_STAGES + 1) * N_COMPONENTS : (N_STAGES + 2) * N_COMPONENTS]
-    g_u = response[(N_STAGES + 2) * N_COMPONENTS : layer_start]
-    layers = response[layer_start:]
+    g_u = response[(N_STAGES + 2) * N_COMPONENTS : shared_count]
+    clarifier_inventory = float(response[geometry.inventory_index])
     hrt, r_r, waste = float(theta[0]), float(theta[5]), float(theta[6])
     q_c, q_u, q_e = 1.0 + r_r, r_r + waste, 1.0 - waste
     c_e, c_u = g_e / q_e, g_u / q_u
@@ -857,13 +938,14 @@ def _response_quantities(
     external_loss = effluent_tss_flow + waste * underflow_tss
     stage_volume = geometry.fresh_flow_m3_d * hrt / (24.0 * N_STAGES)
     inventory = stage_volume * sum(float(TSS_VECTOR @ reactor) for reactor in reactors)
-    inventory += geometry.layer_volume_m3 * float(np.sum(layers))
+    inventory += clarifier_inventory
     srt = inventory / (geometry.fresh_flow_m3_d * external_loss) if external_loss != 0.0 else math.nan
     sor = geometry.fresh_flow_m3_d * q_e / geometry.clarifier_area_m2
     slr = 1.0e-3 * geometry.fresh_flow_m3_d * q_c * feed_tss / geometry.clarifier_area_m2
     composites = COMPOSITE_MATRIX @ c_e
     quantities = {
         "solids_inventory": inventory,
+        "clarifier_solids_inventory": clarifier_inventory,
         "external_solids_loss": external_loss,
         "srt_d": srt,
         "sor_m_d": sor,
@@ -977,6 +1059,54 @@ def _profile_rows(
     snapshots: Sequence[RouteSnapshot],
     geometry: StudyGeometry,
 ) -> pd.DataFrame:
+    """Return shared reduced profiles plus explicitly mechanistic layer profiles.
+
+    Raw and projected surrogate responses contain only aggregate clarifier
+    inventory.  Layer rows are emitted only when a saved direct or exact
+    mechanistic artifact actually contains the layer coordinates.
+    """
+
+    def layer_profiles(snapshot: RouteSnapshot) -> dict[str, np.ndarray]:
+        profiles: dict[str, np.ndarray] = {}
+
+        def from_response(method: str, value: Any) -> None:
+            candidate = np.asarray(value, dtype=float)
+            if (
+                method not in profiles
+                and candidate.shape == (geometry.mechanistic_response_count,)
+                and np.all(np.isfinite(candidate))
+            ):
+                profiles[method] = candidate[-geometry.layer_count :]
+
+        def from_state(method: str, value: Any) -> None:
+            candidate = np.asarray(value, dtype=float)
+            if (
+                method not in profiles
+                and candidate.shape == (geometry.mechanistic_state_count,)
+                and np.all(np.isfinite(candidate))
+            ):
+                profiles[method] = candidate[-geometry.layer_count :]
+
+        if snapshot.route == "direct":
+            for key in (
+                "optimizer_native_full", "optimizer_native", "response", "smooth",
+            ):
+                if key in snapshot.selected_arrays:
+                    from_response("smooth", snapshot.selected_arrays[key])
+            if "state" in snapshot.selected_arrays:
+                from_state("smooth", snapshot.selected_arrays["state"])
+        for key in ("exact_reference_full", "exact_reference", "reference"):
+            if key in snapshot.selected_arrays:
+                from_response("reference", snapshot.selected_arrays[key])
+        for key in ("response", "exact_reference", "reference"):
+            if key in snapshot.reference_arrays:
+                from_response("reference", snapshot.reference_arrays[key])
+        for index in (1, 2):
+            key = f"exact_state_start_{index}"
+            if key in snapshot.selected_arrays:
+                from_state(f"exact_mechanistic_start_{index}", snapshot.selected_arrays[key])
+        return profiles
+
     rows: list[dict[str, Any]] = []
     composite_names = ("COD", "TN", "TP", "TSS")
     for snapshot in snapshots:
@@ -1014,7 +1144,15 @@ def _profile_rows(
                         "quantity": quantity,
                         "value": float(value),
                     })
-            layers = response[(N_STAGES + 3) * N_COMPONENTS :]
+            rows.append({
+                "case": snapshot.case,
+                "decision_route": snapshot.route,
+                "response_method": method,
+                "location": "clarifier_inventory",
+                "quantity": "TSS_mass",
+                "value": float(response[geometry.inventory_index]),
+            })
+        for method, layers in layer_profiles(snapshot).items():
             for index, value in enumerate(layers):
                 rows.append({
                     "case": snapshot.case,
@@ -1090,26 +1228,64 @@ def _equivalence_table(snapshots: Sequence[RouteSnapshot]) -> pd.DataFrame:
 def _trust_table(run_directory: Path, snapshots: Sequence[RouteSnapshot], warnings: list[str]) -> pd.DataFrame:
     limits = _safe_json(run_directory / "metrics" / "trust_limits.json", warnings) or {}
     development = _safe_csv(run_directory / "metrics" / "trust_development_oof.csv", warnings)
-    test = _safe_csv(run_directory / "metrics" / "trust_untouched_test.csv", warnings)
+    contract = _safe_json(run_directory / "inputs" / "contract.json", warnings)
+    response_schema = (
+        _mapping(contract.get("response_schema")) if contract is not None else None
+    )
+    runner_schema = _as_int(contract.get("runner_schema")) if contract is not None else None
+    reduced_run = bool(
+        (runner_schema is not None and runner_schema >= 10)
+        or (
+            response_schema is not None
+            and response_schema.get("name") == "clarifier_inventory_v1"
+        )
+    )
+    holdout_path = run_directory / "metrics" / "trust_post_selection_holdout.csv"
+    legacy_holdout = run_directory / "metrics" / "trust_untouched_test.csv"
+    if holdout_path.is_file():
+        test = _safe_csv(holdout_path, warnings)
+    elif reduced_run:
+        test = pd.DataFrame()
+        if legacy_holdout.is_file():
+            warnings.append(
+                "Ignored superseded schema-9 trust_untouched_test.csv for the "
+                "schema-10 reduced-response run."
+            )
+    else:
+        test = _safe_csv(legacy_holdout, warnings)
     aliases = {
         "correction": "correction",
         "regularized_leverage": "regularized_leverage",
         "particulate_split": "particulate_split",
         "reactor_residual": "reactor_residual",
-        "clarifier_flux": "clarifier_flux",
     }
     selected_values: dict[str, list[float]] = {name: [] for name in TRUST_DIAGNOSTICS}
-    raw_names = ("correction", "regularized_leverage", "particulate_split", "reactor_residual", "clarifier_flux")
+    raw_names = (
+        "correction", "regularized_leverage", "particulate_split",
+        "reactor_residual",
+    )
+    required_columns = set(raw_names)
+    for label, frame in (("development", development), ("post-selection holdout", test)):
+        if frame.empty:
+            continue
+        if "clarifier_flux" in frame or not required_columns.issubset(frame.columns):
+            warnings.append(
+                f"Ignored incompatible {label} trust diagnostics; the reduced "
+                "response requires exactly the four active diagnostic columns."
+            )
+            if label == "development":
+                development = pd.DataFrame()
+            else:
+                test = pd.DataFrame()
     for snapshot in snapshots:
         if snapshot.route != "surrogate":
             continue
         final = _surrogate_final(snapshot)
         values = np.asarray(final.get("trust_values", []), dtype=float) if final is not None else np.asarray([])
-        if values.shape == (5,) and np.all(np.isfinite(values)):
+        if values.shape == (4,) and np.all(np.isfinite(values)):
             converted = np.asarray([
                 math.sqrt(max(0.0, values[0])), values[1],
                 math.sqrt(max(0.0, values[2])), math.sqrt(max(0.0, values[3])),
-                math.sqrt(max(0.0, values[4])),
             ])
             for name, value in zip(raw_names, converted, strict=True):
                 selected_values[name].append(float(value))
@@ -1167,15 +1343,21 @@ def _reconstruct_selected_violations(
         or decisions.ndim != 2 or influents.ndim != 2 or targets.ndim != 2
         or decisions.shape != (len(targets), 7)
         or influents.shape != (len(targets), N_COMPONENTS)
-        or targets.shape[1] != geometry.response_count
-        or state_scale.shape != (geometry.response_count,)
+        or targets.shape[1] != geometry.mechanistic_response_count
+        or state_scale.shape != (geometry.surrogate_response_count,)
     ):
         warnings.append("Selected-response physical audits could not be reconstructed from frozen scales.")
         return pd.DataFrame()
     layout = NetworkLayout(layer_count=geometry.layer_count)
     try:
+        reduced_targets = reduce_mechanistic_responses(
+            targets, geometry.layer_count,
+            layer_volumes_m3=np.full(
+                geometry.layer_count, geometry.layer_volume_m3, dtype=float,
+            ),
+        )
         row_scales = fit_network_row_scales(
-            targets,
+            reduced_targets,
             influents,
             internal_recycle=decisions[:, 4],
             return_recycle=decisions[:, 5],
@@ -1183,6 +1365,7 @@ def _reconstruct_selected_violations(
             invariant_operator=INVARIANT_MATRIX,
             tss_weights=TSS_VECTOR,
             layout=layout,
+            clarifier_volume_m3=geometry.clarifier_volume_m3,
             minimum_scale=1.0,
         )
     except (ValueError, FloatingPointError, np.linalg.LinAlgError) as exc:
@@ -1228,6 +1411,11 @@ def _physical_detail(
         warnings,
     )
     if not combined.empty:
+        if "analysis_scope" in combined:
+            combined = combined.copy()
+            combined["analysis_scope"] = combined["analysis_scope"].replace(
+                {"untouched_test": "post_selection_holdout"}
+            )
         return combined
     assessment = _safe_csv(run_directory / "metrics" / "physical_violations_assessment.csv", warnings)
     selected = _safe_csv(
@@ -1237,7 +1425,7 @@ def _physical_detail(
     frames: list[pd.DataFrame] = []
     if not assessment.empty:
         item = assessment.copy()
-        item.insert(0, "analysis_scope", "untouched_test")
+        item.insert(0, "analysis_scope", "post_selection_holdout")
         frames.append(item)
     if not selected.empty:
         item = selected.copy()
@@ -1315,15 +1503,22 @@ def _audited_physical_rows(
 
 
 def _physical_summary(detail: pd.DataFrame) -> pd.DataFrame:
+    if "analysis_scope" in detail:
+        detail = detail.copy()
+        detail["analysis_scope"] = detail["analysis_scope"].replace(
+            {"untouched_test": "post_selection_holdout"}
+        )
     families = (
         "mass_mixer_component_max", "mass_reactor_invariant_max",
         "mass_clarifier_component_max", "mass_soluble_passthrough_max",
-        "mass_tss_endpoint_max", "mass_external_invariant_max",
+        "mass_external_invariant_max",
         "mass_physical_residual_max", "nonlinear_balance_residual_max",
         "rate_nonnegativity_violation_max",
+        "particulate_densification_violation_max",
+        "clarifier_inventory_bound_violation_max",
     )
     required = {
-        "untouched_test": ("raw", "projected", "mechanistic"),
+        "post_selection_holdout": ("raw", "projected", "mechanistic"),
         "selected_decision_common_reference": (
             "raw", "projected", "optimizer_native",
             "exact_mechanistic_start_1", "exact_mechanistic_start_2",
@@ -1452,6 +1647,470 @@ def _physical_summary(detail: pd.DataFrame) -> pd.DataFrame:
         row.update({column: _maximum(audited, column) for column in families})
         rows.append(row)
     return pd.DataFrame(rows)
+
+
+_LAYER_ENVELOPE_TOLERANCE = 1.0e-10
+_LAYER_BALANCE_TOLERANCE = 1.0e-8
+_STABILITY_MARGIN = 1.0e-8
+_STABILITY_AGREEMENT_TOLERANCE = 1.0e-6
+
+
+def _diagnostic_bool(value: Any) -> bool | None:
+    direct = _as_bool(value)
+    if direct is not None:
+        return direct
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes"}:
+            return True
+        if normalized in {"false", "0", "no"}:
+            return False
+    return None
+
+
+def _full_state_nonlinear_record(
+    state: Any,
+    theta: Any,
+    influent: Any,
+    geometry: StudyGeometry,
+    *,
+    saved_diagnostics: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Audit an actually saved layer state without inferring a layer profile."""
+
+    values = np.asarray(state, dtype=float)
+    controls = np.asarray(theta, dtype=float)
+    feed = np.asarray(influent, dtype=float)
+    if (
+        values.shape != (geometry.mechanistic_state_count,)
+        or controls.shape != (len(CONTROL_NAMES),)
+        or feed.shape != (N_COMPONENTS,)
+        or not all(np.all(np.isfinite(item)) for item in (values, controls, feed))
+    ):
+        raise ValueError("full-state nonlinear audit inputs are incomplete")
+    clarifier = clarifier_for_layers(geometry.layer_count)
+    operating = ArticleOperatingPoint(*map(float, controls))
+    balance = mechanistic_balance_audit(
+        values,
+        operating,
+        feed,
+        clarifier,
+        balance_tolerance=_LAYER_BALANCE_TOLERANCE,
+        state_tolerance=_LAYER_ENVELOPE_TOLERANCE,
+    )
+    family_maxima = _mapping(balance.get("balance_family_maxima")) or {}
+    family_counts = _mapping(balance.get("balance_family_violation_counts")) or {}
+    layers = values[-geometry.layer_count :]
+    envelope_rows = (
+        np.concatenate((layers[0] - layers[1:-1], layers[1:-1] - layers[-1]))
+        if geometry.layer_count > 2 else np.empty(0, dtype=float)
+    )
+    envelope_violation = np.maximum(envelope_rows, 0.0)
+
+    diagnostics = saved_diagnostics or {}
+    largest_eigenvalue = _as_float(diagnostics.get("largest_real_eigenvalue"))
+    stability_agreement = _as_float(
+        diagnostics.get("stability_eigenvalue_agreement")
+    )
+    locally_stable = _diagnostic_bool(diagnostics.get("locally_stable"))
+    if not math.isfinite(largest_eigenvalue) or not math.isfinite(stability_agreement):
+        try:
+            stability = stability_audit(values, operating, feed, clarifier)
+        except (ValueError, RuntimeError, FloatingPointError, np.linalg.LinAlgError):
+            stability = {}
+        if not math.isfinite(largest_eigenvalue):
+            largest_eigenvalue = _as_float(stability.get("largest_real_eigenvalue"))
+        if not math.isfinite(stability_agreement):
+            stability_agreement = _as_float(
+                stability.get("rightmost_eigenvalue_agreement")
+            )
+        if locally_stable is None:
+            locally_stable = _diagnostic_bool(stability.get("passed"))
+    stability_available = bool(
+        math.isfinite(largest_eigenvalue) and math.isfinite(stability_agreement)
+    )
+    stability_violation = (
+        max(
+            0.0,
+            largest_eigenvalue + _STABILITY_MARGIN,
+            stability_agreement - _STABILITY_AGREEMENT_TOLERANCE,
+        )
+        if stability_available else math.nan
+    )
+    stability_failed = bool(
+        stability_available
+        and (
+            largest_eigenvalue > -_STABILITY_MARGIN
+            or stability_agreement > _STABILITY_AGREEMENT_TOLERANCE
+            or locally_stable is False
+        )
+    )
+    return {
+        "layer_envelope_violation_max": float(
+            np.max(envelope_violation, initial=0.0)
+        ),
+        "layer_envelope_violation_count": int(np.count_nonzero(
+            envelope_violation > _LAYER_ENVELOPE_TOLERANCE
+        )),
+        "layer_residual_max": _as_float(family_maxima.get("clarifier_layer")),
+        "layer_residual_violation_count": int(
+            _as_int(family_counts.get("clarifier_layer")) or 0
+        ),
+        "stability_available": stability_available,
+        "locally_stable": locally_stable,
+        "largest_real_eigenvalue": largest_eigenvalue,
+        "stability_agreement": stability_agreement,
+        "stability_violation_max": stability_violation,
+        "stability_failed": stability_failed,
+    }
+
+
+def _diagnostic_lookup(frame: pd.DataFrame, count: int) -> dict[int, Mapping[str, Any]]:
+    if frame.empty:
+        return {}
+    for column in ("accepted_slot", "row"):
+        if column not in frame:
+            continue
+        keys = pd.to_numeric(frame[column], errors="coerce")
+        result = {
+            int(key): frame.iloc[position].to_dict()
+            for position, key in enumerate(keys)
+            if math.isfinite(float(key)) and 0 <= int(key) < count
+        }
+        if result:
+            return result
+    if len(frame) == count:
+        return {index: frame.iloc[index].to_dict() for index in range(count)}
+    return {}
+
+
+def _saved_stability_diagnostics(
+    row: Mapping[str, Any] | None,
+    start: int,
+) -> Mapping[str, Any] | None:
+    if row is None:
+        return None
+    return {
+        "largest_real_eigenvalue": row.get(
+            f"largest_real_eigenvalue_start_{start}"
+        ),
+        "stability_eigenvalue_agreement": row.get(
+            f"stability_agreement_start_{start}"
+        ),
+        "locally_stable": row.get(f"locally_stable_start_{start}"),
+    }
+
+
+def _generation_nonlinear_records(
+    run_directory: Path,
+    geometry: StudyGeometry,
+    warnings: list[str],
+) -> tuple[list[dict[str, Any]], int]:
+    records: list[dict[str, Any]] = []
+    expected = 0
+    effective = _effective_design(run_directory, warnings)
+    for block in GENERATION_BLOCKS:
+        directory = run_directory / "datasets" / block
+        accepted_path = directory / "mechanistic_accepted_v3.npz"
+        fallback_path = directory / "mechanistic_rows_v3.npz"
+        arrays = _safe_npz(
+            accepted_path if accepted_path.is_file() else fallback_path,
+            warnings,
+        )
+        targets = arrays.get("targets")
+        state_arrays = {
+            start: arrays.get(f"states_start_{start}")
+            for start in (1, 2)
+        }
+        lengths = [
+            len(value) for value in (targets, *state_arrays.values())
+            if value is not None and value.ndim == 2
+        ]
+        if not lengths:
+            continue
+        count = max(lengths)
+        expected += 2 * count
+        accepted_inputs = _safe_npz(directory / "accepted_inputs.npz", warnings)
+        decisions = accepted_inputs.get("decisions")
+        influents = accepted_inputs.get("influents")
+        if decisions is None:
+            decisions = effective.get(f"{block}_decisions")
+        if influents is None:
+            influents = effective.get(f"{block}_influents")
+        diagnostics_path = directory / "accepted_diagnostics.csv"
+        if not diagnostics_path.is_file():
+            diagnostics_path = directory / "mechanistic_diagnostics.csv"
+        diagnostic_rows = _diagnostic_lookup(
+            _safe_csv(diagnostics_path, warnings), count,
+        )
+        if (
+            decisions is None or influents is None
+            or decisions.shape != (count, len(CONTROL_NAMES))
+            or influents.shape != (count, N_COMPONENTS)
+        ):
+            warnings.append(
+                f"Could not bind {block} full mechanistic states to accepted inputs."
+            )
+            continue
+        for start, states in state_arrays.items():
+            if states is None or states.shape != (
+                count, geometry.mechanistic_state_count,
+            ):
+                continue
+            for index in range(count):
+                try:
+                    record = _full_state_nonlinear_record(
+                        states[index], decisions[index], influents[index], geometry,
+                        saved_diagnostics=_saved_stability_diagnostics(
+                            diagnostic_rows.get(index), start,
+                        ),
+                    )
+                except (ValueError, RuntimeError, FloatingPointError, np.linalg.LinAlgError):
+                    continue
+                record.update({
+                    "block": block,
+                    "row": index,
+                    "start": start,
+                })
+                records.append(record)
+    return records, expected
+
+
+def _exact_replay_nonlinear_records(
+    run_directory: Path,
+    snapshots: Sequence[RouteSnapshot],
+    expected_cases: Sequence[str],
+    geometry: StudyGeometry,
+    warnings: list[str],
+) -> tuple[list[dict[str, Any]], int]:
+    records: list[dict[str, Any]] = []
+    expected = 0
+    feeds = _case_influents(run_directory, expected_cases, warnings)
+    for snapshot in snapshots:
+        payload = snapshot.casewise_reference
+        arrays = snapshot.selected_arrays
+        has_checkpoint = bool(
+            payload is not None and payload.get("candidate_available") is True
+        )
+        has_state = any(
+            key in arrays for key in ("exact_state_start_1", "exact_state_start_2")
+        )
+        if not has_checkpoint and not has_state:
+            continue
+        expected += 2
+        theta = _selected_theta(snapshot)
+        feed = feeds.get(snapshot.case)
+        reference = _mapping(payload.get("reference")) if payload is not None else None
+        for start in (1, 2):
+            state = arrays.get(f"exact_state_start_{start}")
+            diagnostics = (
+                _mapping(reference.get(f"diagnostics_start_{start}"))
+                if reference is not None else None
+            )
+            try:
+                record = _full_state_nonlinear_record(
+                    state, theta, feed, geometry,
+                    saved_diagnostics=diagnostics,
+                )
+            except (ValueError, RuntimeError, FloatingPointError, np.linalg.LinAlgError):
+                continue
+            record.update({
+                "case": snapshot.case,
+                "route": snapshot.route,
+                "start": start,
+            })
+            records.append(record)
+    return records, expected
+
+
+def _full_response_state(
+    response: Any,
+    geometry: StudyGeometry,
+) -> np.ndarray | None:
+    """Extract reactors and saved layers from a full mechanistic response."""
+
+    values = np.asarray(response, dtype=float)
+    if values.shape != (geometry.mechanistic_response_count,) or not np.all(
+        np.isfinite(values)
+    ):
+        return None
+    reactors = values[N_COMPONENTS : (N_STAGES + 1) * N_COMPONENTS]
+    layers = values[-geometry.layer_count :]
+    return np.concatenate((reactors, layers))
+
+
+def _smooth_native_nonlinear_records(
+    run_directory: Path,
+    snapshots: Sequence[RouteSnapshot],
+    expected_cases: Sequence[str],
+    geometry: StudyGeometry,
+    warnings: list[str],
+) -> tuple[list[dict[str, Any]], int]:
+    records: list[dict[str, Any]] = []
+    expected = 0
+    feeds = _case_influents(run_directory, expected_cases, warnings)
+    for snapshot in snapshots:
+        if snapshot.route != "direct":
+            continue
+        full_response = None
+        for key in ("optimizer_native_full", "response", "optimized_response"):
+            if key in snapshot.selected_arrays:
+                full_response = _full_response_state(
+                    snapshot.selected_arrays[key], geometry,
+                )
+                if full_response is not None:
+                    break
+        if full_response is None:
+            if _selected_theta(snapshot) is not None:
+                expected += 1
+            continue
+        expected += 1
+        try:
+            record = _full_state_nonlinear_record(
+                full_response,
+                _selected_theta(snapshot),
+                feeds.get(snapshot.case),
+                geometry,
+            )
+        except (ValueError, RuntimeError, FloatingPointError, np.linalg.LinAlgError):
+            continue
+        record.update({"case": snapshot.case, "route": snapshot.route})
+        records.append(record)
+    return records, expected
+
+
+def _nonlinear_summary_row(
+    source: str,
+    records: Sequence[Mapping[str, Any]],
+    expected_count: int,
+    *,
+    applicable: bool,
+) -> dict[str, Any]:
+    if not applicable:
+        return {
+            "source": source,
+            "state_scope": "reduced_response_without_layers",
+            "applicability": "not_applicable_no_layer_state",
+            "availability": "not_applicable",
+            "record_count": expected_count,
+            "audited_record_count": 0,
+            "unavailable_record_count": 0,
+            "audit_coverage_fraction": math.nan,
+            "layer_envelope_tolerance": _LAYER_ENVELOPE_TOLERANCE,
+            "layer_envelope_violation_max": math.nan,
+            "layer_envelope_violation_count": math.nan,
+            "layer_residual_tolerance": _LAYER_BALANCE_TOLERANCE,
+            "layer_residual_max": math.nan,
+            "layer_residual_violation_count": math.nan,
+            "stability_margin_d_inv": -_STABILITY_MARGIN,
+            "stability_agreement_tolerance_d_inv": _STABILITY_AGREEMENT_TOLERANCE,
+            "stability_audited_record_count": 0,
+            "largest_real_eigenvalue_max": math.nan,
+            "stability_agreement_max": math.nan,
+            "stability_violation_max": math.nan,
+            "stability_violation_count": math.nan,
+        }
+    audited_count = len(records)
+    unavailable_count = max(0, expected_count - audited_count)
+    stability_records = [
+        record for record in records if record.get("stability_available") is True
+    ]
+    availability = (
+        "available" if expected_count > 0 and audited_count == expected_count
+        else "partially_available" if audited_count
+        else "not_available"
+    )
+    return {
+        "source": source,
+        "state_scope": "saved_full_mechanistic_state",
+        "applicability": "applicable",
+        "availability": availability,
+        "record_count": expected_count,
+        "audited_record_count": audited_count,
+        "unavailable_record_count": unavailable_count,
+        "audit_coverage_fraction": (
+            audited_count / expected_count if expected_count else math.nan
+        ),
+        "layer_envelope_tolerance": _LAYER_ENVELOPE_TOLERANCE,
+        "layer_envelope_violation_max": max(
+            (_as_float(item.get("layer_envelope_violation_max")) for item in records),
+            default=math.nan,
+        ),
+        "layer_envelope_violation_count": sum(
+            int(item.get("layer_envelope_violation_count", 0)) for item in records
+        ),
+        "layer_residual_tolerance": _LAYER_BALANCE_TOLERANCE,
+        "layer_residual_max": max(
+            (_as_float(item.get("layer_residual_max")) for item in records),
+            default=math.nan,
+        ),
+        "layer_residual_violation_count": sum(
+            int(item.get("layer_residual_violation_count", 0)) for item in records
+        ),
+        "stability_margin_d_inv": -_STABILITY_MARGIN,
+        "stability_agreement_tolerance_d_inv": _STABILITY_AGREEMENT_TOLERANCE,
+        "stability_audited_record_count": len(stability_records),
+        "largest_real_eigenvalue_max": max(
+            (_as_float(item.get("largest_real_eigenvalue")) for item in stability_records),
+            default=math.nan,
+        ),
+        "stability_agreement_max": max(
+            (_as_float(item.get("stability_agreement")) for item in stability_records),
+            default=math.nan,
+        ),
+        "stability_violation_max": max(
+            (_as_float(item.get("stability_violation_max")) for item in stability_records),
+            default=math.nan,
+        ),
+        "stability_violation_count": sum(
+            bool(item.get("stability_failed")) for item in stability_records
+        ),
+    }
+
+
+def _scope_specific_nonlinear_audit(
+    run_directory: Path,
+    snapshots: Sequence[RouteSnapshot],
+    expected_cases: Sequence[str],
+    geometry: StudyGeometry,
+    physical_detail: pd.DataFrame,
+    warnings: list[str],
+) -> pd.DataFrame:
+    """Summarize nonlinear audits only where saved layer states exist."""
+
+    def reduced_count(method: str) -> int:
+        return int(physical_detail["method"].eq(method).sum()) if (
+            "method" in physical_detail
+        ) else 0
+
+    smooth, smooth_expected = _smooth_native_nonlinear_records(
+        run_directory, snapshots, expected_cases, geometry, warnings,
+    )
+    generation, generation_expected = _generation_nonlinear_records(
+        run_directory, geometry, warnings,
+    )
+    replay, replay_expected = _exact_replay_nonlinear_records(
+        run_directory, snapshots, expected_cases, geometry, warnings,
+    )
+    return pd.DataFrame([
+        _nonlinear_summary_row(
+            "raw_reduced", (), reduced_count("raw"), applicable=False,
+        ),
+        _nonlinear_summary_row(
+            "projected_reduced", (), reduced_count("projected"), applicable=False,
+        ),
+        _nonlinear_summary_row(
+            "smooth_direct_native", smooth, smooth_expected, applicable=True,
+        ),
+        _nonlinear_summary_row(
+            "exact_mechanistic_generation", generation, generation_expected,
+            applicable=True,
+        ),
+        _nonlinear_summary_row(
+            "exact_mechanistic_replay", replay, replay_expected,
+            applicable=True,
+        ),
+    ])
 
 
 def _projection_failed(snapshot: RouteSnapshot) -> bool:
@@ -1904,7 +2563,11 @@ def _scenario_comparison(
 def _model_response_scale(run_directory: Path, geometry: StudyGeometry, warnings: list[str]) -> np.ndarray | None:
     model = _safe_npz(run_directory / "models" / "ridge_surrogate.npz", warnings)
     scale = model.get("response_scale")
-    if scale is None or scale.shape != (geometry.response_count,) or np.any(scale <= 0.0):
+    if (
+        scale is None
+        or scale.shape != (geometry.surrogate_response_count,)
+        or np.any(scale <= 0.0)
+    ):
         return None
     return np.asarray(scale, dtype=float)
 
@@ -1950,11 +2613,17 @@ def build_reporting_tables(
         run, snapshots, cases, geometry, warnings,
     )
     physical_detail = _physical_detail(run, reconstructed, warnings)
+    nonlinear_audit = _scope_specific_nonlinear_audit(
+        run, snapshots, cases, geometry, physical_detail, warnings,
+    )
     case_status, failure_accounting = _case_and_failure_tables(snapshots, cases)
     generation = _generation_tables(run, warnings)
     timing_summary, timing_workload = _timing_tables(run, snapshots, warnings)
     ridge = _safe_csv(run / "metrics" / "ridge_cross_validation.csv", warnings)
-    prediction = _safe_csv(run / "metrics" / "untouched_prediction_metrics.csv", warnings)
+    prediction_path = run / "metrics" / "post_selection_prediction_metrics.csv"
+    if not prediction_path.is_file():
+        prediction_path = run / "metrics" / "untouched_prediction_metrics.csv"
+    prediction = _safe_csv(prediction_path, warnings)
     projection = _safe_csv(run / "metrics" / "projection_qp_diagnostics.csv", warnings)
     reference_evaluation = _safe_csv(
         run / "metrics" / "selected_candidate_reference_evaluation.csv", warnings,
@@ -1992,6 +2661,7 @@ def build_reporting_tables(
         "timing_workload": timing_workload,
         "physical_violation_detail": physical_detail,
         "physical_violation_summary": _physical_summary(physical_detail),
+        "scope_specific_nonlinear_audit": nonlinear_audit,
     }
     return ReportingBundle(run, cases, tables, tuple(dict.fromkeys(warnings)))
 

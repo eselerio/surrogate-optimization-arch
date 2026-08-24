@@ -18,7 +18,7 @@ import pandas as pd
 from closed_loop.model import COMPONENTS, COMPOSITE_MATRIX, TSS_VECTOR
 
 
-RUN = ROOT / "results" / "article_v3" / "article_full_50000_003"
+RUN = ROOT / "results" / "article_v3" / "article_full_50000_reduced_001"
 TABLES = RUN / "report" / "tables"
 OUT = RUN / "report" / "figures" / "requested_comparisons"
 OUT.mkdir(parents=True, exist_ok=True)
@@ -141,15 +141,28 @@ for ax, (column, label, lower_better) in zip(axes, metrics, strict=True):
     ax.set_title(label + (" (lower is better)" if lower_better else " (higher is better)"))
     ax.set_ylabel(label)
     ax.set_ylim(0, max(values) * 1.22)
-fig.suptitle("Q1. Complete-response prediction on the 3,343-row holdout set", fontsize=14)
+fig.suptitle("Q1. Reduced-response prediction on the 3,343-row post-selection holdout", fontsize=14)
 fig.tight_layout(rect=(0, 0, 1, 0.92))
-save(fig, "q01_test_composite_accuracy")
+save(fig, "q01_holdout_composite_accuracy")
 q1_improvement = 100.0 * (overall.loc["raw", "nrmse"] - overall.loc["projected", "nrmse"]) / overall.loc["raw", "nrmse"]
 summary_rows.append({"question": 1, "metric": "projection_nrmse_improvement_percent", "value": q1_improvement})
 
-# 2. Stage-level complete-response prediction.
-stage_blocks = [f"reactor_{i}" for i in range(1, 6)] + ["clarifier_complete"]
-stage_names = [f"Reactor {i}" for i in range(1, 6)] + ["Clarifier"]
+# 2. Block-level reduced-response prediction. The Clarifier contributes outlet
+# component flows and one inventory coordinate, never a surrogate layer profile.
+stage_blocks = [
+    "mixer",
+    *[f"reactor_{i}" for i in range(1, 6)],
+    "clarifier_overflow",
+    "clarifier_underflow",
+    "clarifier_inventory",
+]
+stage_names = [
+    "Mixer",
+    *[f"Reactor {i}" for i in range(1, 6)],
+    "Overflow",
+    "Underflow",
+    "Inventory",
+]
 stage = prediction[
     prediction["method"].isin(["raw", "projected"])
     & prediction["block"].isin(stage_blocks)
@@ -161,15 +174,15 @@ width = 0.36
 ax.bar(x - width / 2, stage["raw"], width, color=RAW, label="Raw")
 ax.bar(x + width / 2, stage["projected"], width, color=PROJECTED, label="Projected")
 ax.set_xticks(x, stage_names); ax.set_ylabel("Normalized RMSE")
-ax.set_title("Stage composite accuracy (lower is better)"); ax.legend(ncol=2)
+ax.set_title("Response-block accuracy (lower is better)"); ax.legend(ncol=2)
 change = 100.0 * (stage["projected"] - stage["raw"]) / stage["raw"]
 delta_ax.bar(x, change, color=np.where(change <= 0, PROJECTED, "#C44E52"))
 delta_ax.axhline(0, color=REFERENCE, lw=0.8)
 delta_ax.set_xticks(x, stage_names); delta_ax.set_ylabel("Projection change (%)")
 delta_ax.set_title("Negative values mean projection improved accuracy")
-fig.suptitle("Q2. Composite prediction accuracy by process stage", fontsize=14)
+fig.suptitle("Q2. Prediction accuracy by reduced-response block", fontsize=14)
 fig.tight_layout(rect=(0, 0, 1, 0.95))
-save(fig, "q02_test_composite_accuracy_by_stage")
+save(fig, "q02_holdout_accuracy_by_response_block")
 summary_rows.append({"question": 2, "metric": "stages_improved_by_projection", "value": int((change < 0).sum())})
 
 # 3. Component-level prediction aggregated over mixer/reactors/outlets.
@@ -197,7 +210,7 @@ ax.set_xlabel("Stage-aggregated normalized RMSE (lower is better)")
 ax.set_title("Q3. Component prediction across mixer, reactors, and Clarifier outlets")
 ax.legend(ncol=2)
 fig.tight_layout()
-save(fig, "q03_test_component_accuracy")
+save(fig, "q03_holdout_component_accuracy")
 summary_rows.append({"question": 3, "metric": "components_improved_by_projection", "value": int((component_metric["projected"] < component_metric["raw"]).sum())})
 
 # 4. Component-level prediction by stage.
@@ -224,7 +237,7 @@ axes[2].set_yticks(range(len(stage_labels)), stage_labels)
 axes[2].set_xticks(range(len(COMPONENTS)), COMPONENTS, rotation=55, ha="right")
 fig.suptitle("Q4. Component prediction accuracy by reactor and Clarifier outlet", fontsize=14)
 fig.tight_layout(rect=(0, 0, 1, 0.96))
-save(fig, "q04_test_component_accuracy_by_stage")
+save(fig, "q04_holdout_component_accuracy_by_stage")
 summary_rows.append({"question": 4, "metric": "stage_component_cells_improved", "value": int((delta_matrix.to_numpy() < 0).sum())})
 
 # 5 and 6. Optimizer-native effluent composites versus exact replay.

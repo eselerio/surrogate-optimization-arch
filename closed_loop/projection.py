@@ -538,7 +538,13 @@ class QuadraticSurrogate:
 
 @dataclass(frozen=True)
 class NetworkLayout:
-    """Coordinate layout for chi=(m,c_1,...,c_N,g_E,g_U,s_1,...,s_L)."""
+    """Coordinate layout for ``chi=(m,c_1,...,c_N,g_E,g_U,M_cl)``.
+
+    ``layer_count`` remains part of the mechanistic Clarifier geometry, but
+    the statistical response contains only its total solids inventory.  The
+    envelope implemented here assumes that total Clarifier volume is divided
+    equally among those mechanistic layers.
+    """
 
     stage_count: int = 5
     component_count: int = 20
@@ -558,15 +564,15 @@ class NetworkLayout:
 
     @property
     def state_size(self) -> int:
-        return (self.stage_count + 3) * self.component_count + self.layer_count
+        return (self.stage_count + 3) * self.component_count + 1
 
     @property
     def equality_count_without_invariants(self) -> int:
-        return 2 * self.component_count + len(self.soluble_indices) + 2
+        return 2 * self.component_count + len(self.soluble_indices)
 
     @property
     def inequality_count(self) -> int:
-        return len(self.particulate_indices) + 2 * (self.layer_count - 2)
+        return len(self.particulate_indices) + 2
 
     @property
     def mixer_slice(self) -> slice:
@@ -589,9 +595,12 @@ class NetworkLayout:
         return slice(start, start + self.component_count)
 
     @property
-    def layer_slice(self) -> slice:
-        start = (self.stage_count + 3) * self.component_count
-        return slice(start, start + self.layer_count)
+    def inventory_index(self) -> int:
+        return (self.stage_count + 3) * self.component_count
+
+    @property
+    def inventory_slice(self) -> slice:
+        return slice(self.inventory_index, self.inventory_index + 1)
 
 
 @dataclass(frozen=True)
@@ -604,6 +613,7 @@ class NetworkOperators:
     clarifier_flow: float
     underflow: float
     effluent_flow: float
+    clarifier_volume_m3: float
 
 
 def build_network_operators(
@@ -615,8 +625,13 @@ def build_network_operators(
     invariant_operator: npt.ArrayLike,
     tss_weights: npt.ArrayLike,
     layout: NetworkLayout | None = None,
+    clarifier_volume_m3: float = 6_000.0,
 ) -> NetworkOperators:
-    """Assemble the manuscript's ordered H chi=b and G chi<=0 matrices."""
+    """Assemble the manuscript's ordered H chi=b and G chi<=0 matrices.
+
+    ``clarifier_volume_m3`` is divided equally over ``layout.layer_count``;
+    unequal layer volumes are outside this reduced projection contract.
+    """
 
     layout = layout or NetworkLayout()
     component_count = layout.component_count
@@ -630,6 +645,8 @@ def build_network_operators(
         raise SurrogateValidationError("invariant_operator must have full row rank.")
     if internal_recycle < 0.0 or return_recycle < 0.0 or not 0.0 < waste_fraction < 1.0:
         raise SurrogateValidationError("recycle ratios must be nonnegative and 0 < waste_fraction < 1.")
+    if not np.isfinite(clarifier_volume_m3) or clarifier_volume_m3 <= 0.0:
+        raise SurrogateValidationError("clarifier_volume_m3 must be positive and finite.")
     underflow = float(return_recycle + waste_fraction)
     if underflow <= 0.0:
         raise SurrogateValidationError("return plus waste flow must be positive.")
@@ -643,7 +660,6 @@ def build_network_operators(
         + layout.stage_count * invariant_count
         + component_count
         + len(layout.soluble_indices)
-        + 2
     )
     equality = np.zeros((equality_count, state_size), dtype=np.float64)
     rhs = np.zeros(equality_count, dtype=np.float64)
@@ -679,14 +695,6 @@ def build_network_operators(
         equality[row, final_reactor.start + component] = -underflow
         row += 1
 
-    first_layer = layout.layer_slice.start
-    last_layer = layout.layer_slice.stop - 1
-    equality[row, first_layer] = effluent_flow
-    equality[row, layout.overflow_flow_slice] = -tss
-    row += 1
-    equality[row, last_layer] = underflow
-    equality[row, layout.underflow_flow_slice] = -tss
-    row += 1
     if row != equality_count:
         raise AssertionError("equality row assembly is inconsistent")
 
@@ -696,14 +704,24 @@ def build_network_operators(
         inequality[row, final_reactor.start + component] = underflow
         inequality[row, layout.underflow_flow_slice.start + component] = -1.0
         row += 1
-    for layer in range(1, layout.layer_count - 1):
-        inequality[row, first_layer] = 1.0
-        inequality[row, first_layer + layer] = -1.0
-        row += 1
-    for layer in range(1, layout.layer_count - 1):
-        inequality[row, first_layer + layer] = 1.0
-        inequality[row, last_layer] = -1.0
-        row += 1
+    endpoint_layer_volume = float(clarifier_volume_m3) / layout.layer_count
+    remaining_volume = float(clarifier_volume_m3) - endpoint_layer_volume
+    inequality[row, layout.overflow_flow_slice] = (
+        underflow * remaining_volume * tss
+    )
+    inequality[row, layout.underflow_flow_slice] = (
+        effluent_flow * endpoint_layer_volume * tss
+    )
+    inequality[row, layout.inventory_index] = -effluent_flow * underflow
+    row += 1
+    inequality[row, layout.overflow_flow_slice] = (
+        -underflow * endpoint_layer_volume * tss
+    )
+    inequality[row, layout.underflow_flow_slice] = (
+        -effluent_flow * remaining_volume * tss
+    )
+    inequality[row, layout.inventory_index] = effluent_flow * underflow
+    row += 1
     if row != layout.inequality_count:
         raise AssertionError("inequality row assembly is inconsistent")
 
@@ -716,6 +734,7 @@ def build_network_operators(
         clarifier_flow=clarifier_flow,
         underflow=underflow,
         effluent_flow=effluent_flow,
+        clarifier_volume_m3=float(clarifier_volume_m3),
     )
 
 
@@ -738,7 +757,7 @@ def no_conversion_feasible_state(
         state[layout.reactor_slice(stage)] = x
     state[layout.overflow_flow_slice] = operators.effluent_flow * x
     state[layout.underflow_flow_slice] = operators.underflow * x
-    state[layout.layer_slice] = float(tss @ x)
+    state[layout.inventory_index] = operators.clarifier_volume_m3 * float(tss @ x)
     return state
 
 
@@ -767,6 +786,7 @@ def fit_network_row_scales(
     invariant_operator: npt.ArrayLike,
     tss_weights: npt.ArrayLike,
     layout: NetworkLayout | None = None,
+    clarifier_volume_m3: float = 6_000.0,
     minimum_scale: float = 1.0e-12,
 ) -> NetworkRowScales:
     """Fit D_b and D_g from the named physical terms in the manuscript."""
@@ -785,6 +805,8 @@ def fit_network_row_scales(
         raise SurrogateValidationError("invariant or TSS component dimensions are inconsistent.")
     if minimum_scale <= 0.0:
         raise SurrogateValidationError("minimum_scale must be positive.")
+    if not np.isfinite(clarifier_volume_m3) or clarifier_volume_m3 <= 0.0:
+        raise SurrogateValidationError("clarifier_volume_m3 must be positive and finite.")
     r_internal = _flow_vector(internal_recycle, row_count, name="internal_recycle")
     r_return = _flow_vector(return_recycle, row_count, name="return_recycle")
     waste = _flow_vector(waste_fraction, row_count, name="waste_fraction")
@@ -801,7 +823,6 @@ def fit_network_row_scales(
         + layout.stage_count * invariant_count
         + layout.component_count
         + len(layout.soluble_indices)
-        + 2
     )
     equality_mean_square = np.zeros((row_count, equality_count), dtype=np.float64)
     equality_term_count = np.zeros(equality_count, dtype=np.float64)
@@ -812,7 +833,7 @@ def fit_network_row_scales(
     final_reactor = state_matrix[:, layout.reactor_slice(layout.stage_count - 1)]
     overflow = state_matrix[:, layout.overflow_flow_slice]
     underflow_flow = state_matrix[:, layout.underflow_flow_slice]
-    layers = state_matrix[:, layout.layer_slice]
+    clarifier_inventory = state_matrix[:, layout.inventory_index]
     row = 0
 
     mixer_terms = (
@@ -852,16 +873,6 @@ def fit_network_row_scales(
         equality_term_count[row] = 2.0
         row += 1
 
-    equality_mean_square[:, row] = (
-        np.square(q_effluent * layers[:, 0]) + np.square(overflow @ tss)
-    )
-    equality_term_count[row] = 2.0
-    row += 1
-    equality_mean_square[:, row] = (
-        np.square(q_underflow * layers[:, -1]) + np.square(underflow_flow @ tss)
-    )
-    equality_term_count[row] = 2.0
-    row += 1
     if row != equality_count:
         raise AssertionError("equality scale serialization is inconsistent")
 
@@ -873,14 +884,28 @@ def fit_network_row_scales(
         )
         inequality_term_count[row] = 2.0
         row += 1
-    for layer in range(1, layout.layer_count - 1):
-        inequality_mean_square[:, row] = np.square(layers[:, 0]) + np.square(layers[:, layer])
-        inequality_term_count[row] = 2.0
-        row += 1
-    for layer in range(1, layout.layer_count - 1):
-        inequality_mean_square[:, row] = np.square(layers[:, layer]) + np.square(layers[:, -1])
-        inequality_term_count[row] = 2.0
-        row += 1
+    endpoint_layer_volume = float(clarifier_volume_m3) / layout.layer_count
+    remaining_volume = float(clarifier_volume_m3) - endpoint_layer_volume
+    overflow_tss_flow = overflow @ tss
+    underflow_tss_flow = underflow_flow @ tss
+    lower_inventory_terms = (
+        q_underflow * remaining_volume * overflow_tss_flow,
+        q_effluent * endpoint_layer_volume * underflow_tss_flow,
+        -q_effluent * q_underflow * clarifier_inventory,
+    )
+    for term in lower_inventory_terms:
+        inequality_mean_square[:, row] += np.square(term)
+    inequality_term_count[row] = len(lower_inventory_terms)
+    row += 1
+    upper_inventory_terms = (
+        q_effluent * q_underflow * clarifier_inventory,
+        -q_underflow * endpoint_layer_volume * overflow_tss_flow,
+        -q_effluent * remaining_volume * underflow_tss_flow,
+    )
+    for term in upper_inventory_terms:
+        inequality_mean_square[:, row] += np.square(term)
+    inequality_term_count[row] = len(upper_inventory_terms)
+    row += 1
     if row != layout.inequality_count:
         raise AssertionError("inequality scale serialization is inconsistent")
 

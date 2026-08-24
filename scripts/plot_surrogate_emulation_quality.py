@@ -1,4 +1,4 @@
-"""Create untouched-test charts for surrogate versus mechanistic model fidelity."""
+"""Create post-selection-holdout charts for reduced-surrogate fidelity."""
 from __future__ import annotations
 
 import argparse
@@ -10,6 +10,7 @@ import pandas as pd
 
 
 COLORS = {"raw": "#d97706", "projected": "#2563eb", "truth": "#111827"}
+REDUCED_RESPONSE_COUNT = 161
 
 
 def style() -> None:
@@ -48,20 +49,29 @@ def main() -> None:
     output.mkdir(parents=True, exist_ok=True)
     style()
 
-    metric_path = run / "metrics" / "untouched_prediction_metrics.csv"
+    metric_path = run / "metrics" / "post_selection_prediction_metrics.csv"
     stored = pd.read_csv(metric_path)
     coordinate_rows = stored.query(
         "method == 'projected' and block == 'complete_response' and coordinate != 'ALL'"
     ).reset_index(drop=True)
     names = coordinate_rows["coordinate"].tolist()
-    if len(names) != 170:
-        raise ValueError(f"Expected 170 complete-response coordinates, found {len(names)}")
+    if len(names) != REDUCED_RESPONSE_COUNT:
+        raise ValueError(
+            f"Expected {REDUCED_RESPONSE_COUNT} reduced-response coordinates, "
+            f"found {len(names)}"
+        )
 
-    with np.load(run / "predictions" / "untouched_test.npz") as arrays:
+    with np.load(run / "predictions" / "post_selection_holdout.npz") as arrays:
         truth = arrays["mechanistic"]
         raw = arrays["raw"]
         projected = arrays["projected"]
-    if truth.shape != projected.shape or truth.shape[1] != len(names):
+    if (
+        truth.ndim != 2
+        or truth.shape != raw.shape
+        or truth.shape != projected.shape
+        or truth.shape[1] != REDUCED_RESPONSE_COUNT
+        or truth.shape[1] != len(names)
+    ):
         raise ValueError("Prediction arrays and metric coordinate names do not align")
 
     methods = {"Raw ridge": raw, "Projected surrogate": projected}
@@ -69,7 +79,7 @@ def main() -> None:
     for label, pred in methods.items():
         _, nrmse, r2 = coordinate_metrics(truth, pred)
         summary.append({
-            "method": label, "test_cases": truth.shape[0], "coordinates": truth.shape[1],
+            "method": label, "holdout_cases": truth.shape[0], "coordinates": truth.shape[1],
             "median_r2": np.nanmedian(r2), "mean_r2": np.nanmean(r2),
             "r2_ge_0_90_fraction": np.nanmean(r2 >= .90),
             "r2_ge_0_75_fraction": np.nanmean(r2 >= .75),
@@ -77,7 +87,7 @@ def main() -> None:
         })
     pd.DataFrame(summary).to_csv(output / "fidelity_summary.csv", index=False)
 
-    # 1. Dimensionless parity over all 170,000 held-out values.
+    # 1. Dimensionless parity over all reduced-response holdout values.
     mean = truth.mean(axis=0)
     std = truth.std(axis=0)
     valid = std > 1e-14
@@ -93,7 +103,7 @@ def main() -> None:
         ax.legend(loc="upper left", frameon=False)
         fig.colorbar(hb, ax=ax, label="log count")
     axes[0].set_ylabel("Surrogate prediction (standardized)")
-    fig.suptitle(f"Untouched-test parity across {truth.shape[1]} outputs × {truth.shape[0]:,} cases", fontsize=13, fontweight="bold")
+    fig.suptitle(f"Post-selection-holdout parity across {truth.shape[1]} outputs × {truth.shape[0]:,} cases", fontsize=13, fontweight="bold")
     save(fig, output, "01_all_output_parity")
 
     # 2. Coordinate-level R² and normalized error, sorted to reveal the tail.
@@ -110,13 +120,13 @@ def main() -> None:
     axes[0].legend(ncol=4, frameon=False, loc="lower left")
     axes[1].semilogy(x, raw_nrmse[order], color=COLORS["raw"], lw=1.1, label="Raw ridge")
     axes[1].semilogy(x, projected_nrmse[order], color=COLORS["projected"], lw=1.4, label="Projected surrogate")
-    axes[1].set(xlabel="Output coordinates (sorted by projected R²)", ylabel="NRMSE (RMSE / test range)", title="B. Range-normalized prediction error")
+    axes[1].set(xlabel="Output coordinates (sorted by projected R²)", ylabel="NRMSE (RMSE / holdout range)", title="B. Range-normalized prediction error")
     fig.suptitle("Accuracy distribution and weak-output tail", fontsize=13, fontweight="bold")
     save(fig, output, "02_coordinate_accuracy")
 
     # 3. Parity for representative decision-relevant and difficult outputs.
     preferred = ["overflow_flow:S_NH4", "overflow_flow:S_PO4", "overflow_flow:X_S",
-                 "underflow_flow:X_H", "clarifier_layer_5:TSS", "clarifier_layer_10:TSS"]
+                 "underflow_flow:X_H", "reactor_5:X_H", "clarifier_inventory:TSS_mass"]
     selected = [names.index(n) for n in preferred if n in names]
     if len(selected) < 6:
         selected = list(np.argsort(projected_r2)[[0, 20, 60, 100, 140, -1]])
@@ -131,7 +141,7 @@ def main() -> None:
                 bbox={"facecolor": "white", "alpha": .8, "edgecolor": "none", "pad": 2})
         ax.set_xlabel("Mechanistic")
         ax.set_ylabel("Projected surrogate")
-    fig.suptitle("Representative untouched-test output parity", fontsize=13, fontweight="bold")
+    fig.suptitle("Representative post-selection-holdout output parity", fontsize=13, fontweight="bold")
     save(fig, output, "03_representative_outputs")
 
     detail = pd.DataFrame({"coordinate": names, "raw_r2": raw_r2, "projected_r2": projected_r2,

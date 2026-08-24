@@ -8,7 +8,7 @@ import casadi as ca
 import numpy as np
 
 import closed_loop.v3_surrogate_nlp as surrogate_nlp
-from closed_loop.projection import NetworkLayout
+from closed_loop.projection import NetworkLayout, build_network_operators
 from closed_loop.v3_surrogate_nlp import (
     GAP_CONTINUATION,
     EngineeringLimits,
@@ -16,6 +16,7 @@ from closed_loop.v3_surrogate_nlp import (
     SurrogateSolverSettings,
     TrustDiagnosticCallbacks,
     TrustThresholds,
+    symbolic_network_operators,
 )
 
 
@@ -61,12 +62,10 @@ class SurrogateConditioningTests(unittest.TestCase):
                 regularized_leverage=4.0,
                 split_rms=3.0,
                 reactor_rms=5.0,
-                flux_rms=7.0,
             ),
             trust_callbacks=TrustDiagnosticCallbacks(
                 split_rows=rows(3.0, 0.0),
                 reactor_rows=rows(10.0, 0.0),
-                flux_rows=rows(0.0, 0.0),
                 additional=(NamedTrustRows("extra", rows(22.0, 0.0), 11.0),),
             ),
         )
@@ -80,15 +79,15 @@ class SurrogateConditioningTests(unittest.TestCase):
             assets,
         )
         self.assertEqual(
-            names, ("correction", "leverage", "split", "reactor", "flux", "extra")
+            names, ("correction", "leverage", "split", "reactor", "extra")
         )
         np.testing.assert_allclose(
             np.asarray(values).reshape(-1),
-            [2.0, 4.0, 4.5, 50.0, 0.0, 242.0],
+            [2.0, 4.0, 4.5, 50.0, 242.0],
         )
         np.testing.assert_allclose(
             np.asarray(constraints).reshape(-1),
-            [-0.5, 0.0, -0.5, 1.0, -1.0, 1.0],
+            [-0.5, 0.0, -0.5, 1.0, 1.0],
         )
         self.assertEqual(surrogate_nlp._normalized_limit_residual(0.25, 0.0), 0.25)
 
@@ -123,7 +122,7 @@ class SurrogateConditioningTests(unittest.TestCase):
         state[layout.reactor_slice(0)] = [0.0, 100.0]
         state[layout.overflow_flow_slice] = [0.0, 10.0]
         state[layout.underflow_flow_slice] = [0.0, 200.0]
-        state[layout.layer_slice] = [50.0, 100.0, 150.0]
+        state[layout.inventory_index] = 3_000.0
         constraints, names, quantities = surrogate_nlp._engineering_expressions(
             theta, ca.DM(state), assets
         )
@@ -155,6 +154,50 @@ class SurrogateConditioningTests(unittest.TestCase):
         )
         np.testing.assert_allclose(np.asarray(constraints).reshape(-1), expected)
         self.assertTrue(np.all(np.isfinite(np.asarray(quantities))))
+
+    def test_symbolic_and_numeric_reduced_network_operators_match(self) -> None:
+        layout = NetworkLayout(
+            stage_count=1,
+            component_count=2,
+            layer_count=3,
+            soluble_indices=(0,),
+            particulate_indices=(1,),
+        )
+        invariant = np.asarray([[1.0, 0.0]])
+        tss = np.asarray([0.0, 1.0])
+        assets = SimpleNamespace(
+            layout=layout,
+            invariant_operator=invariant,
+            tss_weights=tss,
+            equality_count=6,
+            engineering=SimpleNamespace(clarifier_volume_m3=30.0),
+        )
+        theta_symbol = ca.MX.sym("network_theta", 7)
+        feed_symbol = ca.MX.sym("network_feed", 2)
+        symbolic = symbolic_network_operators(theta_symbol, feed_symbol, assets)
+        evaluate = ca.Function(
+            "reduced_network_operator_test",
+            [theta_symbol, feed_symbol],
+            [symbolic.equality_matrix, symbolic.equality_rhs, symbolic.inequality_matrix],
+        )
+        theta = np.asarray([24.0, 0.2, 0.3, 0.4, 1.0, 0.5, 0.1])
+        feed = np.asarray([2.0, 10.0])
+        symbolic_values = evaluate(theta, feed)
+        numeric = build_network_operators(
+            feed,
+            internal_recycle=theta[4],
+            return_recycle=theta[5],
+            waste_fraction=theta[6],
+            invariant_operator=invariant,
+            tss_weights=tss,
+            layout=layout,
+            clarifier_volume_m3=30.0,
+        )
+        np.testing.assert_allclose(symbolic_values[0], numeric.equality_matrix)
+        np.testing.assert_allclose(
+            np.asarray(symbolic_values[1]).reshape(-1), numeric.equality_rhs
+        )
+        np.testing.assert_allclose(symbolic_values[2], numeric.inequality_matrix)
 
     def test_ipopt_options_and_stage_call_propagate_outer_duals(self) -> None:
         options = SurrogateSolverSettings().ipopt_options()

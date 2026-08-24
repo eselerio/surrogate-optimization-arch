@@ -10,7 +10,12 @@ from unittest.mock import patch
 import numpy as np
 import pandas as pd
 
-from closed_loop.manuscript_v3 import ARTICLE_FULL, DECISION_LOWER, DECISION_UPPER
+from closed_loop.manuscript_v3 import (
+    ARTICLE_FULL,
+    DECISION_LOWER,
+    DECISION_UPPER,
+    reduce_mechanistic_responses,
+)
 from closed_loop.model import INFLUENT_LOWER, INFLUENT_UPPER
 from closed_loop.projection import (
     NetworkLayout,
@@ -40,7 +45,8 @@ from closed_loop.v3_surrogate_nlp import (
 from scripts import run_article_v3_5000 as runner
 
 
-RESPONSE_COUNT = ARTICLE_FULL.response_count
+RESPONSE_COUNT = ARTICLE_FULL.surrogate_response_count
+MECHANISTIC_RESPONSE_COUNT = ARTICLE_FULL.mechanistic_response_count
 REDUCED_STATE_COUNT = 5 * 20 + ARTICLE_FULL.layer_count
 
 
@@ -91,8 +97,8 @@ def _surrogate_start(index: int, normalized: np.ndarray) -> SurrogateStartResult
         objective_components=np.full(6, 1.0 / 6.0),
         engineering_rows=np.full(7, -1.0),
         engineering_quantities=np.ones(7),
-        trust_rows=np.full(5, -1.0),
-        trust_values=np.zeros(5),
+        trust_rows=np.full(4, -1.0),
+        trust_values=np.zeros(4),
         projection=_projection(projected),
         feasibility=FeasibilityRecord(
             finite=True,
@@ -192,7 +198,7 @@ def _direct_start(index: int, normalized: np.ndarray) -> DirectStartResult:
         theta=theta,
         state=np.ones(REDUCED_STATE_COUNT),
         feed_tss=100.0,
-        response=np.full(RESPONSE_COUNT, 3.0 + 0.01 * index),
+        response=np.full(MECHANISTIC_RESPONSE_COUNT, 3.0 + 0.01 * index),
         engineering=np.ones(11),
         objective_components=np.full(6, 1.0 / 6.0),
         branch=_branch(),
@@ -246,15 +252,15 @@ def _fixture() -> tuple[dict[str, np.ndarray], np.ndarray, np.ndarray, runner.An
             [influent + 1.0e-3 * index for index in range(10)]
         ),
     }
-    development_targets = np.ones((development_count, RESPONSE_COUNT))
-    test_targets = np.ones((test_count, RESPONSE_COUNT))
+    development_targets = np.ones((development_count, MECHANISTIC_RESPONSE_COUNT))
+    test_targets = np.ones((test_count, MECHANISTIC_RESPONSE_COUNT))
     layout = NetworkLayout(layer_count=ARTICLE_FULL.layer_count)
 
     def predict(_theta: np.ndarray, _influent: np.ndarray) -> np.ndarray:
         return np.ones(RESPONSE_COUNT)
 
     model = SimpleNamespace(
-        response_count=RESPONSE_COUNT,
+        response_count=MECHANISTIC_RESPONSE_COUNT,
         response_scale=np.ones(RESPONSE_COUNT),
         predict=predict,
     )
@@ -547,7 +553,7 @@ class ArticleV3OptimizationHookTests(unittest.TestCase):
         route_payload["route_contract"] = "direct-contract"
         influent = 0.5 * (INFLUENT_LOWER + INFLUENT_UPPER)
         fixed_route = SimpleNamespace(
-            response=np.full(RESPONSE_COUNT, 3.0),
+            response=np.full(MECHANISTIC_RESPONSE_COUNT, 3.0),
             state=selected.state.copy(),
             feed_tss=selected.feed_tss,
             branch=selected.branch,
@@ -571,7 +577,7 @@ class ArticleV3OptimizationHookTests(unittest.TestCase):
             return payload
 
         replay = (
-            np.full(RESPONSE_COUNT, 4.0),
+            np.full(MECHANISTIC_RESPONSE_COUNT, 4.0),
             np.ones(REDUCED_STATE_COUNT),
             np.ones(REDUCED_STATE_COUNT),
             {"accepted": True, "branch_agreement": True},
@@ -1035,7 +1041,7 @@ class ArticleV3OptimizationHookTests(unittest.TestCase):
                     assets=object(),
                     development_decisions=np.zeros((1, 7)),
                     development_influents=np.zeros((1, 20)),
-                    development_targets=np.zeros((1, RESPONSE_COUNT)),
+                    development_targets=np.zeros((1, MECHANISTIC_RESPONSE_COUNT)),
                     source_id="source",
                     analysis_id="analysis",
                 )
@@ -1113,7 +1119,7 @@ class ArticleV3OptimizationHookTests(unittest.TestCase):
             (selected,), selected, "selected_stationary"
         ).as_dict()
         route_payload.update({"route_contract": "direct-contract", "elapsed_seconds": 0.5})
-        reference = np.full(RESPONSE_COUNT, 4.0)
+        reference = np.full(MECHANISTIC_RESPONSE_COUNT, 4.0)
         replay = (
             reference,
             np.ones(REDUCED_STATE_COUNT),
@@ -1193,7 +1199,11 @@ class ArticleV3OptimizationHookTests(unittest.TestCase):
             ).read_text())
             self.assertFalse(marker["comparison_valid"])
             with np.load(case / "direct_casewise_reference.npz") as arrays:
-                np.testing.assert_array_equal(arrays["exact_reference"], reference)
+                np.testing.assert_array_equal(
+                    arrays["exact_reference"],
+                    reduce_mechanistic_responses(reference, ARTICLE_FULL.layer_count),
+                )
+                np.testing.assert_array_equal(arrays["exact_reference_full"], reference)
 
     def test_direct_recovery_runs_only_after_primary_failure(self) -> None:
         normalized = np.asarray(EXACT_QP_CENTER_START, dtype=float)
@@ -1210,7 +1220,7 @@ class ArticleV3OptimizationHookTests(unittest.TestCase):
             "assets": object(),
             "development_decisions": np.zeros((1, 7)),
             "development_influents": np.zeros((1, 20)),
-            "development_targets": np.zeros((1, RESPONSE_COUNT)),
+            "development_targets": np.zeros((1, MECHANISTIC_RESPONSE_COUNT)),
             "source_id": "source",
             "analysis_id": "analysis",
         }

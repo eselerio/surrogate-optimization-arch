@@ -29,17 +29,23 @@ This notebook is the canonical, resumable interface to
 `scripts/run_article_v3_5000.py`. The production driver, rather than duplicated
 notebook code, owns candidate generation and deterministic replacement, two-start
 mechanistic acceptance, ridge selection,
-untouched-test surrogate assessment, scientific admission gates, paired optimization,
+post-selection-holdout surrogate assessment, scientific admission gates, paired optimization,
 casewise exact-reference replay, convergence and physical audits, and
 Results/Discussion tables.
 
 The production interface supports the original **5,000 accepted-dataset**
 workload, the interrupted 50,000-target run, and its user-frozen set of
 **16,714 accepted datasets**. The frozen set contains 13,371 development and
-3,343 holdout rows; no further mechanistic rows are generated. Rejected mechanistic candidates remain
-fully audited but are excluded and deterministically replaced. Each uses ten
+3,343 post-selection holdout rows; it is the default for the revised analysis,
+and no further mechanistic rows are generated. Rejected mechanistic candidates
+remain fully audited but are excluded and deterministically replaced. Each uses ten
 robustness cases plus the nominal case and a ten-layer
-Clarifier. Each route uses one deterministic box-center start per case and
+Clarifier in the mechanistic model. Each retained 170-coordinate mechanistic
+response is deterministically reduced to 161 operational coordinates: mixer and
+reactor states, Clarifier outlet component flows, and the scalar
+Clarifier-solids inventory $M_{\rm cl}$. The surrogate predicts this reduced
+response and neither predicts nor reconstructs the ten-layer profile. Each
+route uses one deterministic box-center start per case and
 searches only that basin without claiming global optimality. The surrogate
 route primarily runs the seven-variable exact-QP active-set optimizer. If
 exact active-set derivatives are unavailable, deterministic value-only COBYQA
@@ -52,19 +58,23 @@ qualification without claiming differentiable KKT stationarity. The surrogate
 route does not execute the retired embedded-KKT IPOPT problem or any of its
 seven gap-continuation stages. The direct smooth-mechanistic route retains its
 separate three-stage smoothing continuation. There is no wall-time ceiling in
-the full article run. The scientific admission thresholds remain unchanged and still
-determine whether results are article-eligible. For this model-function
+the full article run. The revised scientific admission thresholds are frozen
+and determine whether results are article-eligible. For this model-function
 exercise they are advisory for execution: failures are recorded and propagated
 while later stages are attempted without refitting. Non-finite or incomplete
 objects needed by a later stage and run-integrity failures remain fatal.
 
-Every projection retains the same strictly convex QP. Its independent dual
+Every projection retains the same strictly convex QP over the reduced response.
+Its 75 equalities exclude the former layer-endpoint identities; outlet TSS is
+derived from the outlet component flows. Ten particulate-densification rows and
+two tight, division-free inventory-envelope rows form its 12 physical
+inequalities. Its independent dual
 audit reconstructs multipliers with deterministic bounded-variable least
 squares (BVLS); a failed cold numerical attempt may use the two declared cold
 OSQP retry settings, without regularizing or otherwise changing the problem.
 
 The separate, already-completed 500-input preflight record used 400 development
-inputs, 100 untouched test inputs, five robustness cases, and five Clarifier
+inputs, 100 test inputs, five robustness cases, and five Clarifier
 layers. Under the then-current protocol, its limited optimization smoke used
 one center start and a 600-second (10-minute) ceiling for each embedded-surrogate
 IPOPT continuation stage. That historical solver path and every preflight
@@ -105,6 +115,7 @@ from scripts.run_article_v3_5000 import (
     DEFAULT_RUN_ID,
     LEGACY_RUN_ID,
     OPTIMIZATION_PROTOCOL,
+    RESPONSE_SCHEMA,
     RUN_ID_PATTERN,
     frozen_accepted_profile,
     main as run_article,
@@ -120,9 +131,9 @@ if not (ROOT / "scripts" / "run_article_v3_5000.py").is_file():
 
 # Every rerun gets its own directory. Configure the target and optional source
 # with environment variables before starting, or edit these assignments.
-DATASET_COUNT = int(os.environ.get("ARTICLE_V3_DATASET_COUNT", "5000"))
+DATASET_COUNT = int(os.environ.get("ARTICLE_V3_DATASET_COUNT", "50000"))
 USE_FROZEN_ACCEPTED = os.environ.get(
-    "ARTICLE_V3_USE_FROZEN_ACCEPTED_CHECKPOINTS", "0"
+    "ARTICLE_V3_USE_FROZEN_ACCEPTED_CHECKPOINTS", "1"
 ).strip().lower() in {"1", "true", "yes"}
 if DATASET_COUNT not in AUTHORIZED_DATASET_TOTALS:
     raise ValueError(
@@ -134,7 +145,7 @@ PROFILE = (
     else profile_for_dataset_total(DATASET_COUNT)
 )
 default_run_id = (
-    "article_full_50000_003" if USE_FROZEN_ACCEPTED
+    "article_full_50000_reduced_001" if USE_FROZEN_ACCEPTED
     else DEFAULT_RUN_ID if DATASET_COUNT == 5_000
     else f"article_full_{DATASET_COUNT}_001"
 )
@@ -146,7 +157,11 @@ if RUN_ID_PATTERN.fullmatch(RUN_ID) is None or ".." in RUN_ID:
 RUN_ROOT = resolve_run_directory(RUN_ID)
 REUSE_FROM_RUN_ID = os.environ.get(
     "ARTICLE_V3_REUSE_FROM_RUN_ID",
-    LEGACY_RUN_ID if DATASET_COUNT == 5_000 and not USE_FROZEN_ACCEPTED else None,
+    (
+        "article_full_50000_003" if USE_FROZEN_ACCEPTED
+        else LEGACY_RUN_ID if DATASET_COUNT == 5_000
+        else None
+    ),
 )
 if REUSE_FROM_RUN_ID == RUN_ID:
     raise ValueError("The rerun source and target run IDs must differ.")
@@ -178,6 +193,39 @@ if profile["development_count"] + profile["test_count"] != expected_total:
 contract_config = json.loads(
     (ROOT / "config" / "params_manuscript_v3.json").read_text(encoding="utf-8")
 )
+if contract_config.get("schema_version") != 4:
+    raise RuntimeError("The reduced-response configuration schema is required.")
+surrogate_contract = contract_config["surrogate"]
+required_surrogate = {
+    "response_schema": RESPONSE_SCHEMA,
+    "mechanistic_target_dimension": 170,
+    "response_dimension": 161,
+    "mechanistic_layers_retained": True,
+}
+for field, expected in required_surrogate.items():
+    if surrogate_contract.get(field) != expected:
+        raise RuntimeError(
+            f"Surrogate response contract mismatch for {field}: "
+            f"{surrogate_contract.get(field)!r} != {expected!r}"
+        )
+projection_contract = contract_config["projection"]
+required_projection = {
+    "response_dimension": 161,
+    "equality_count": 75,
+    "physical_inequality_count": 12,
+    "inequality_count_including_nonnegativity": 173,
+    "predicts_or_reconstructs_layer_profile": False,
+}
+for field, expected in required_projection.items():
+    if projection_contract.get(field) != expected:
+        raise RuntimeError(
+            f"Projection contract mismatch for {field}: "
+            f"{projection_contract.get(field)!r} != {expected!r}"
+        )
+if contract_config.get("trust", {}).get("diagnostics") != [
+    "correction", "regularized_leverage", "particulate_split", "reactor_residual",
+]:
+    raise RuntimeError("The revised four-diagnostic trust contract is required.")
 optimization = contract_config["optimization"]
 article_config = contract_config["profiles"][profile["name"]]
 required_optimization = {
@@ -259,13 +307,22 @@ display(pd.Series({
     "run_id": RUN_ID,
     "run_directory": str(RUN_ROOT),
     "reused_from_run_id": REUSE_FROM_RUN_ID,
-    "accepted_dataset_target": 5_000,
+    "accepted_dataset_target": expected_total,
     "accepted_development_target": profile["development_count"],
-    "accepted_untouched_test_target": profile["test_count"],
-    "candidate_attempt_count": "reported after generation; may exceed 5,000",
+    "accepted_post_selection_holdout_target": profile["test_count"],
+    "candidate_attempt_count": (
+        "frozen at 18,211" if USE_FROZEN_ACCEPTED
+        else f"reported after generation; may exceed {expected_total:,}"
+    ),
     "candidate_replacement_policy": "audit, exclude, deterministically replace",
     "robustness_cases": profile["robustness_count"],
-    "clarifier_layers": profile["layer_count"],
+    "mechanistic_clarifier_layers": profile["layer_count"],
+    "mechanistic_response_coordinates": surrogate_contract["mechanistic_target_dimension"],
+    "surrogate_response_coordinates": surrogate_contract["response_dimension"],
+    "surrogate_clarifier_coordinates": "M_cl only",
+    "projection_equalities": projection_contract["equality_count"],
+    "projection_physical_inequalities": projection_contract["physical_inequality_count"],
+    "projection_total_inequalities": projection_contract["inequality_count_including_nonnegativity"],
     "starts_per_route_and_case": 1,
     "surrogate_optimization": optimization["surrogate_protocol"],
     "surrogate_derivative_fallback": fallback["method"],
@@ -280,7 +337,7 @@ display(pd.Series({
     "casewise_validation": reporting_contract["validation_protocol"],
     "timing_protocol": reporting_contract["timing_protocol"],
     "timing_cases": reporting_contract["timing_case_count"],
-    "test_set_smooth_reference_equivalence": "retired",
+    "holdout_smooth_reference_equivalence": "retired",
     "unresolved_incumbent_is_called_local_optimum": False,
     "global_optimality_claimed": False,
     "full_run_wall_time_ceiling": None,
@@ -300,6 +357,9 @@ exercise. Hard computational and integrity failures still stop the stage.
 STAGE_ARTIFACTS = {
     "generation": (
         "inputs/contract.json",
+        f"inputs/contract_migrations/article-v3-reduced-response-{RUN_ID}.json",
+        f"inputs/contract_migrations/article-v3-reduced-response-{RUN_ID}-retained.json",
+        f"inputs/contract_migrations/article-v3-reduced-response-{RUN_ID}-reused-files.json",
         "inputs/contract_migrations/article-v3-generation-replacement-v1.json",
         "inputs/contract_migrations/article-v3-projection-audit-v1.json",
         "inputs/contract_migrations/article-v3-direct-active-set-v1.json",
@@ -329,10 +389,12 @@ STAGE_ARTIFACTS = {
         "datasets/test/block_complete.json",
     ),
     "assessment": (
+        "datasets/development/surrogate_responses_inventory_v1.npz",
+        "datasets/test/surrogate_responses_inventory_v1.npz",
         "models/ridge_complete.json",
         "metrics/assessment_complete.json",
         "metrics/admission_gate.json",
-        "metrics/untouched_prediction_metrics.csv",
+        "metrics/post_selection_prediction_metrics.csv",
         "metrics/physical_violations_assessment.csv",
     ),
     "complete": (
@@ -413,15 +475,17 @@ in ascending order; neither candidates nor accepted rows cross block boundaries.
 The accepted union is conditioned on mechanistic acceptance and is not one
 global Latin hypercube. Generation reports therefore distinguish the attempted
 candidate denominator from the accepted-row denominator and retain every
-candidate-to-final-slot mapping. The phrase "untouched test" means untouched by
-fitting and tuning, not unconditional sampling from the entire input box.
+candidate-to-final-slot mapping. The frozen 3,343-row block is post-selection:
+its superseded layer-wise summaries informed the reduced response definition.
 
-For every rerun, the runner first creates a new self-contained run directory.
-It byte-copies and hash-verifies the accepted generation, fitted surrogate,
-assessment, and completed primary case-search artifacts from the declared
-source run, records their provenance, and generates all corrected downstream
-artifacts in the new directory. It does not regenerate data, refit the
-surrogate, or repeat a completed primary case search.
+For this revision, the runner first creates a new self-contained run directory.
+It byte-copies and hash-verifies only the frozen design, accepted mechanistic
+states, attempt ledgers, and provenance from the declared source run. The
+historical 170-output fit, projections, trust calibration, optimization,
+replays at the old decisions, timing, and reports are archived as superseded
+and are never loaded as current results. The runner deterministically derives
+the 161-coordinate response from each full state, then refits and reruns every
+surrogate-dependent stage.
 """),
     code(r"""
 invoke_stage("generation")
@@ -464,14 +528,17 @@ display(pd.DataFrame(
 ))
 """),
     markdown(r"""
-## 2. Fit and assess on the untouched test block
+## 2. Transform, refit, and assess on the post-selection holdout
 
-This call reuses the generation checkpoints, performs the frozen five-fold
-ridge selection and trust calibration, opens the untouched block once, and
-publishes raw/projected/mechanistic accuracy and physical-violation ledgers.
-The gate result remains the scientific article-eligibility decision. A failure
-is not waived or refitted; it is recorded, while execution continues because
-this run is currently serving as a complete model-function exercise.
+This call reuses only the full mechanistic checkpoints. It maps each response
+to mixer, five reactors, two Clarifier outlet-flow vectors, and
+$M_{\rm cl}=\sum_\ell V_{{\rm cl},\ell}s_\ell$; performs the frozen five-fold
+ridge selection and four-diagnostic trust calibration; and evaluates the
+post-selection holdout descriptively. Development-only admission checks include
+raw out-of-fold nRMSE below one for both the complete 161-coordinate response
+and the inventory coordinate, plus successful projection audits. A failure is
+not waived or refitted; it is recorded, while execution continues because this
+run is currently serving as a complete model-function exercise.
 """),
     code(r"""
 invoke_stage("assessment")
@@ -480,7 +547,7 @@ gate = read_json("metrics/admission_gate.json")
 if gate:
     display(pd.Series(gate, name="value").to_frame())
 
-prediction_path = RUN_ROOT / "metrics" / "untouched_prediction_metrics.csv"
+prediction_path = RUN_ROOT / "metrics" / "post_selection_prediction_metrics.csv"
 if prediction_path.is_file():
     display(pd.read_csv(prediction_path))
 
@@ -518,12 +585,16 @@ Both returned decisions are evaluated on the same exact, nonsmooth two-start
 mechanistic model in each case. Branch-boundary ambiguity is reported as a
 qualifier instead of being mistaken for solver failure. This casewise replay
 replaces the retired whole-test smooth/reference equivalence sweep. The driver
-records raw, projected, optimizer-native, and exact-reference mass-conservation
-and non-negativity audits before writing all article tables. A failed or
+records raw and projected 161-coordinate responses together with layer-resolved
+smooth-direct and exact-reference states. Clarifier-flux and layer-envelope
+residuals are evaluated only where a mechanistic layer state exists; the
+surrogate trust region contains correction, leverage, particulate-split, and
+reactor-residual diagnostics. Mass-conservation and non-negativity audits are
+written before the article tables. A failed or
 unresolved case remains in the denominator and does not suppress subsequent
 cases or downstream audits. Runtime summaries are calculated only from the
 durations recorded in robustness cases 01--10; no repeated timing benchmark is
-run over the untouched test block. There is no 10-minute ceiling in
+run over the post-selection holdout block. There is no 10-minute ceiling in
 this phase.
 """),
     code(r"""
@@ -575,30 +646,47 @@ failure and is not hidden by regeneration.
 """),
 ]
 
-notebook = nbf.v4.new_notebook(
-    cells=cells,
-    metadata={
-        "kernelspec": {
-            "display_name": "Python 3",
-            "language": "python",
-            "name": "python3",
+def build_notebook():
+    """Return the canonical notebook with stable cell identifiers."""
+
+    for index, cell in enumerate(cells):
+        cell["id"] = f"article-v3-{index:02d}"
+    notebook = nbf.v4.new_notebook(
+        cells=cells,
+        metadata={
+            "kernelspec": {
+                "display_name": "Python 3",
+                "language": "python",
+                "name": "python3",
+            },
+            "language_info": {
+                "codemirror_mode": {"name": "ipython", "version": 3},
+                "file_extension": ".py",
+                "mimetype": "text/x-python",
+                "name": "python",
+                "nbconvert_exporter": "python",
+                "pygments_lexer": "ipython3",
+                "version": "3.12",
+            },
+            "surrogate_optimization_arch": {
+                "interface": "scripts/run_article_v3_5000.py",
+                "profile": "article_frozen_16714",
+                "response_schema": "clarifier_inventory_v1",
+                "schema": 6,
+            },
         },
-        "language_info": {
-            "codemirror_mode": {"name": "ipython", "version": 3},
-            "file_extension": ".py",
-            "mimetype": "text/x-python",
-            "name": "python",
-            "nbconvert_exporter": "python",
-            "pygments_lexer": "ipython3",
-            "version": "3.12",
-        },
-        "surrogate_optimization_arch": {
-            "interface": "scripts/run_article_v3_5000.py",
-            "profile": "article_full",
-            "schema": 5,
-        },
-    },
-)
-nbf.validate(notebook)
-nbf.write(notebook, NOTEBOOK)
-print(NOTEBOOK)
+    )
+    nbf.validate(notebook)
+    return notebook
+
+
+def write_notebook(path: Path = NOTEBOOK) -> Path:
+    """Write the canonical notebook to ``path`` and return the resolved path."""
+
+    destination = path.resolve()
+    nbf.write(build_notebook(), destination)
+    return destination
+
+
+if __name__ == "__main__":
+    print(write_notebook())

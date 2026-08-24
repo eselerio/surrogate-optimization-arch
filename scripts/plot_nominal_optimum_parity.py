@@ -1,5 +1,6 @@
-"""Plot raw ICSOR predictions against the exact BDF replay at the nominal optimum."""
+"""Plot nominal reduced-surrogate and full mechanistic replay parity."""
 
+import argparse
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -7,13 +8,29 @@ import numpy as np
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RUN = ROOT / "results" / "closed_loop" / "verify_nlp_2000_003"
-DATA = RUN / "optimization" / "cache" / "nominal" / "exact_combined.npz"
-SURROGATE = RUN / "models" / "development_surrogate.npz"
-OUTPUT = RUN / "figures" / "nominal_optimum_icsor_vs_bdf.png"
-OUTPUT_PDF = OUTPUT.with_suffix(".pdf")
-OUTPUT_NLP = RUN / "figures" / "nominal_optimum_nlp_vs_bdf.png"
-OUTPUT_NLP_PDF = OUTPUT_NLP.with_suffix(".pdf")
+DEFAULT_RUN = ROOT / "results" / "article_v3" / "article_full_50000_reduced_001"
+SHARED_RESPONSE_COUNT = 160
+REDUCED_RESPONSE_COUNT = 161
+CLARIFIER_VOLUME_M3 = 6_000.0
+
+
+def reduced_response(response: np.ndarray) -> np.ndarray:
+    """Map a full layer-resolved response to the 161-coordinate response."""
+
+    values = np.asarray(response, dtype=float).reshape(-1)
+    if values.size == REDUCED_RESPONSE_COUNT:
+        return values
+    layer_count = values.size - SHARED_RESPONSE_COUNT
+    if layer_count < 3:
+        raise ValueError(
+            "expected a 161-coordinate reduced response or a full response "
+            "with at least three Clarifier layers"
+        )
+    inventory = (
+        CLARIFIER_VOLUME_M3 / layer_count
+        * float(np.sum(values[SHARED_RESPONSE_COUNT:]))
+    )
+    return np.concatenate((values[:SHARED_RESPONSE_COUNT], [inventory]))
 
 
 def parity_axis(ax: plt.Axes, truth: np.ndarray, prediction: np.ndarray, groups: list[tuple[str, slice, str]]) -> None:
@@ -36,15 +53,36 @@ def parity_axis(ax: plt.Axes, truth: np.ndarray, prediction: np.ndarray, groups:
 
 
 def main() -> None:
-    stored = np.load(DATA)
-    surrogate = np.load(SURROGATE)
-    exact = stored["target"]
-    predicted = stored["raw_surrogate_prediction"]
-    nlp_state = stored["selected_complete_state"]
-    scale = surrogate["response_scale"]
+    parser = argparse.ArgumentParser()
+    parser.add_argument("run", type=Path, nargs="?", default=DEFAULT_RUN)
+    parser.add_argument("--output", type=Path)
+    args = parser.parse_args()
+    run = args.run.resolve()
+    output = (args.output or run / "report" / "figures").resolve()
+    with np.load(
+        run / "optimization" / "nominal" / "surrogate_casewise_reference.npz",
+        allow_pickle=False,
+    ) as stored:
+        exact_response = np.asarray(stored["exact_reference"], dtype=float)
+        predicted = np.asarray(stored["raw"], dtype=float)
+    with np.load(
+        run / "optimization" / "nominal" / "direct_casewise_reference.npz",
+        allow_pickle=False,
+    ) as stored:
+        direct_reduced = np.asarray(stored["optimizer_native"], dtype=float)
+        direct_exact = np.asarray(stored["exact_reference"], dtype=float)
+        direct_full = np.asarray(stored["optimizer_native_full"], dtype=float)
+        direct_exact_full = np.asarray(stored["exact_reference_full"], dtype=float)
+    with np.load(run / "models" / "ridge_surrogate.npz", allow_pickle=False) as surrogate:
+        scale = np.asarray(surrogate["response_scale"], dtype=float)
+    exact = reduced_response(exact_response)
+    if predicted.shape != (REDUCED_RESPONSE_COUNT,) or scale.shape != predicted.shape:
+        raise ValueError("the nominal surrogate artifacts are not 161-coordinate responses")
+    if exact.shape != predicted.shape or direct_reduced.shape != direct_exact.shape:
+        raise ValueError("the nominal response arrays do not share the reduced schema")
 
-    # State order: mixer (20), five CSTRs (5 x 20), overflow and underflow
-    # flow vectors (2 x 20), and ten clarifier-layer TSS values.
+    # Reduced order: mixer (20), five CSTRs (5 x 20), overflow and underflow
+    # flow vectors (2 x 20), and one Clarifier-solids inventory.
     reactor_groups = [
         ("Mixer", slice(0, 20), "#4c78a8"),
         ("CSTR 1", slice(20, 40), "#f58518"),
@@ -62,14 +100,14 @@ def main() -> None:
     ] + [
         ("Overflow", slice(120, 140)),
         ("Underflow", slice(140, 160)),
-        ("Layers", slice(160, 170)),
+        ("Inventory", slice(160, 161)),
     ]
     block_rmse = [
         float(np.sqrt(np.mean(((predicted[index] - exact[index]) / scale[index]) ** 2)))
         for _, index in blocks
     ]
     nlp_block_rmse = [
-        float(np.sqrt(np.mean(((nlp_state[index] - exact[index]) / scale[index]) ** 2)))
+        float(np.sqrt(np.mean(((direct_reduced[index] - direct_exact[index]) / scale[index]) ** 2)))
         for _, index in blocks
     ]
 
@@ -78,7 +116,7 @@ def main() -> None:
     grid = fig.add_gridspec(2, 2, height_ratios=(1.1, 0.9))
     ax_reactor = fig.add_subplot(grid[0, 0])
     ax_outlet = fig.add_subplot(grid[0, 1])
-    ax_layers = fig.add_subplot(grid[1, 0])
+    ax_inventory = fig.add_subplot(grid[1, 0])
     ax_error = fig.add_subplot(grid[1, 1])
 
     parity_axis(ax_reactor, exact, predicted, reactor_groups)
@@ -89,16 +127,19 @@ def main() -> None:
     ax_outlet.set_title("B. Clarifier overflow and underflow coordinates")
     ax_outlet.legend(loc="upper left", fontsize=8)
 
-    layers = np.arange(1, 11)
-    ax_layers.plot(layers, exact[160:170], "o-", lw=2, color="#1f77b4", label="Exact BDF replay")
-    ax_layers.plot(layers, predicted[160:170], "s--", lw=2, color="#d62728", label="Raw ICSOR prediction")
-    ax_layers.set_yscale("log")
-    ax_layers.set_xticks(layers)
-    ax_layers.set_xlabel("Clarifier layer")
-    ax_layers.set_ylabel("TSS (g TSS m$^{-3}$)")
-    ax_layers.set_title("C. Clarifier TSS profile")
-    ax_layers.grid(True, which="both", alpha=0.25)
-    ax_layers.legend(fontsize=9)
+    inventory = [exact[-1], predicted[-1]]
+    bars = ax_inventory.bar(
+        ["Exact replay", "Raw surrogate"], inventory,
+        color=["#1f77b4", "#d62728"],
+    )
+    for bar, value in zip(bars, inventory, strict=True):
+        ax_inventory.annotate(
+            f"{value:,.0f}",
+            (bar.get_x() + bar.get_width() / 2, value),
+            xytext=(0, 3), textcoords="offset points", ha="center", fontsize=8,
+        )
+    ax_inventory.set_ylabel("Clarifier solids inventory (g TSS)")
+    ax_inventory.set_title("C. Aggregate Clarifier inventory")
 
     colors = ["#4c78a8"] + ["#72b7b2"] * 5 + ["#f58518", "#e45756", "#b279a2"]
     ax_error.bar([name for name, _ in blocks], block_rmse, color=colors)
@@ -111,21 +152,26 @@ def main() -> None:
     ax_error.legend(fontsize=8)
 
     fig.suptitle(
-        "Nominal optimum: raw ICSOR complete-state prediction versus exact mechanistic BDF replay\n"
-        "The raw surrogate is shown; the constrained NLP reconstructs its own physical state separately.",
+        "Nominal optimum: raw 161-coordinate surrogate versus exact mechanistic replay\n"
+        "The surrogate retains aggregate Clarifier inventory, not a layer profile.",
         fontsize=13,
         fontweight="bold",
     )
-    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(OUTPUT, dpi=220, bbox_inches="tight")
-    fig.savefig(OUTPUT_PDF, bbox_inches="tight")
+    output.mkdir(parents=True, exist_ok=True)
+    surrogate_output = output / "nominal_optimum_reduced_surrogate_vs_bdf.png"
+    fig.savefig(surrogate_output, dpi=220, bbox_inches="tight")
+    fig.savefig(surrogate_output.with_suffix(".pdf"), bbox_inches="tight")
 
     # The companion figure separates the constrained NLP state from the raw
     # surrogate.  It is a smooth-NLP versus nonsmoothed-BDF consistency check,
     # not a test of raw surrogate prediction accuracy.
     fig2, (ax_parity, ax_nlp_error) = plt.subplots(1, 2, figsize=(14, 5.8), constrained_layout=True)
-    all_groups = reactor_groups + outlet_groups + [("Clarifier layers", slice(160, 170), "#b279a2")]
-    parity_axis(ax_parity, exact, nlp_state, all_groups)
+    if direct_full.shape != direct_exact_full.shape or direct_full.size <= SHARED_RESPONSE_COUNT:
+        raise ValueError("direct and exact responses must share a full layer-resolved schema")
+    all_groups = reactor_groups + outlet_groups + [
+        ("Clarifier layers", slice(SHARED_RESPONSE_COUNT, None), "#b279a2")
+    ]
+    parity_axis(ax_parity, direct_exact_full, direct_full, all_groups)
     ax_parity.set_title("A. Smooth NLP physical state versus exact BDF replay")
     ax_parity.set_ylabel("Smooth NLP physical state / flow coordinate")
     ax_parity.legend(loc="upper left", fontsize=8, ncol=2)
@@ -134,21 +180,24 @@ def main() -> None:
     ax_nlp_error.bar(location, nlp_block_rmse, color="#54a24b")
     ax_nlp_error.set_yscale("log")
     ax_nlp_error.set_xticks(location, [name for name, _ in blocks], rotation=38)
-    ax_nlp_error.set_ylabel("RMS error / development scale (log scale)")
-    ax_nlp_error.set_title("B. Smooth-NLP-to-BDF consistency by state block")
+    ax_nlp_error.set_ylabel("Reduced-response RMS / surrogate development scale")
+    ax_nlp_error.set_title("B. Smooth-NLP-to-BDF consistency by shared block")
     ax_nlp_error.grid(True, axis="y", which="both", alpha=0.25)
     fig2.suptitle(
-        "Nominal optimum: mechanistic consistency check of the smooth NLP versus exact BDF replay\n"
-        "This figure does not evaluate raw ICSOR surrogate prediction accuracy.",
+        "Nominal optimum: layer-resolved mechanistic consistency check\n"
+        "Clarifier layers are compared only between the smooth and exact models.",
         fontsize=13,
         fontweight="bold",
     )
-    fig2.savefig(OUTPUT_NLP, dpi=220, bbox_inches="tight")
-    fig2.savefig(OUTPUT_NLP_PDF, bbox_inches="tight")
-    print(OUTPUT)
-    print(OUTPUT_PDF)
-    print(OUTPUT_NLP)
-    print(OUTPUT_NLP_PDF)
+    direct_output = output / "nominal_optimum_smooth_nlp_vs_bdf.png"
+    fig2.savefig(direct_output, dpi=220, bbox_inches="tight")
+    fig2.savefig(direct_output.with_suffix(".pdf"), bbox_inches="tight")
+    plt.close(fig)
+    plt.close(fig2)
+    print(surrogate_output)
+    print(surrogate_output.with_suffix(".pdf"))
+    print(direct_output)
+    print(direct_output.with_suffix(".pdf"))
 
 
 if __name__ == "__main__":

@@ -7,10 +7,14 @@ import numpy as np
 from scipy import linalg
 
 from closed_loop.projection import (
+    NetworkLayout,
     PhysicalProjector,
     ProjectionWarmStart,
     QuadraticSurrogate,
     SurrogateValidationError,
+    build_network_operators,
+    fit_network_row_scales,
+    no_conversion_feasible_state,
 )
 
 
@@ -113,6 +117,123 @@ class RidgeNumericalContractTests(unittest.TestCase):
             QuadraticSurrogate.fit_ridge(
                 decisions, influent, responses, ridge_penalty=1.0e-16
             )
+
+
+class ReducedResponseNetworkTests(unittest.TestCase):
+    @staticmethod
+    def _layout() -> NetworkLayout:
+        return NetworkLayout(
+            stage_count=1,
+            component_count=2,
+            layer_count=3,
+            soluble_indices=(0,),
+            particulate_indices=(1,),
+        )
+
+    def test_layout_and_no_conversion_state_follow_reduced_contract(self) -> None:
+        layout = self._layout()
+        self.assertEqual(layout.state_size, 9)
+        self.assertEqual(layout.inventory_index, 8)
+        self.assertEqual(layout.inventory_slice, slice(8, 9))
+        self.assertEqual(layout.equality_count_without_invariants, 5)
+        self.assertEqual(layout.inequality_count, 3)
+
+        operators = build_network_operators(
+            np.asarray([2.0, 10.0]),
+            internal_recycle=1.0,
+            return_recycle=0.5,
+            waste_fraction=0.1,
+            invariant_operator=np.asarray([[1.0, 0.0]]),
+            tss_weights=np.asarray([0.0, 1.0]),
+            layout=layout,
+            clarifier_volume_m3=30.0,
+        )
+        state = no_conversion_feasible_state(
+            np.asarray([2.0, 10.0]),
+            operators=operators,
+            tss_weights=np.asarray([0.0, 1.0]),
+        )
+        self.assertEqual(operators.equality_matrix.shape, (6, 9))
+        self.assertEqual(operators.inequality_matrix.shape, (3, 9))
+        self.assertEqual(state[layout.inventory_index], 300.0)
+        np.testing.assert_allclose(
+            operators.equality_matrix @ state,
+            operators.equality_rhs,
+            atol=1.0e-13,
+        )
+        self.assertLessEqual(
+            float(np.max(operators.inequality_matrix @ state)), 1.0e-13
+        )
+
+    def test_inventory_rows_are_the_tight_endpoint_envelope(self) -> None:
+        layout = self._layout()
+        q_e, q_u = 0.9, 0.6
+        x_e, x_u = 4.0, 16.0
+        volume, endpoint_volume = 30.0, 10.0
+        operators = build_network_operators(
+            np.asarray([0.0, 0.0]),
+            internal_recycle=0.0,
+            return_recycle=0.5,
+            waste_fraction=0.1,
+            invariant_operator=np.asarray([[1.0, 0.0]]),
+            tss_weights=np.asarray([0.0, 1.0]),
+            layout=layout,
+            clarifier_volume_m3=volume,
+        )
+        response = np.zeros(layout.state_size)
+        response[layout.overflow_flow_slice.start + 1] = q_e * x_e
+        response[layout.underflow_flow_slice.start + 1] = q_u * x_u
+        lower = (volume - endpoint_volume) * x_e + endpoint_volume * x_u
+        upper = endpoint_volume * x_e + (volume - endpoint_volume) * x_u
+
+        response[layout.inventory_index] = lower
+        residual = operators.inequality_matrix[-2:] @ response
+        self.assertAlmostEqual(residual[0], 0.0, places=12)
+        self.assertLess(residual[1], 0.0)
+        response[layout.inventory_index] = upper
+        residual = operators.inequality_matrix[-2:] @ response
+        self.assertLess(residual[0], 0.0)
+        self.assertAlmostEqual(residual[1], 0.0, places=12)
+
+    def test_reduced_network_row_scales_are_positive_and_dimensioned(self) -> None:
+        layout = self._layout()
+        rows = 2
+        influents = np.asarray([[2.0, 10.0], [3.0, 12.0]])
+        internal = np.asarray([1.0, 1.5])
+        returned = np.asarray([0.5, 0.7])
+        waste = np.asarray([0.1, 0.2])
+        states = []
+        for row in range(rows):
+            operators = build_network_operators(
+                influents[row],
+                internal_recycle=float(internal[row]),
+                return_recycle=float(returned[row]),
+                waste_fraction=float(waste[row]),
+                invariant_operator=np.asarray([[1.0, 0.0]]),
+                tss_weights=np.asarray([0.0, 1.0]),
+                layout=layout,
+                clarifier_volume_m3=30.0,
+            )
+            states.append(no_conversion_feasible_state(
+                influents[row], operators=operators,
+                tss_weights=np.asarray([0.0, 1.0]),
+            ))
+        scales = fit_network_row_scales(
+            np.asarray(states),
+            influents,
+            internal_recycle=internal,
+            return_recycle=returned,
+            waste_fraction=waste,
+            invariant_operator=np.asarray([[1.0, 0.0]]),
+            tss_weights=np.asarray([0.0, 1.0]),
+            layout=layout,
+            clarifier_volume_m3=30.0,
+            minimum_scale=1.0,
+        )
+        self.assertEqual(scales.equality.shape, (6,))
+        self.assertEqual(scales.inequality.shape, (3,))
+        self.assertTrue(np.all(scales.equality >= 1.0))
+        self.assertTrue(np.all(scales.inequality >= 1.0))
 
 
 class PhysicalProjectionNumericalContractTests(unittest.TestCase):

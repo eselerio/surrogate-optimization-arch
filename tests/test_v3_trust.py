@@ -43,15 +43,18 @@ class TrustCalibrationProjectionTests(unittest.TestCase):
             equality_rhs=np.zeros(1),
             inequality_matrix=np.zeros((1, layout.state_size)),
         )
-        direct_assets = SimpleNamespace(balance_scale=np.ones(1))
-        balance = np.zeros(N_STAGES * N_COMPONENTS + 1)
+        direct_assets = SimpleNamespace(
+            balance_scale=np.ones(N_STAGES * N_COMPONENTS + layout.layer_count),
+            clarifier=SimpleNamespace(layer_volume=600.0, layer_count=layout.layer_count),
+        )
+        balance = np.zeros(N_STAGES * N_COMPONENTS)
         with patch.object(v3_trust, "PhysicalProjector", _Projector), patch.object(
             v3_trust, "fit_network_row_scales", return_value=row_scales,
         ), patch.object(
             v3_trust, "build_network_operators", return_value=operators,
         ), patch.object(
-            v3_trust, "_smooth_response_residual",
-            return_value=(None, balance),
+            v3_trust, "_smooth_reactor_residual",
+            return_value=balance,
         ):
             return v3_trust.calibrate_trust_diagnostics(
                 model, decisions, influents, targets, raw, direct_assets,
@@ -65,6 +68,9 @@ class TrustCalibrationProjectionTests(unittest.TestCase):
             np.full(layout.state_size, 2.0),
         ]
         result = self._calibrate(states, [False, True])
+        self.assertEqual(result.development_values.shape, (2, 3))
+        self.assertFalse(hasattr(result, "flux_limit"))
+        self.assertFalse(hasattr(result.callbacks, "flux_rows"))
         np.testing.assert_array_equal(
             result.out_of_fold_projection_accepted,
             np.array([False, True]),

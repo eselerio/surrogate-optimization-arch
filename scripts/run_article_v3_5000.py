@@ -1,14 +1,14 @@
 """Strict, resumable driver for an authorized article-v3 calculation.
 
-The default article workload is 4,000 development inputs and 1,000 untouched
-test inputs. A user-authorized 50,000-input rerun uses the same frozen 80/20
+The default article workload is 4,000 development inputs and 1,000 holdout
+inputs. A user-authorized 50,000-input rerun uses the same frozen 80/20
 split (40,000/10,000). This driver creates a source-bound result tree and never
 reads a preflight artifact. Expensive stages finish with atomic manifests.
 
 Optimization enters through :func:`run_optimization_stage`, which evaluates
 one deterministic local attempt for each route in each of eleven article
 cases and publishes convergence certification, exact common-reference replay,
-physical-audit, and reporting checkpoints.  The former untouched-test-wide
+physical-audit, and reporting checkpoints.  The former holdout-wide
 smooth/reference equivalence sweep is retained only as legacy code and is not
 executed by the article workflow.
 """
@@ -48,6 +48,7 @@ from closed_loop.manuscript_v3 import (
     clarifier_for,
     create_design,
     cross_validate_ridge,
+    reduce_mechanistic_responses,
     violation_record,
 )
 from closed_loop.model import (
@@ -57,6 +58,8 @@ from closed_loop.model import (
     INVARIANT_MATRIX,
     INFLUENT_LOWER,
     INFLUENT_UPPER,
+    N_COMPONENTS,
+    N_STAGES,
     TSS_VECTOR,
     assemble_target,
     branch_classification,
@@ -122,7 +125,8 @@ ROOT = Path(__file__).resolve().parents[1]
 RESULTS_ROOT = ROOT / "results" / "article_v3"
 LEGACY_RUN_ID = "article_full_5000_001"
 DEFAULT_RUN_ID = "article_full_5000_002"
-RUNNER_SCHEMA = 9
+RUNNER_SCHEMA = 10
+RESPONSE_SCHEMA = "clarifier_inventory_v1"
 ASSESSMENT_GATE_EXECUTION_POLICY = "advisory_continue"
 DIRECT_SINGLE_CENTER_PROTOCOL = "smooth_direct_single_center_v1"
 OPTIMIZATION_PROTOCOL = "single_center_local_exact_qp_v1"
@@ -1159,6 +1163,15 @@ def _build_contract(
         "optimization_protocol": OPTIMIZATION_PROTOCOL,
         "validation_protocol": COMPARISON_PROTOCOL,
         "timing_protocol": TIMING_PROTOCOL,
+        "response_schema": {
+            "name": RESPONSE_SCHEMA,
+            "mechanistic_response_count": profile.mechanistic_response_count,
+            "surrogate_response_count": profile.surrogate_response_count,
+            "shared_coordinate_count": (N_STAGES + 3) * N_COMPONENTS,
+            "clarifier_inventory_formula": "sum(layer_volume_m3 * layer_tss_g_m3)",
+            "clarifier_volume_m3": 6_000.0,
+            "holdout_role": "frozen_post_selection_descriptive",
+        },
         "dataset_protocol": (
             "frozen_accepted_checkpoint_split_80_20_v1"
             if profile.name == FROZEN_PROFILE_NAME
@@ -2983,6 +2996,195 @@ def _copy_reusable_files(
     return copied
 
 
+def _initialize_reduced_response_fork(
+    run: Path,
+    *,
+    source_run: Path,
+    source_contract: Mapping[str, Any],
+    successor_contract: Mapping[str, Any],
+) -> None:
+    """Fork only immutable generation evidence into the reduced-response run.
+
+    Layer-resolved mechanistic checkpoints remain authoritative source data.
+    Every model, assessment, optimization, replay-at-selected-controls, timing,
+    and report artifact is intentionally excluded from this fork.
+    """
+
+    source_root = source_run.resolve()
+    run.parent.mkdir(parents=True, exist_ok=True)
+    temporary_owner = tempfile.TemporaryDirectory(prefix=".r-", dir=run.parent)
+    temporary = Path(temporary_owner.name).resolve()
+    copied: dict[str, str] = {}
+    relative_paths: set[str] = set()
+    datasets = source_run / "datasets"
+    if not datasets.is_dir():
+        raise RuntimeError("reduced-response fork source omits the datasets directory")
+    relative_paths.update(
+        path.relative_to(source_run).as_posix()
+        for path in datasets.rglob("*") if path.is_file()
+    )
+    migrations = source_run / "inputs" / "contract_migrations"
+    if migrations.is_dir():
+        relative_paths.update(
+            path.relative_to(source_run).as_posix()
+            for path in migrations.rglob("*") if path.is_file()
+        )
+    generator_record = source_run / "inputs" / "generator_records.json"
+    if generator_record.is_file():
+        relative_paths.add(generator_record.relative_to(source_run).as_posix())
+    generation_summary = source_run / "metrics" / "mechanistic_generation_summary.csv"
+    if generation_summary.is_file():
+        relative_paths.add(generation_summary.relative_to(source_run).as_posix())
+    for relative in sorted(relative_paths):
+        source = (source_run / relative).resolve()
+        target = (temporary / relative).resolve()
+        if source_root not in source.parents or not source.is_file():
+            raise RuntimeError(f"unsafe or missing generation artifact: {relative}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+        digest = file_digest(source)
+        if file_digest(target) != digest:
+            raise RuntimeError(f"generation-only copy verification failed: {relative}")
+        copied[relative] = digest
+
+    migrations_directory = temporary / "inputs" / "contract_migrations"
+    migrations_directory.mkdir(parents=True, exist_ok=True)
+    migration_id = f"article-v3-reduced-response-{run.name}"
+    predecessor_path = migrations_directory / f"{migration_id}-predecessor-contract.json"
+    atomic_bytes(predecessor_path, (source_run / "inputs" / "contract.json").read_bytes())
+
+    stages: dict[str, Any] = {}
+    for block in ("development", "test"):
+        relative = f"datasets/{block}/block_complete.json"
+        checkpoint = temporary / relative
+        marker = _load_json_object(
+            checkpoint, description=f"retained {block} generation marker",
+        )
+        if not _artifacts_match(temporary, marker.get("artifacts", {})):
+            raise RuntimeError(f"retained {block} generation artifacts changed")
+        stages[f"generation/{block}"] = {
+            "artifact_source_digest": str(marker.get("source_digest", "")),
+            "checkpoint": relative,
+            "checkpoint_sha256": file_digest(checkpoint),
+            "artifacts": dict(marker.get("artifacts", {})),
+        }
+    summary_relative = "metrics/mechanistic_generation_summary.csv"
+    if (temporary / summary_relative).is_file():
+        stages["generation/summary"] = {
+            "artifact_source_digest": source_contract["source_digest"],
+            "checkpoint": summary_relative,
+            "checkpoint_sha256": file_digest(temporary / summary_relative),
+            "artifacts": {},
+        }
+    effective_relative = "datasets/effective_design_manifest.json"
+    if (temporary / effective_relative).is_file():
+        stages["generation/effective_design"] = {
+            "artifact_source_digest": source_contract["source_digest"],
+            "checkpoint": effective_relative,
+            "checkpoint_sha256": file_digest(temporary / effective_relative),
+            "artifacts": {},
+        }
+    retained = {
+        "schema": 1,
+        "policy": "generation_only_for_clarifier_inventory_response_v1",
+        "predecessor_source_digest": source_contract["source_digest"],
+        "stages": stages,
+    }
+    retained_path = migrations_directory / f"{migration_id}-retained.json"
+    atomic_json(retained_path, retained)
+    reuse_manifest = {
+        "schema": 1,
+        "copy_mode": "independent_byte_copy_generation_only",
+        "source_run_id": source_run.name,
+        "target_run_id": run.name,
+        "source_contract_sha256": file_digest(source_run / "inputs" / "contract.json"),
+        "file_count": len(copied),
+        "file_set_digest": _canonical_json_digest(copied),
+        "files": copied,
+    }
+    reuse_path = migrations_directory / f"{migration_id}-reused-files.json"
+    atomic_json(reuse_path, reuse_manifest)
+    old_files = source_contract.get("source_files")
+    new_files = successor_contract.get("source_files")
+    if not isinstance(old_files, Mapping) or not isinstance(new_files, Mapping):
+        raise RuntimeError("response-schema fork requires complete source manifests")
+    record = {
+        "schema": 1,
+        "migration_id": migration_id,
+        "authorized_date": "2026-08-25",
+        "reason": (
+            "User-authorized replacement of layer-wise surrogate outputs by one "
+            "clarifier-solids inventory while preserving full mechanistic checkpoints."
+        ),
+        "run_fork": {
+            "source_run_id": source_run.name,
+            "target_run_id": run.name,
+            "self_contained": True,
+            "recomputed_scope": (
+                "response_transform_fit_assessment_optimization_replay_timing_reporting"
+            ),
+        },
+        "predecessor": {
+            "run_id": source_run.name,
+            "runner_schema": source_contract["runner_schema"],
+            "source_digest": source_contract["source_digest"],
+            "source_files": dict(old_files),
+            "contract_file_digest": file_digest(predecessor_path),
+            "archived_contract": predecessor_path.relative_to(temporary).as_posix(),
+            "archived_contract_digest": file_digest(predecessor_path),
+        },
+        "successor": {
+            "run_id": run.name,
+            "runner_schema": successor_contract["runner_schema"],
+            "source_digest": successor_contract["source_digest"],
+            "source_files": dict(new_files),
+            "response_schema": RESPONSE_SCHEMA,
+        },
+        "changed_source_files": {
+            name: {"old": old_files.get(name), "new": new_files.get(name)}
+            for name in sorted(set(old_files) | set(new_files))
+            if old_files.get(name) != new_files.get(name)
+        },
+        "retained_stage_manifest": {
+            "path": retained_path.relative_to(temporary).as_posix(),
+            "sha256": file_digest(retained_path),
+        },
+        "reused_artifact_manifest": {
+            "path": reuse_path.relative_to(temporary).as_posix(),
+            "sha256": file_digest(reuse_path),
+            "file_count": len(copied),
+            "file_set_digest": reuse_manifest["file_set_digest"],
+        },
+        "superseded_artifact_scopes": [
+            "models", "predictions", "assessment_metrics", "optimization",
+            "selected_control_replays", "timing", "report",
+        ],
+        "applied_at_utc": datetime.now(timezone.utc).isoformat(),
+    }
+    record_path = migrations_directory / f"{migration_id}.json"
+    atomic_json(record_path, record)
+    history_entry = {
+        "migration_id": migration_id,
+        "record": record_path.relative_to(temporary).as_posix(),
+        "record_digest": file_digest(record_path),
+        "predecessor_contract": predecessor_path.relative_to(temporary).as_posix(),
+        "predecessor_contract_digest": file_digest(predecessor_path),
+        "predecessor_source_digest": source_contract["source_digest"],
+        "successor_source_digest": successor_contract["source_digest"],
+    }
+    migrated = dict(successor_contract)
+    migrated["contract_migrations"] = [
+        *source_contract.get("contract_migrations", []), history_entry,
+    ]
+    atomic_json(temporary / "inputs" / "contract.json", migrated)
+    _validate_migration_history(temporary, migrated)
+    _validate_fork_reuse_manifest(
+        temporary, record["reused_artifact_manifest"], verify_files=True,
+    )
+    os.replace(temporary, run)
+    temporary_owner.cleanup()
+
+
 def _validate_all_retained_stages(run: Path, retention: Mapping[str, Any]) -> None:
     stages = retention.get("stages")
     if not isinstance(stages, Mapping) or not stages:
@@ -3038,6 +3240,27 @@ def initialize_reused_run(
         name for name in set(old_files) | set(new_files)
         if old_files.get(name) != new_files.get(name)
     }
+    is_reduced_response_fork = bool(
+        int(source_contract.get("runner_schema", -1)) == 9
+        and int(successor_contract.get("runner_schema", -1)) == RUNNER_SCHEMA
+        and successor_contract.get("response_schema", {}).get("name")
+        == RESPONSE_SCHEMA
+        and source_contract.get("profile") == successor_contract.get("profile")
+        and source_contract.get("fixed_dataset_total")
+        == successor_contract.get("fixed_dataset_total")
+        and source_contract.get("development_test_split")
+        == successor_contract.get("development_test_split")
+        and source_contract.get("dataset_protocol")
+        == successor_contract.get("dataset_protocol")
+    )
+    if is_reduced_response_fork:
+        _initialize_reduced_response_fork(
+            run,
+            source_run=source_run,
+            source_contract=source_contract,
+            successor_contract=successor_contract,
+        )
+        return
     is_pinned_v2_to_v3 = bool(
         source_run_id == POLL_LINESEARCH_FORK_MIGRATION.run_id
         and run.name == DEFAULT_RUN_ID
@@ -3411,7 +3634,7 @@ def _validate_generation_block(
     count: int,
     profile: StudyProfile,
 ) -> None:
-    if targets.shape != (count, profile.response_count) or not np.all(np.isfinite(targets)):
+    if targets.shape != (count, profile.mechanistic_response_count) or not np.all(np.isfinite(targets)):
         raise RuntimeError(f"{block} target block is incomplete or non-finite")
     required = {
         "row", "accepted", "root_difference_inf", "branch_agreement",
@@ -3925,7 +4148,7 @@ def freeze_accepted_generation(
             candidate,
             expected_contract_hash=base_contract,
             state_size=5 * 20 + source_profile.layer_count,
-            response_count=source_profile.response_count,
+            response_count=source_profile.mechanistic_response_count,
         )
         if loaded is None:
             raise RuntimeError(f"frozen checkpoint disappeared: {path}")
@@ -4370,7 +4593,7 @@ def _validate_assessment(
         or not np.all(np.isfinite(value))
         for value in arrays
     ):
-        raise RuntimeError("untouched-test predictions are incomplete or non-finite")
+        raise RuntimeError("post-selection holdout predictions are incomplete or non-finite")
     qp = assessment.qp_diagnostics
     if len(qp) != 2 * test_count or set(qp["projection_input"]) != {
         "raw_prediction", "mechanistic_target",
@@ -4404,6 +4627,8 @@ def evaluate_admission_gate(
     correction_limit: float,
     trust_limits: Mapping[str, float],
     development_oof_projection_accepted: np.ndarray,
+    development_oof_complete_nrmse: float,
+    development_oof_inventory_nrmse: float,
     test_count: int,
 ) -> dict[str, Any]:
     _validate_assessment(
@@ -4416,9 +4641,14 @@ def evaluate_admission_gate(
     ]
     if len(complete) != 1:
         raise RuntimeError("complete-response raw assessment row is missing or duplicated")
-    raw_nrmse = float(complete.iloc[0]["nrmse"])
-    if not np.isfinite(raw_nrmse):
-        raise RuntimeError("complete-response raw nRMSE is non-finite")
+    holdout_raw_nrmse = float(complete.iloc[0]["nrmse"])
+    if not np.isfinite(holdout_raw_nrmse):
+        raise RuntimeError("post-selection holdout complete-response raw nRMSE is non-finite")
+    if not (
+        np.isfinite(development_oof_complete_nrmse)
+        and np.isfinite(development_oof_inventory_nrmse)
+    ):
+        raise RuntimeError("development OOF response gates must be finite")
     qp_accepted = assessment.qp_diagnostics["accepted"].astype(str).str.lower().map(
         {"true": True, "false": False}
     )
@@ -4443,9 +4673,9 @@ def evaluate_admission_gate(
     limits = {name: float(value) for name, value in trust_limits.items()}
     if set(limits) != {
         "correction", "regularized_leverage", "particulate_split",
-        "reactor_residual", "clarifier_flux",
+        "reactor_residual",
     } or not all(np.isfinite(value) and value >= 0.0 for value in limits.values()):
-        raise RuntimeError("five finite, nonnegative trust limits were not frozen")
+        raise RuntimeError("four finite, nonnegative trust limits were not frozen")
     if not np.isclose(
         limits["correction"], correction_limit, rtol=0.0, atol=0.0,
     ):
@@ -4460,7 +4690,12 @@ def evaluate_admission_gate(
             "development OOF projection acceptance must be a nonempty Boolean vector"
         )
     checks = {
-        "raw_nrmse_below_one": raw_nrmse < 1.0,
+        "development_oof_complete_response_nrmse_below_one": (
+            development_oof_complete_nrmse < 1.0
+        ),
+        "development_oof_clarifier_inventory_nrmse_below_one": (
+            development_oof_inventory_nrmse < 1.0
+        ),
         "all_development_oof_projection_qp_audits_passed": bool(
             oof_projection_accepted.all()
         ),
@@ -4468,7 +4703,7 @@ def evaluate_admission_gate(
         "all_finite_distance_bounds_passed": bool(feasibility.all()),
         "projected_physical_audits_passed": bool(physical["projected"]["passed"]),
         "mechanistic_physical_audits_passed": bool(physical["mechanistic"]["passed"]),
-        "all_five_trust_limits_frozen": True,
+        "all_four_trust_limits_frozen": True,
         "correction_limit_at_most_0_50": bool(correction_limit <= 0.50),
     }
     passed = bool(all(checks.values()))
@@ -4477,7 +4712,10 @@ def evaluate_admission_gate(
         "passed": passed,
         "execution_policy": ASSESSMENT_GATE_EXECUTION_POLICY,
         "optimization_permitted": optimization_permitted,
-        "raw_complete_response_nrmse": raw_nrmse,
+        "post_selection_holdout_raw_complete_response_nrmse": holdout_raw_nrmse,
+        "development_oof_complete_response_nrmse": development_oof_complete_nrmse,
+        "development_oof_clarifier_inventory_nrmse": development_oof_inventory_nrmse,
+        "post_selection_holdout_is_confirmatory": False,
         **checks,
         "trust_limits": limits,
         "physical_audit_maxima": physical,
@@ -4493,14 +4731,72 @@ def _assessment_binding(
     development_targets: np.ndarray,
     test_targets: np.ndarray,
 ) -> str:
+    shared_count = (N_STAGES + 3) * N_COMPONENTS
+    layer_count = int(development_targets.shape[1] - shared_count)
+    if layer_count < 1 or test_targets.shape[1] != shared_count + layer_count:
+        raise RuntimeError("mechanistic response blocks have inconsistent dimensions")
+    development_reduced = reduce_mechanistic_responses(
+        development_targets, layer_count,
+    )
+    test_reduced = reduce_mechanistic_responses(test_targets, layer_count)
     return array_digest(
         development_decisions=np.asarray(design["development_decisions"], dtype="<f8"),
         development_influents=np.asarray(design["development_influents"], dtype="<f8"),
         development_targets=np.asarray(development_targets, dtype="<f8"),
+        development_reduced=np.asarray(development_reduced, dtype="<f8"),
         test_decisions=np.asarray(design["test_decisions"], dtype="<f8"),
         test_influents=np.asarray(design["test_influents"], dtype="<f8"),
         test_targets=np.asarray(test_targets, dtype="<f8"),
+        test_reduced=np.asarray(test_reduced, dtype="<f8"),
+        response_schema=np.frombuffer(RESPONSE_SCHEMA.encode("utf-8"), dtype=np.uint8),
     )
+
+
+def _materialize_reduced_response_block(
+    run: Path,
+    *,
+    block: str,
+    mechanistic_targets: np.ndarray,
+    profile: StudyProfile,
+) -> np.ndarray:
+    """Derive and immutably checkpoint the statistical response block."""
+
+    full = np.asarray(mechanistic_targets, dtype=np.float64)
+    if full.ndim != 2 or full.shape[1] != profile.mechanistic_response_count:
+        raise RuntimeError(f"{block} mechanistic targets have the wrong response width")
+    layer_volumes = np.full(
+        profile.layer_count, 6_000.0 / profile.layer_count, dtype=np.float64,
+    )
+    reduced = reduce_mechanistic_responses(
+        full, profile.layer_count, layer_volumes_m3=layer_volumes,
+    )
+    if reduced.shape != (len(full), profile.surrogate_response_count):
+        raise RuntimeError(f"{block} reduced response transformation has the wrong shape")
+    path = run / "datasets" / block / "surrogate_responses_inventory_v1.npz"
+    full_digest = array_digest(mechanistic_targets=np.asarray(full, dtype="<f8"))
+    if path.is_file():
+        with np.load(path, allow_pickle=False) as stored:
+            valid = bool(
+                set(stored.files) == {
+                    "schema", "mechanistic_target_digest", "layer_volumes_m3",
+                    "responses",
+                }
+                and str(stored["schema"].item()) == RESPONSE_SCHEMA
+                and str(stored["mechanistic_target_digest"].item()) == full_digest
+                and np.array_equal(stored["layer_volumes_m3"], layer_volumes)
+                and np.array_equal(stored["responses"], reduced)
+            )
+        if not valid:
+            raise RuntimeError(f"existing {block} reduced-response artifact is inconsistent")
+        return reduced
+    atomic_npz(
+        path,
+        schema=np.asarray(RESPONSE_SCHEMA),
+        mechanistic_target_digest=np.asarray(full_digest),
+        layer_volumes_m3=layer_volumes,
+        responses=reduced,
+    )
+    return reduced
 
 
 def load_assessment_checkpoint(
@@ -4549,13 +4845,25 @@ def run_assessment(
 ) -> AnalysisBundle:
     development_decisions = np.asarray(design["development_decisions"])
     development_influents = np.asarray(design["development_influents"])
+    development_reduced = _materialize_reduced_response_block(
+        run,
+        block="development",
+        mechanistic_targets=development_targets,
+        profile=profile,
+    )
+    test_reduced = _materialize_reduced_response_block(
+        run,
+        block="test",
+        mechanistic_targets=test_targets,
+        profile=profile,
+    )
     input_id = _assessment_binding(design, development_targets, test_targets)
     source_id = source_digest(source_files)
     existing_gate = load_assessment_checkpoint(
         run, source_id=source_id, input_id=input_id,
     )
     model, oof_raw, _ = fit_or_resume_ridge(
-        run, development_decisions, development_influents, development_targets,
+        run, development_decisions, development_influents, development_reduced,
         source_files=source_files,
     )
     layout = NetworkLayout(layer_count=profile.layer_count)
@@ -4564,17 +4872,16 @@ def run_assessment(
         clarifier=clarifier_for(profile),
     )
     trust = calibrate_trust_diagnostics(
-        model, development_decisions, development_influents, development_targets,
+        model, development_decisions, development_influents, development_reduced,
         oof_raw, direct_assets, layout=layout,
     )
     surrogate_assets = build_surrogate_assets(
-        model, development_decisions, development_influents, development_targets,
+        model, development_decisions, development_influents, development_reduced,
         layout=layout,
         correction_rms_threshold=trust.correction_limit,
         trust_callbacks=trust.callbacks,
         split_rms_threshold=trust.split_limit,
         reactor_rms_threshold=trust.reactor_limit,
-        flux_rms_threshold=trust.flux_limit,
     )
     features = model.feature_map.transform(development_decisions, development_influents)
     leverage = np.einsum(
@@ -4583,10 +4890,10 @@ def run_assessment(
     trust_values = np.column_stack((
         trust.development_values[:, 0], leverage, trust.development_values[:, 1:],
     ))
-    if trust_values.shape != (profile.development_count, 5) or not np.all(
+    if trust_values.shape != (profile.development_count, 4) or not np.all(
         np.isfinite(trust_values)
     ):
-        raise RuntimeError("five development trust diagnostics were not evaluated")
+        raise RuntimeError("four development trust diagnostics were not evaluated")
     limits = {
         "correction": float(trust.correction_limit),
         "regularized_leverage": float(
@@ -4594,7 +4901,6 @@ def run_assessment(
         ),
         "particulate_split": float(trust.split_limit),
         "reactor_residual": float(trust.reactor_limit),
-        "clarifier_flux": float(trust.flux_limit),
     }
     if existing_gate is not None:
         return AnalysisBundle(
@@ -4604,7 +4910,7 @@ def run_assessment(
         )
     trust_frame = pd.DataFrame(trust_values, columns=[
         "correction", "regularized_leverage", "particulate_split",
-        "reactor_residual", "clarifier_flux",
+        "reactor_residual",
     ])
     trust_frame.insert(0, "row", np.arange(profile.development_count))
     trust_frame.insert(
@@ -4623,22 +4929,22 @@ def run_assessment(
         model,
         development_decisions,
         development_influents,
-        development_targets,
+        development_reduced,
         np.asarray(design["test_decisions"]),
         np.asarray(design["test_influents"]),
-        test_targets,
+        test_reduced,
         profile,
     )
     _validate_assessment(
         assessment, test_count=profile.test_count,
-        response_count=profile.response_count,
+        response_count=profile.surrogate_response_count,
     )
     paths = (
-        run / "metrics" / "untouched_prediction_metrics.csv",
+        run / "metrics" / "post_selection_prediction_metrics.csv",
         run / "metrics" / "physical_violations_assessment.csv",
         run / "metrics" / "projection_qp_diagnostics.csv",
         run / "metrics" / "projection_feasibility_bound.csv",
-        run / "predictions" / "untouched_test.npz",
+        run / "predictions" / "post_selection_holdout.npz",
         run / "metrics" / "trust_development_oof.csv",
         run / "metrics" / "trust_limits.json",
         run / "models" / "trust_calibration.npz",
@@ -4647,6 +4953,8 @@ def run_assessment(
         run / "models" / "ridge_complete.json",
         run / "metrics" / "ridge_cross_validation.csv",
         run / "metrics" / "ridge_fold_membership.csv",
+        run / "datasets" / "development" / "surrogate_responses_inventory_v1.npz",
+        run / "datasets" / "test" / "surrogate_responses_inventory_v1.npz",
     )
     atomic_dataframe(paths[0], assessment.metrics)
     atomic_dataframe(paths[1], assessment.violations)
@@ -4654,7 +4962,14 @@ def run_assessment(
     atomic_dataframe(paths[3], assessment.feasibility)
     atomic_npz(
         paths[4], raw=assessment.raw, projected=assessment.projected,
-        projected_targets=assessment.projected_targets, mechanistic=test_targets,
+        projected_targets=assessment.projected_targets,
+        mechanistic=test_reduced,
+        mechanistic_full=test_targets,
+    )
+    oof_scaled = (oof_raw - development_reduced) / model.response_scale
+    development_oof_complete_nrmse = float(np.sqrt(np.mean(oof_scaled**2)))
+    development_oof_inventory_nrmse = float(
+        np.sqrt(np.mean(oof_scaled[:, layout.inventory_index] ** 2))
     )
     gate = evaluate_admission_gate(
         assessment, correction_limit=trust.correction_limit,
@@ -4662,12 +4977,14 @@ def run_assessment(
         development_oof_projection_accepted=(
             trust.out_of_fold_projection_accepted
         ),
+        development_oof_complete_nrmse=development_oof_complete_nrmse,
+        development_oof_inventory_nrmse=development_oof_inventory_nrmse,
         test_count=profile.test_count,
     )
     atomic_json(paths[8], gate)
     assert_source_unchanged(source_files)
     atomic_json(run / "metrics" / "assessment_complete.json", {
-        "stage": "untouched_test_assessment",
+        "stage": "post_selection_holdout_assessment",
         "source_digest": source_id,
         "input_digest": input_id,
         "passed": gate["passed"],
@@ -4753,16 +5070,16 @@ def _load_cached_assessment_raw(
     analysis: AnalysisBundle,
     expected_shape: tuple[int, int],
 ) -> np.ndarray:
-    path = run / "predictions" / "untouched_test.npz"
+    path = run / "predictions" / "post_selection_holdout.npz"
     if path.is_file():
         with np.load(path, allow_pickle=False) as stored:
             value = np.asarray(stored["raw"], dtype=float)
     elif analysis.assessment is not None:
         value = np.asarray(analysis.assessment.raw, dtype=float)
     else:
-        raise RuntimeError("cached untouched-test raw predictions are unavailable")
+        raise RuntimeError("cached post-selection holdout raw predictions are unavailable")
     if value.shape != expected_shape or not np.all(np.isfinite(value)):
-        raise RuntimeError("cached untouched-test raw predictions are invalid")
+        raise RuntimeError("cached post-selection holdout raw predictions are invalid")
     return value
 
 
@@ -6977,13 +7294,20 @@ def _run_casewise_route_reference_evaluation(
         raise_on_failure=False,
     )
     projected = np.asarray(projection.state, dtype=np.float64)
-    native_response = (
+    native_full_response = (
         np.asarray(final.projected, dtype=np.float64)
         if route == "surrogate"
         else np.asarray(final.response, dtype=np.float64)
     )
+    native_response = (
+        native_full_response
+        if route == "surrogate"
+        else reduce_mechanistic_responses(
+            native_full_response, analysis.surrogate_assets.layout.layer_count,
+        )
+    )
     native_objective = float(final.objective)
-    expected_response_shape = (analysis.direct_assets.response_count,)
+    expected_response_shape = (analysis.surrogate_assets.layout.state_size,)
     for label, values in (
         ("raw", raw), ("projected", projected),
         ("optimizer-native", native_response),
@@ -7001,11 +7325,18 @@ def _run_casewise_route_reference_evaluation(
     if not native_feasible:
         raise RuntimeError(f"{route} selected candidate failed its native feasibility audit")
     retained_reference = case_directory / f"{route}_reference.npz"
-    reference, state_1, state_2, reference_payload = _casewise_exact_reference(
+    reference_full, state_1, state_2, reference_payload = _casewise_exact_reference(
         theta,
         influent,
         analysis,
         retained_reference_path=retained_reference,
+    )
+    reference = (
+        reduce_mechanistic_responses(
+            reference_full, analysis.surrogate_assets.layout.layer_count,
+        )
+        if np.all(np.isfinite(reference_full))
+        else np.full(expected_response_shape, np.nan)
     )
     exact_replay_valid = bool(
         reference_payload.get("accepted") is True
@@ -7113,6 +7444,10 @@ def _run_casewise_route_reference_evaluation(
         projected=projected,
         optimizer_native=native_response,
         exact_reference=reference,
+        optimizer_native_full=(
+            native_full_response if route == "direct" else np.empty(0, dtype=np.float64)
+        ),
+        exact_reference_full=reference_full,
         exact_state_start_1=state_1,
         exact_state_start_2=state_2,
     )
@@ -7134,8 +7469,18 @@ def _run_casewise_route_reference_evaluation(
         ("raw", raw),
         ("projected", projected),
         ("optimizer_native", native_response),
-        ("exact_mechanistic_start_1", response_1),
-        ("exact_mechanistic_start_2", response_2),
+        (
+            "exact_mechanistic_start_1",
+            reduce_mechanistic_responses(
+                response_1, analysis.surrogate_assets.layout.layer_count,
+            ) if np.all(np.isfinite(response_1)) else np.full(expected_response_shape, np.nan),
+        ),
+        (
+            "exact_mechanistic_start_2",
+            reduce_mechanistic_responses(
+                response_2, analysis.surrogate_assets.layout.layer_count,
+            ) if np.all(np.isfinite(response_2)) else np.full(expected_response_shape, np.nan),
+        ),
     ]
     physical = pd.DataFrame([
         {
@@ -7516,8 +7861,8 @@ def run_optimization_stage(
 ) -> bool:
     """Run searches and compare selected decisions on one exact reference.
 
-    The untouched-test set remains reserved for surrogate generalization
-    assessment. Smooth/reference equivalence is not rerun over the untouched
+    The frozen post-selection holdout remains reserved for descriptive
+    surrogate assessment. Smooth/reference equivalence is not rerun over the
     rows. Instead, every available nominal/robustness decision is evaluated
     by the same exact nonsmooth mechanistic equations.  Search failures and
     unresolved convergence certificates are recorded casewise and never stop
@@ -7896,13 +8241,13 @@ def run_optimization_stage(
         selected_physical,
     )
     # A combined ledger gives the manuscript one explicit location containing
-    # untouched-test prediction audits and casewise decision-response audits.
+    # post-selection holdout prediction audits and casewise response audits.
     assessment_physical = pd.read_csv(
         run / "metrics" / "physical_violations_assessment.csv"
     )
     combined_frames = []
     for scope, frame in (
-        ("untouched_test", assessment_physical),
+        ("post_selection_holdout", assessment_physical),
         ("selected_decision_common_reference", selected_physical),
     ):
         item = frame.copy()

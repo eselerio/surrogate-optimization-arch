@@ -7,13 +7,16 @@ The earlier five-control/351-feature workflow is retained only as legacy code
 and is not an article-v3 result source.
 
 The v3 calculation uses seven controls, twenty influent coordinates, five
-reactors, and a dimension-parametric layered Clarifier. A 406-feature ridge
-surrogate predicts the complete mixer/reactor/outlet/layer response. Each raw
-prediction is reconciled by an independently audited convex physical
-projection. Operational results compare the projected-surrogate route with a
-separate smooth mechanistic NLP. Each selected decision is then replayed on
-the same exact nonsmooth mechanistic model so that the two routes are compared
-on one common physical and objective reference.
+reactors, and a dimension-parametric layered Clarifier. The mechanistic model
+retains every Clarifier layer, but the 406-feature ridge surrogate predicts a
+161-coordinate operational response: mixer and reactor states, overflow and
+underflow component flows, and one total Clarifier-solids inventory. It does
+not predict or reconstruct the layer profile. Each raw prediction is
+reconciled by an independently audited convex physical projection.
+Operational results compare the projected-surrogate route with a separate
+smooth mechanistic NLP. Each selected decision is then replayed on the same
+exact nonsmooth layered model so that both routes share one physical and
+objective reference.
 
 Every analysis retains mass-conservation and non-negativity diagnostics for
 raw, projected, optimizer-native, and exact-mechanistic responses. The exact
@@ -71,10 +74,14 @@ the code paths, but it can never authorize or populate article results.
 
 ## Full article calculation
 
-The article profile uses exactly 5,000 **accepted** mechanistic inputs: 4,000
-development and 1,000 untouched test rows, ten fresh influent
-scenarios plus nominal, and ten Clarifier layers. Its seeds are 100042,
-100043, and 314159. Both optimization routes now use one deterministic
+The current article notebook freezes the 16,714 accepted states available from
+the interrupted 50,000-target generation: 13,371 development rows and 3,343
+post-selection holdout rows. No new mechanistic state is generated. The
+mechanistic generator, direct optimizer, and exact replay retain ten Clarifier
+layers; only the statistical response is reduced. The runner also preserves
+the earlier 5,000- and 50,000-target profiles for explicit historical or fresh
+runs. Ten influent scenarios plus nominal use seed 314159. Both optimization
+routes now use one deterministic
 box-center start per case and search only that local basin; they make no
 global-optimality claim. The surrogate route primarily uses analytical
 active-set sensitivities in the seven controls. If those derivatives are
@@ -122,24 +129,26 @@ primary direct solve is never given an extra basin search. The nominal case
 and all ten robustness cases are still attempted for both routes. An
 optimization failure or unresolved audit is recorded casewise and does not
 suppress the remaining cases, replay, physical audits, timing aggregation, or
-reporting. Runtime comparisons use only the durations already recorded for
-robustness cases 01--10; no repeated inference or projection benchmark is run
-over the 1,000-row untouched test block.
+reporting. Runtime comparisons use only the durations recorded for robustness
+cases 01--10; no repeated inference or projection benchmark is run over the
+frozen post-selection holdout block.
 
-Whole-test smooth/reference equivalence is retired and is not an article
-admission gate. The 1,000-row untouched test block is reserved for surrogate
-prediction assessment. Instead, every available selected surrogate and direct
-candidate is replayed casewise from both declared starts on the exact
-nonsmooth mechanistic model. A branch-boundary ambiguity is retained as a
+Whole-holdout smooth/reference equivalence is retired and is not an article
+admission gate. The 3,343-row post-selection holdout block is used only for
+descriptive surrogate prediction assessment. Instead, every available selected
+surrogate and direct candidate is replayed casewise from both declared starts
+on the exact nonsmooth mechanistic model. A branch-boundary ambiguity is retained as a
 qualification and is not by itself a rejection. Comparison eligibility still
 requires a valid exact replay, physical and stability audits, and engineering
 feasibility. A valid replay's exact objective remains reportable when its
 engineering check fails, but that candidate cannot enter a paired comparison.
 
 The earlier nine-start surrogate gap-continuation protocol is retired for
-production. This explicit revision reuses the verified 5,000-row generation,
-fit, and assessment artifacts in the existing run; it does not restart data
-generation or refit the surrogate.
+production. The reduced-response revision reuses only verified mechanistic
+generation artifacts and their frozen partition. The historical layer-output
+fit, assessment, trust calibration, surrogate optimization, replay, timing,
+and reports are deliberately not reused; the 161-output surrogate and every
+downstream artifact are rebuilt under a new schema.
 
 This 5,000-input workload is an explicit user-authorized revision dated
 2026-08-23. It supersedes the earlier draft's 800/200 article workload without
@@ -171,9 +180,9 @@ run-integrity error and is never hidden by recomputation.
 
 The full calculation begins only after the reduced workflow has completed its
 implementation checks. An ordinary mechanistic-candidate failure does not stop
-generation. For the current model-function exercise, later scientific
-admission gates remain unchanged and determine article eligibility, but they
-are advisory for execution: a failure is recorded and propagated while the
+generation. For the current model-function exercise, the revised scientific
+admission gates determine article eligibility, but they are advisory for
+execution: a failure is recorded and propagated while the
 remaining optimization, replay, timing, and reporting paths are attempted
 without refitting. A failed gate is never relabeled as a pass. Non-finite or
 incomplete numerical objects and run-integrity failures still stop execution.
@@ -181,9 +190,10 @@ incomplete numerical objects and run-integrity failures still stop execution.
 To execute the full article notebook from a resumable named run directory:
 
 ```powershell
-$env:ARTICLE_V3_PROFILE = "article_full"
-$env:ARTICLE_V3_RUN_ID = "article_full_5000_002"
-$env:ARTICLE_V3_REUSE_FROM_RUN_ID = "article_full_5000_001"
+$env:ARTICLE_V3_DATASET_COUNT = "50000"
+$env:ARTICLE_V3_USE_FROZEN_ACCEPTED_CHECKPOINTS = "1"
+$env:ARTICLE_V3_RUN_ID = "article_full_50000_reduced_001"
+$env:ARTICLE_V3_REUSE_FROM_RUN_ID = "article_full_50000_003"
 uv run jupyter nbconvert --to notebook --execute main_closed_loop.ipynb `
   --output "main_closed_loop.$($env:ARTICLE_V3_RUN_ID).executed.ipynb" `
   --output-dir results\executed_notebooks `
@@ -191,17 +201,18 @@ uv run jupyter nbconvert --to notebook --execute main_closed_loop.ipynb `
   --ExecutePreprocessor.timeout=-1
 ```
 
-Every rerun is created in a new self-contained directory. The runner byte-copies
-and hash-verifies the accepted 5,000-row dataset, model, assessment, and primary
-route-search artifacts from the declared source run, records a provenance
-manifest, and writes all newly computed downstream outputs into the target.
-For the current corrected rerun, use:
+Every rerun is created in a new self-contained directory. For the reduced
+response, the runner byte-copies and hash-verifies only the accepted
+mechanistic datasets and generation provenance from the declared source run.
+It derives the 161-coordinate responses in the target and refits all
+downstream artifacts. For the current revised run, use:
 
 ```powershell
 $env:PYTHONPATH = "."
 uv run python -u scripts\run_article_v3_5000.py `
-  --run-id article_full_5000_002 `
-  --reuse-from-run-id article_full_5000_001 `
+  --run-id article_full_50000_reduced_001 `
+  --reuse-from-run-id article_full_50000_003 `
+  --use-frozen-accepted-checkpoints `
   --through complete
 ```
 
@@ -212,11 +223,11 @@ Generation publishes `all_attempts.csv`, `accepted_provenance.csv`,
 The original row checkpoints and their prior assembled artifacts are retained
 unchanged.
 
-Set `ARTICLE_V3_PROFILE=test_500_l5` only when intentionally rebuilding the
-article-ineligible preflight; it is not the default article workload.
+The historical preflight uses separate scripts and remains article-ineligible;
+it is not the default article workload.
 
 An article result is releasable only when its artifact manifest verifies the
-complete attempt ledger, exactly 4,000/1,000 accepted rows and their provenance,
+complete attempt ledger, exactly 13,371/3,343 frozen rows and their provenance,
 all mechanistic and QP audits, trust gates, both optimization
 routes for every case, casewise common-reference checks, physical-violation
 ledger, and required reporting tables.

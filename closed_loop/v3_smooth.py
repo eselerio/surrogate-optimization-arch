@@ -547,6 +547,55 @@ def _reconstruct_response(theta: Any, influent: Any, state: Any, feed_tss: Any, 
     return ca.vertcat(*blocks) if isinstance(state, (ca.MX, ca.SX, ca.DM)) else np.concatenate(blocks)
 
 
+def _smooth_reactor_residual(
+    theta: Any,
+    response: Any,
+    assets: DirectAssets,
+    epsilon: float,
+) -> Any:
+    """Evaluate only the smooth reactor rows from a response prefix.
+
+    Both the complete mechanistic response and the reduced surrogate response
+    begin with ``(m,c_1,...,c_N)``.  Keeping these rows independent of the
+    Clarifier layer coordinates lets the reduced surrogate retain the reactor
+    trust diagnostic without reconstructing a fictitious layer profile.
+    """
+
+    mixer = response[:N_COMPONENTS]
+    reactors = [
+        response[(stage + 1) * N_COMPONENTS : (stage + 2) * N_COMPONENTS]
+        for stage in range(N_STAGES)
+    ]
+    dilution = 120.0 * (1.0 + theta[4] + theta[5]) / theta[0]
+    residuals: list[Any] = []
+    upstream = mixer
+    for stage, reactor in enumerate(reactors):
+        source = (
+            ca.DM(STOICHIOMETRIC_MATRIX).T
+            @ _smooth_rates(reactor, assets.smoothing, epsilon)
+            if isinstance(response, (ca.MX, ca.SX, ca.DM))
+            else STOICHIOMETRIC_MATRIX.T
+            @ _smooth_rates(reactor, assets.smoothing, epsilon)
+        )
+        if stage >= 2:
+            aeration = theta[stage - 1]
+            oxygen = 47.0 * aeration * (
+                8.5 - reactor[COMPONENT_INDEX["S_O"]]
+            )
+            if isinstance(response, (ca.MX, ca.SX, ca.DM)):
+                source = source + ca.vertcat(
+                    oxygen, ca.MX.zeros(N_COMPONENTS - 1)
+                )
+            else:
+                source = np.asarray(source, dtype=float).copy()
+                source[COMPONENT_INDEX["S_O"]] += oxygen
+        residuals.append(dilution * (upstream - reactor) + source)
+        upstream = reactor
+    if isinstance(response, (ca.MX, ca.SX, ca.DM)):
+        return ca.vertcat(*residuals)
+    return np.concatenate(tuple(np.asarray(item, dtype=float) for item in residuals))
+
+
 def _smooth_response_residual(
     theta: Any,
     influent: Any,
@@ -557,28 +606,8 @@ def _smooth_response_residual(
     receiver_half_width: float,
 ) -> tuple[Any, Any]:
     response = _reconstruct_response(theta, influent, state, feed_tss, assets.layer_count)
-    reactors = [state[i * N_COMPONENTS : (i + 1) * N_COMPONENTS] for i in range(N_STAGES)]
     layers = state[N_STAGES * N_COMPONENTS :]
-    mixer = response[:N_COMPONENTS]
-    dilution = 120.0 * (1.0 + theta[4] + theta[5]) / theta[0]
-    residuals: list[Any] = []
-    upstream = mixer
-    for stage, reactor in enumerate(reactors):
-        source = ca.DM(STOICHIOMETRIC_MATRIX).T @ _smooth_rates(
-            reactor, assets.smoothing, epsilon,
-        ) if isinstance(state, (ca.MX, ca.SX, ca.DM)) else STOICHIOMETRIC_MATRIX.T @ _smooth_rates(
-            reactor, assets.smoothing, epsilon,
-        )
-        if stage >= 2:
-            aeration = theta[stage - 1]
-            oxygen = 47.0 * aeration * (8.5 - reactor[COMPONENT_INDEX["S_O"]])
-            if isinstance(state, (ca.MX, ca.SX, ca.DM)):
-                source = source + ca.vertcat(oxygen, ca.MX.zeros(N_COMPONENTS - 1))
-            else:
-                source = np.asarray(source, dtype=float).copy()
-                source[COMPONENT_INDEX["S_O"]] += oxygen
-        residuals.append(dilution * (upstream - reactor) + source)
-        upstream = reactor
+    reactor_residual = _smooth_reactor_residual(theta, response, assets, epsilon)
     flux = _smooth_clarifier_fluxes(
         layers, feed_tss, theta, assets.smoothing, assets.clarifier,
         epsilon, receiver_half_width,
@@ -591,8 +620,8 @@ def _smooth_response_residual(
             value += assets.clarifier.fresh_flow * q_c * feed_tss / assets.clarifier.layer_volume
         layer_residuals.append(value)
     if isinstance(state, (ca.MX, ca.SX, ca.DM)):
-        return response, ca.vertcat(*residuals, *layer_residuals)
-    return response, np.concatenate((*residuals, np.asarray(layer_residuals)))
+        return response, ca.vertcat(reactor_residual, *layer_residuals)
+    return response, np.concatenate((reactor_residual, np.asarray(layer_residuals)))
 
 
 def evaluate_smooth_response(

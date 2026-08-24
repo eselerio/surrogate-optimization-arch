@@ -547,7 +547,6 @@ TRUST_LIMITS = {
     "regularized_leverage": 1.0,
     "particulate_split": 1.0,
     "reactor_residual": 1.0,
-    "clarifier_flux": 1.0,
 }
 
 
@@ -1156,6 +1155,8 @@ class ArticleV3FiveThousandContractTests(unittest.TestCase):
             assessment_fixture(), correction_limit=0.4,
             trust_limits=TRUST_LIMITS,
             development_oof_projection_accepted=np.ones(5, dtype=bool),
+            development_oof_complete_nrmse=0.5,
+            development_oof_inventory_nrmse=0.5,
             test_count=2,
         )
         self.assertTrue(gate["passed"])
@@ -1166,6 +1167,8 @@ class ArticleV3FiveThousandContractTests(unittest.TestCase):
             assessment_fixture(), correction_limit=0.51,
             trust_limits={**TRUST_LIMITS, "correction": 0.51},
             development_oof_projection_accepted=np.ones(5, dtype=bool),
+            development_oof_complete_nrmse=0.5,
+            development_oof_inventory_nrmse=0.5,
             test_count=2,
         )
         self.assertFalse(failed["passed"])
@@ -1184,6 +1187,8 @@ class ArticleV3FiveThousandContractTests(unittest.TestCase):
             development_oof_projection_accepted=np.array(
                 [True, False, True], dtype=bool,
             ),
+            development_oof_complete_nrmse=0.5,
+            development_oof_inventory_nrmse=0.5,
             test_count=2,
         )
         self.assertFalse(
@@ -1192,10 +1197,27 @@ class ArticleV3FiveThousandContractTests(unittest.TestCase):
         self.assertFalse(gate["passed"])
         self.assertTrue(gate["optimization_permitted"])
 
+    def test_inventory_coordinate_has_its_own_development_oof_gate(self) -> None:
+        gate = runner.evaluate_admission_gate(
+            assessment_fixture(),
+            correction_limit=0.4,
+            trust_limits=TRUST_LIMITS,
+            development_oof_projection_accepted=np.ones(5, dtype=bool),
+            development_oof_complete_nrmse=0.5,
+            development_oof_inventory_nrmse=1.01,
+            test_count=2,
+        )
+        self.assertFalse(
+            gate["development_oof_clarifier_inventory_nrmse_below_one"]
+        )
+        self.assertFalse(gate["passed"])
+        self.assertFalse(gate["post_selection_holdout_is_confirmatory"])
+
     def test_assessment_persists_development_projection_acceptance(self) -> None:
         profile = tiny_profile()
         design = tiny_design(profile)
-        response_count = profile.response_count
+        response_count = profile.surrogate_response_count
+        mechanistic_response_count = profile.mechanistic_response_count
         model = SimpleNamespace(
             response_count=response_count,
             response_scale=np.ones(response_count),
@@ -1208,9 +1230,8 @@ class ArticleV3FiveThousandContractTests(unittest.TestCase):
             correction_limit=0.4,
             split_limit=1.0,
             reactor_limit=1.0,
-            flux_limit=1.0,
             callbacks=None,
-            development_values=np.zeros((profile.development_count, 4)),
+            development_values=np.zeros((profile.development_count, 3)),
             out_of_fold_projected=np.zeros((profile.development_count, response_count)),
             out_of_fold_projection_accepted=accepted,
             split_scale=np.ones(1),
@@ -1255,8 +1276,8 @@ class ArticleV3FiveThousandContractTests(unittest.TestCase):
                 result = runner.run_assessment(
                     run,
                     design,
-                    np.zeros((profile.development_count, response_count)),
-                    np.zeros((profile.test_count, response_count)),
+                    np.zeros((profile.development_count, mechanistic_response_count)),
+                    np.zeros((profile.test_count, mechanistic_response_count)),
                     profile=profile,
                     source_files={"unit-test": "bound-source"},
                 )
@@ -1269,6 +1290,14 @@ class ArticleV3FiveThousandContractTests(unittest.TestCase):
                 np.testing.assert_array_equal(
                     stored["out_of_fold_projection_accepted"], accepted,
                 )
+            with np.load(
+                run / "datasets/development/surrogate_responses_inventory_v1.npz"
+            ) as stored:
+                self.assertEqual(
+                    stored["responses"].shape,
+                    (profile.development_count, profile.surrogate_response_count),
+                )
+                self.assertEqual(str(stored["schema"].item()), runner.RESPONSE_SCHEMA)
             self.assertFalse(result.passed)
             self.assertFalse(
                 result.gate["all_development_oof_projection_qp_audits_passed"]
@@ -1412,7 +1441,7 @@ class ArticleV3FiveThousandContractTests(unittest.TestCase):
             ))
 
     def test_optimization_hook_rejects_nonarticle_profile(self) -> None:
-        with self.assertRaisesRegex(RuntimeError, "article 4,000/1,000 profile"):
+        with self.assertRaisesRegex(RuntimeError, "unauthorized dataset total"):
             runner.run_optimization_stage(
                 run=Path("unused"), profile=tiny_profile(), design={},
                 development_targets=np.empty((0, 0)), test_targets=np.empty((0, 0)),

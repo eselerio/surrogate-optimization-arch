@@ -79,7 +79,7 @@ def _make_run(root: Path, robustness_count: int = 2) -> None:
         targets=targets,
     )
     (root / "models").mkdir(parents=True)
-    np.savez_compressed(root / "models" / "ridge_surrogate.npz", response_scale=np.ones(165))
+    np.savez_compressed(root / "models" / "ridge_surrogate.npz", response_scale=np.ones(161))
     (root / "metrics").mkdir(parents=True)
     pd.DataFrame(
         [
@@ -110,12 +110,50 @@ def _make_run(root: Path, robustness_count: int = 2) -> None:
             "regularized_leverage": 2.0,
             "particulate_split": 0.1,
             "reactor_residual": 1.0,
-            "clarifier_flux": 1.5,
         },
     )
 
 
 class ReportingSnapshotTests(unittest.TestCase):
+    def test_reporting_geometry_separates_surrogate_and_mechanistic_widths(self) -> None:
+        geometry = reporting.StudyGeometry(layer_count=5, layer_volume_m3=1_200.0)
+        self.assertEqual(geometry.surrogate_response_count, 161)
+        self.assertEqual(geometry.response_count, 161)
+        self.assertEqual(geometry.mechanistic_response_count, 165)
+        self.assertEqual(geometry.mechanistic_state_count, 105)
+
+        full = np.arange(165, dtype=float)
+        full[-5:] = np.arange(1.0, 6.0)
+        reduced = reporting._as_reduced_response(
+            full, geometry, allow_mechanistic=True,
+        )
+        self.assertIsNotNone(reduced)
+        assert reduced is not None
+        self.assertEqual(reduced.shape, (161,))
+        np.testing.assert_array_equal(reduced[:160], full[:160])
+        self.assertEqual(reduced[-1], 1_200.0 * sum(range(1, 6)))
+        self.assertIsNone(reporting._as_reduced_response(
+            full, geometry, allow_mechanistic=False,
+        ))
+
+    def test_shared_engineering_uses_scalar_clarifier_inventory(self) -> None:
+        geometry = reporting.StudyGeometry(layer_count=5, layer_volume_m3=1_200.0)
+        response = np.zeros(geometry.surrogate_response_count)
+        response[geometry.inventory_index] = 5_432.0
+        quantities, _, _ = reporting._response_quantities(
+            THETA, response, geometry, np.ones(4),
+        )
+        self.assertEqual(quantities["clarifier_solids_inventory"], 5_432.0)
+        self.assertEqual(quantities["solids_inventory"], 5_432.0)
+
+    def test_trust_reporting_has_four_reduced_response_diagnostics(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            run = Path(temporary) / "run"
+            _make_run(run, robustness_count=0)
+            table = reporting._trust_table(run, (), [])
+            self.assertEqual(tuple(table["diagnostic"]), reporting.TRUST_DIAGNOSTICS)
+            self.assertNotIn("clarifier_flux", set(table["diagnostic"]))
+
     def test_physical_summary_excludes_unavailable_placeholders(self) -> None:
         detail = pd.DataFrame([
             {
@@ -145,7 +183,7 @@ class ReportingSnapshotTests(unittest.TestCase):
             {
                 # Missing availability is a legacy computed row, not a failed
                 # placeholder; concatenated legacy tables acquire this NaN.
-                "analysis_scope": "untouched_test",
+                "analysis_scope": "post_selection_holdout",
                 "case": "test_0000",
                 "method": "optimizer_native",
                 "audit_available": np.nan,
@@ -195,7 +233,7 @@ class ReportingSnapshotTests(unittest.TestCase):
         }])
         summary = reporting._physical_summary(legacy)
         row = summary[
-            (summary["analysis_scope"] == "untouched_test")
+            (summary["analysis_scope"] == "post_selection_holdout")
             & (summary["method"] == "mechanistic")
         ].iloc[0]
         self.assertEqual(row["availability"], "available")
@@ -325,7 +363,7 @@ class ReportingSnapshotTests(unittest.TestCase):
             _make_run(run, robustness_count=0)
             np.savez_compressed(
                 run / "models" / "ridge_surrogate.npz",
-                response_scale=np.ones(165),
+                response_scale=np.ones(161),
             )
             pd.DataFrame([
                 {
@@ -447,9 +485,9 @@ class ReportingSnapshotTests(unittest.TestCase):
             physical = bundle["physical_violation_summary"].set_index(
                 ["analysis_scope", "method"]
             )
-            self.assertEqual(physical.loc[("untouched_test", "raw"), "record_count"], 1)
+            self.assertEqual(physical.loc[("post_selection_holdout", "raw"), "record_count"], 1)
             self.assertEqual(
-                physical.loc[("untouched_test", "raw"), "mass_conservation_violation_count"],
+                physical.loc[("post_selection_holdout", "raw"), "mass_conservation_violation_count"],
                 3,
             )
             self.assertEqual(
@@ -507,7 +545,14 @@ class ReportingSnapshotTests(unittest.TestCase):
                 ],
                 "available",
             )
-            self.assertEqual(len(bundle["process_profiles"]), 37)
+            self.assertEqual(len(bundle["process_profiles"]), 38)
+            profiles = bundle["process_profiles"]
+            inventory = profiles[profiles["location"].eq("clarifier_inventory")]
+            layers = profiles[profiles["location"].str.startswith("clarifier_layer_")]
+            self.assertEqual(len(inventory), 1)
+            self.assertEqual(set(inventory["quantity"]), {"TSS_mass"})
+            self.assertEqual(len(layers), 5)
+            self.assertEqual(set(layers["response_method"]), {"smooth"})
 
             output = Path(temporary) / "report"
             written = bundle.write(output)

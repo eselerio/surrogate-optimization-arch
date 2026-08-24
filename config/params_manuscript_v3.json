@@ -1,11 +1,11 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "sources": {
     "manuscript": "article/wip_v3/manuscript.tex",
     "supplement": "article/wip_v3/supplementary_material.tex"
   },
   "execution": {
-    "default_profile": "article_full",
+    "default_profile": "article_frozen_16714",
     "profile_environment_variable": "ARTICLE_V3_PROFILE",
     "run_id_environment_variable": "ARTICLE_V3_RUN_ID",
     "results_root": "results/article_v3",
@@ -87,7 +87,7 @@
       "article_results_eligible_only_if_all_scientific_gates_pass": true,
       "counts_are_accepted_rows": true,
       "replace_rejected_mechanistic_candidates": false,
-      "purpose": "User-frozen accepted subset from the interrupted 50000-input generation: 16714 accepted rows partitioned deterministically into 13371 development and 3343 holdout rows; no further mechanistic data generation."
+      "purpose": "User-frozen accepted subset from the interrupted 50000-input generation: 16714 accepted rows partitioned deterministically into 13371 development and 3343 post-selection holdout rows; no further mechanistic data generation."
     }
   },
   "workload_revision": {
@@ -112,7 +112,7 @@
     "replacement_policy_revision_date": "2026-08-23",
     "replacement_policy_authority": "explicit user instruction after initial development candidate generation",
     "replacement_policy_is_outcome_aware": true,
-    "same_run_migration_required": true,
+    "same_run_migration_required": false,
     "projection_reconstruction_revision_date": "2026-08-23",
     "projection_reconstruction_authority": "explicit user instruction after diagnosis of an article-scale out-of-fold projection audit failure",
     "projection_reconstruction_is_outcome_aware": true,
@@ -124,9 +124,20 @@
     "single_start_exact_qp_authority": "explicit user instruction after the embedded surrogate continuation proved impractically slow",
     "single_start_exact_qp_revision_is_outcome_aware": true,
     "prior_multistart_surrogate_continuation_retired_for_production": true,
-    "same_run_generation_fit_and_assessment_reused": true,
+    "same_run_generation_fit_and_assessment_reused": false,
     "surrogate_derivative_fallback_revision_date": "2026-08-23",
-    "surrogate_derivative_fallback_authority": "explicit user instruction to continue exact-QP testing when active-set derivatives are unavailable"
+    "surrogate_derivative_fallback_authority": "explicit user instruction to continue exact-QP testing when active-set derivatives are unavailable",
+    "reduced_response_revision_date": "2026-08-25",
+    "reduced_response_revision_authority": "explicit user instruction after review of the layer-resolved surrogate outputs",
+    "reduced_response_revision_is_outcome_aware": true,
+    "reduced_response_generation_only_fork_required": true,
+    "reduced_response_fit_and_assessment_reused": false,
+    "mechanistic_response_dimension": 170,
+    "surrogate_response_dimension": 161,
+    "retained_mechanistic_coordinates": "five reactor states and all ten Clarifier layers remain in generation, direct optimization, stability analysis, and exact replay",
+    "surrogate_response_coordinates": "mixer, five reactor concentrations, Clarifier overflow and underflow component-flow vectors, and one Clarifier-solids inventory",
+    "superseded_artifacts": "the 170-output surrogate fit, scales, projections, trust calibration, surrogate optimization, replay at old decisions, timing, and reports",
+    "retained_artifacts": "accepted full mechanistic checkpoints, accepted-row membership and provenance, fixed partition, nominal influent, and ten scenario influents"
   },
   "design": {
     "generator": "SplitMix64",
@@ -188,15 +199,34 @@
     }
   },
   "surrogate": {
+    "response_schema": "clarifier_inventory_v1",
+    "mechanistic_target_dimension": 170,
+    "response_dimension": 161,
+    "response_order": "mixer[20], reactors_1_to_5[100], clarifier_overflow_flow[20], clarifier_underflow_flow[20], clarifier_solids_inventory[1]",
+    "clarifier_solids_inventory_formula": "sum(layer_volume_m3[layer] * layer_tss_g_m3[layer])",
+    "discarded_surrogate_coordinates": "ten Clarifier-layer TSS concentrations",
+    "mechanistic_layers_retained": true,
     "fold_count": 5,
     "ridge_grid": [1e-8, 1e-7, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 1.0, 10.0, 100.0],
-    "selection": "largest ridge within one descriptive standard error of minimum raw complete-response nRMSE",
+    "selection": "largest ridge within one descriptive standard error of minimum raw complete reduced-response nRMSE",
     "population_standard_deviation_ddof": 0,
     "variance_relative_floor": 1e-12,
     "solver": "column-pivoted QR on augmented ridge system",
-    "independent_audit": "thin SVD"
+    "independent_audit": "thin SVD",
+    "development_oof_gates": {
+      "complete_reduced_response_raw_nrmse_maximum": 1.0,
+      "clarifier_inventory_raw_nrmse_maximum": 1.0,
+      "all_projection_qp_audits_must_pass": true
+    }
   },
   "projection": {
+    "response_dimension": 161,
+    "equality_count": 75,
+    "physical_inequality_count": 12,
+    "inequality_count_including_nonnegativity": 173,
+    "outlet_tss_coordinates": "derived from Clarifier outlet component-flow vectors and their positive flow factors",
+    "clarifier_inventory_bounds": "tight endpoint-envelope bounds implemented as two division-free linear rows",
+    "predicts_or_reconstructs_layer_profile": false,
     "solver": "OSQP",
     "independent_multiplier_reconstruction": "bounded-variable least squares active-set method (BVLS); a deterministic BVLS representation is reported when multipliers are nonunique, without a minimum-multiplier-norm claim",
     "multiplier_reconstruction_uses_solver_duals": false,
@@ -215,8 +245,19 @@
     "complementarity_tolerance": 1e-8,
     "nonnegativity_tolerance": 1e-10
   },
+  "trust": {
+    "diagnostics": [
+      "correction",
+      "regularized_leverage",
+      "particulate_split",
+      "reactor_residual"
+    ],
+    "clarifier_flux_diagnostic_retired": true,
+    "clarifier_flux_retirement_reason": "no scalar function of outlet flows and aggregate Clarifier inventory reproduces the discarded layer-flux equations",
+    "clarifier_layer_flux_audit_scope": "smooth-direct and exact mechanistic states only"
+  },
   "assessment_execution": {
-    "scientific_thresholds_remain_unchanged": true,
+    "revised_scientific_thresholds_are_frozen": true,
     "scientific_gate_failures_are_recorded": true,
     "scientific_gate_failures_are_advisory_for_workflow_execution": true,
     "failed_gate_results_are_article_eligible": false,
@@ -352,7 +393,8 @@
     "track_mass_conservation": true,
     "track_nonnegativity": true,
     "generation_attempt_denominators": ["development_candidates_attempted", "test_candidates_attempted"],
-    "downstream_dataset_denominators": ["development_accepted_4000", "test_accepted_1000"],
+    "downstream_dataset_denominators": ["development_accepted_13371", "post_selection_holdout_accepted_3343"],
+    "holdout_interpretation": "descriptive post-selection evidence only; excluded from fitting, scaling, ridge selection, trust calibration, and scientific eligibility gates",
     "report_candidate_to_accepted_slot_provenance": true,
     "retain_zero_count_failure_classes": true
   }

@@ -16,6 +16,7 @@ from closed_loop.manuscript_v3 import (
     TEST_500,
     clarifier_for,
     create_design,
+    reduce_mechanistic_responses,
     violation_record,
 )
 from closed_loop.model import (
@@ -72,10 +73,16 @@ def _write_json(path: Path, value: Any) -> None:
     temporary.replace(path)
 
 
-def _load_inputs() -> tuple[dict[str, object], np.ndarray, np.ndarray, QuadraticSurrogate, np.ndarray]:
+def _load_inputs() -> tuple[
+    dict[str, object], np.ndarray, np.ndarray, np.ndarray,
+    QuadraticSurrogate, np.ndarray,
+]:
     design = create_design(TEST_500)
     with np.load(RUN / "datasets/development/mechanistic_rows_v3.npz", allow_pickle=False) as data:
-        targets = np.asarray(data["targets"], dtype=float)
+        mechanistic_targets = np.asarray(data["targets"], dtype=float)
+    targets = reduce_mechanistic_responses(
+        mechanistic_targets, TEST_500.layer_count,
+    )
     scores = pd.read_csv(RUN / "metrics/ridge_cross_validation.csv")
     gamma = float(scores.loc[scores["selected"].astype(bool), "gamma"].iloc[0])
     model = QuadraticSurrogate.fit_ridge(
@@ -84,7 +91,15 @@ def _load_inputs() -> tuple[dict[str, object], np.ndarray, np.ndarray, Quadratic
     )
     with np.load(RUN / "models/ridge_surrogate.npz", allow_pickle=False) as data:
         oof_raw = np.asarray(data["out_of_fold_raw"], dtype=float)
-    return design, np.asarray(targets), oof_raw, model, np.asarray(gamma)
+        stored_scale = np.asarray(data["response_scale"], dtype=float)
+    if oof_raw.shape != targets.shape or stored_scale.shape != (TEST_500.surrogate_response_count,):
+        raise RuntimeError(
+            "the ridge checkpoint uses the superseded layer-output response; "
+            "rerun reduced-response ridge selection before optimization"
+        )
+    return (
+        design, mechanistic_targets, targets, oof_raw, model, np.asarray(gamma),
+    )
 
 
 def _direct_summary(result: Any) -> dict[str, Any]:
@@ -109,11 +124,21 @@ def _direct_summary(result: Any) -> dict[str, Any]:
     }
 
 
+def _shared_response(response: np.ndarray) -> np.ndarray:
+    """Map a saved mechanistic response to the common reduced contract."""
+
+    values = np.asarray(response, dtype=float)
+    if values.shape == (TEST_500.surrogate_response_count,):
+        return values
+    return reduce_mechanistic_responses(values, TEST_500.layer_count)
+
+
 def main(case_limit: int) -> None:
-    design, targets, oof_raw, model, _ = _load_inputs()
+    design, mechanistic_targets, targets, oof_raw, model, _ = _load_inputs()
     layout = NetworkLayout(layer_count=TEST_500.layer_count)
     direct_assets = fit_direct_assets(
-        design["development_decisions"], design["development_influents"], targets,
+        design["development_decisions"], design["development_influents"],
+        mechanistic_targets,
         clarifier=clarifier_for(TEST_500),
     )
     trust = calibrate_trust_diagnostics(
@@ -127,11 +152,22 @@ def main(case_limit: int) -> None:
         trust_callbacks=trust.callbacks,
         split_rms_threshold=trust.split_limit,
         reactor_rms_threshold=trust.reactor_limit,
-        flux_rms_threshold=trust.flux_limit,
     )
+    features = model.feature_map.transform(
+        design["development_decisions"], design["development_influents"],
+    )
+    leverage = np.einsum(
+        "ij,jk,ik->i", features, surrogate_assets.leverage_precision, features,
+    )
+    trust_values = np.column_stack((
+        trust.development_values[:, 0], leverage, trust.development_values[:, 1:],
+    ))
     trust_table = pd.DataFrame(
-        trust.development_values,
-        columns=["correction", "particulate_split", "reactor_residual", "clarifier_flux"],
+        trust_values,
+        columns=[
+            "correction", "regularized_leverage", "particulate_split",
+            "reactor_residual",
+        ],
     )
     trust_table.to_csv(RUN / "metrics/trust_development_oof.csv", index=False)
     _write_json(RUN / "metrics/trust_limits.json", {
@@ -139,11 +175,14 @@ def main(case_limit: int) -> None:
         "regularized_leverage": surrogate_assets.trust_thresholds.regularized_leverage,
         "particulate_split": trust.split_limit,
         "reactor_residual": trust.reactor_limit,
-        "clarifier_flux": trust.flux_limit,
         "correction_gate_at_most_0_50": trust.correction_limit <= 0.50,
     })
-    print("trust limits", (trust.correction_limit, trust.split_limit,
-                            trust.reactor_limit, trust.flux_limit))
+    print("trust limits", (
+        trust.correction_limit,
+        surrogate_assets.trust_thresholds.regularized_leverage,
+        trust.split_limit,
+        trust.reactor_limit,
+    ))
 
     case_inputs = [("nominal", NOMINAL)] + [
         (f"robustness_{index + 1:02d}", row)
@@ -234,7 +273,8 @@ def main(case_limit: int) -> None:
         else:
             direct = solve_direct_multistart(
                 direct_assets, DirectCase(influent=np.asarray(influent), case_id=case_id),
-                design["development_decisions"], design["development_influents"], targets,
+                design["development_decisions"], design["development_influents"],
+                mechanistic_targets,
                 settings=SolverSettings(maximum_wall_time=600.0),
                 starts=smoke_starts,
                 allow_reduced_starts=True,
@@ -256,7 +296,7 @@ def main(case_limit: int) -> None:
                 response=direct_response, state=direct_state,
             )
             violations.append(violation_record(
-                "smooth", f"{case_id}:direct", direct_response, direct_theta,
+                "smooth", f"{case_id}:direct", _shared_response(direct_response), direct_theta,
                 influent, layout, surrogate_assets.row_scales.equality,
                 surrogate_assets.row_scales.inequality, model.response_scale,
             ))
@@ -275,7 +315,7 @@ def main(case_limit: int) -> None:
                 response=response, state=reference.state,
             )
             violations.append(violation_record(
-                "reference", f"{case_id}:direct", response, direct_theta,
+                "reference", f"{case_id}:direct", _shared_response(response), direct_theta,
                 influent, layout, surrogate_assets.row_scales.equality,
                 surrogate_assets.row_scales.inequality, model.response_scale,
             ))

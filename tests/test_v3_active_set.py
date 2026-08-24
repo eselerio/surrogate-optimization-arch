@@ -74,7 +74,7 @@ def _toy_assets(*, weak_active_set: bool = False) -> tuple[SurrogateNLPAssets, S
                 influent,
                 effluent * influent,
                 underflow * influent,
-                np.full(3, 10.0),
+                np.asarray([10.0]),
             )
         )
     else:
@@ -99,7 +99,7 @@ def _toy_assets(*, weak_active_set: bool = False) -> tuple[SurrogateNLPAssets, S
                 final,
                 overflow_flow,
                 underflow_flow,
-                np.asarray([overflow_flow[1] / effluent, 10.0, 15.0]),
+                np.asarray([10.0]),
             )
         )
 
@@ -137,7 +137,7 @@ def _toy_assets(*, weak_active_set: bool = False) -> tuple[SurrogateNLPAssets, S
         layout=layout,
         invariant_operator=np.asarray([[1.0, 0.0]]),
         tss_weights=np.asarray([0.0, 1.0]),
-        row_scales=NetworkRowScales(np.ones(8), np.ones(3)),
+        row_scales=NetworkRowScales(np.ones(6), np.ones(3)),
         leverage_precision=np.zeros((nonconstant + 1, nonconstant + 1)),
         trust_thresholds=TrustThresholds(0.5, 1.0),
         quality_operator=np.asarray([[0.0, 1.0]]),
@@ -369,7 +369,7 @@ class ExactQPActiveSetTests(unittest.TestCase):
         assert audit is not None
         self.assertFalse(audit.stable)
         self.assertFalse(audit.strict_complementarity_passed)
-        self.assertEqual(audit.minimum_active_multiplier, 0.0)
+        self.assertAlmostEqual(audit.minimum_active_multiplier, 0.0, places=12)
         self.assertIn("active lower multiplier", audit.reason)
 
         result = refiner.refine(np.full(7, 0.5))
