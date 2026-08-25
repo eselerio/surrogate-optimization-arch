@@ -1,12 +1,25 @@
 import unittest
+from pathlib import Path
+import tempfile
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
 
 from closed_loop import v3_trust
-from closed_loop.model import N_COMPONENTS, N_STAGES
-from closed_loop.projection import NetworkLayout
+from closed_loop.model import (
+    ClarifierParameters,
+    INVARIANT_MATRIX,
+    N_COMPONENTS,
+    N_STAGES,
+    TSS_VECTOR,
+)
+from closed_loop.projection import (
+    NetworkLayout,
+    build_network_operators,
+    no_conversion_feasible_state,
+)
+from closed_loop.v3_smooth import fit_direct_assets
 
 
 class _Projector:
@@ -27,6 +40,102 @@ class _Projector:
 
 
 class TrustCalibrationProjectionTests(unittest.TestCase):
+    def test_parallel_projection_matches_serial_and_resumes(self) -> None:
+        layout = NetworkLayout(layer_count=3)
+        rng = np.random.default_rng(81)
+        rows = 4
+        lower = np.asarray([6.0, 0.0, 0.0, 0.0, 0.0, 0.25, 0.001])
+        upper = np.asarray([36.0, 1.0, 1.0, 1.0, 4.0, 1.25, 0.05])
+        decisions = lower + rng.uniform(0.2, 0.8, size=(rows, 7)) * (upper - lower)
+        influents = rng.uniform(0.5, 2.0, size=(rows, N_COMPONENTS))
+
+        def feasible(theta, influent):
+            operators = build_network_operators(
+                influent,
+                internal_recycle=theta[4],
+                return_recycle=theta[5],
+                waste_fraction=theta[6],
+                invariant_operator=INVARIANT_MATRIX,
+                tss_weights=TSS_VECTOR,
+                layout=layout,
+            )
+            return no_conversion_feasible_state(
+                influent, operators=operators, tss_weights=TSS_VECTOR
+            )
+
+        targets = np.vstack([
+            feasible(theta, influent)
+            for theta, influent in zip(decisions, influents, strict=True)
+        ])
+        full_targets = np.column_stack((
+            targets[:, :-1],
+            np.tile(np.asarray([100.0, 200.0, 300.0]), (rows, 1)),
+        ))
+        direct_assets = fit_direct_assets(
+            decisions, influents, full_targets,
+            clarifier=ClarifierParameters(
+                layer_count=3, feed_layer=1, layer_volume=2_000.0
+            ),
+        )
+        raw = targets + rng.normal(0.0, 1.0e-3, size=targets.shape)
+        model = SimpleNamespace(
+            response_scale=np.maximum(1.0, np.std(targets, axis=0))
+        )
+        arguments = (
+            model,
+            decisions,
+            influents,
+            targets,
+            raw,
+            direct_assets,
+        )
+        serial = v3_trust.calibrate_trust_diagnostics(
+            *arguments, layout=layout, parallel_workers=1, batch_size=2
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            checkpoint = Path(temporary)
+            parallel = v3_trust.calibrate_trust_diagnostics(
+                *arguments,
+                layout=layout,
+                parallel_workers=2,
+                batch_size=2,
+                checkpoint_directory=checkpoint,
+                checkpoint_contract="whole-development-test",
+            )
+            with patch.object(
+                v3_trust,
+                "_trust_projection_batch",
+                side_effect=AssertionError("completed batches were recomputed"),
+            ):
+                resumed = v3_trust.calibrate_trust_diagnostics(
+                    *arguments,
+                    layout=layout,
+                    parallel_workers=1,
+                    batch_size=2,
+                    checkpoint_directory=checkpoint,
+                    checkpoint_contract="whole-development-test",
+                )
+        for observed in (parallel, resumed):
+            np.testing.assert_allclose(
+                observed.out_of_fold_projected,
+                serial.out_of_fold_projected,
+                rtol=0.0,
+                atol=1.0e-12,
+            )
+            np.testing.assert_array_equal(
+                observed.out_of_fold_projection_accepted,
+                serial.out_of_fold_projection_accepted,
+            )
+            np.testing.assert_allclose(
+                observed.development_values,
+                serial.development_values,
+                rtol=0.0,
+                atol=1.0e-12,
+            )
+            self.assertEqual(observed.correction_limit, serial.correction_limit)
+            self.assertEqual(observed.split_limit, serial.split_limit)
+            self.assertEqual(observed.reactor_limit, serial.reactor_limit)
+
     def _calibrate(self, states: list[np.ndarray], accepted: list[bool]):
         layout = NetworkLayout(layer_count=3)
         row_count = len(states)

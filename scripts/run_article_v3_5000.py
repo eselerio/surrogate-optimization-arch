@@ -31,7 +31,7 @@ import re
 import shutil
 import tempfile
 from time import perf_counter, perf_counter_ns, sleep
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 import casadi as ca
 import numpy as np
@@ -138,12 +138,14 @@ from closed_loop.v3_shared_unit import (
     calibrate_shared_unit_trust,
     cross_validate_shared_unit_models,
     evaluate_shared_unit,
+    evaluate_shared_unit_holdout_batches,
     extract_shared_unit_training,
     optimize_shared_unit_case,
     project_shared_unit_raw,
     solve_shared_unit_closure,
 )
 from closed_loop.v3_trust import calibrate_trust_diagnostics
+from closed_loop.v3_parallel import BatchProgress
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -158,6 +160,8 @@ SHARED_UNIT_SINGLE_CENTER_PROTOCOL = "shared_unit_value_only_single_center_v1"
 OPTIMIZATION_PROTOCOL = "three_route_single_center_v2"
 COMPARISON_PROTOCOL = "casewise_exact_common_reference_v4"
 TIMING_PROTOCOL = "robustness_casewise_three_route_v2"
+ASSESSMENT_BATCH_PROTOCOL = "deterministic_spawn_batches_v1"
+DEFAULT_ASSESSMENT_BATCH_SIZE = 64
 RUN_ID_PATTERN = re.compile(
     r"^article_full_(?:5000|50000)_[A-Za-z0-9][A-Za-z0-9_-]*$"
 )
@@ -181,6 +185,7 @@ SOURCE_FILES = (
     "closed_loop/v3_smooth.py",
     "closed_loop/v3_surrogate_nlp.py",
     "closed_loop/v3_shared_unit.py",
+    "closed_loop/v3_parallel.py",
     "closed_loop/v3_active_set.py",
     "closed_loop/v3_derivative_audit.py",
     "closed_loop/v3_trust.py",
@@ -290,7 +295,7 @@ class AssessmentRecoveryMigrationAuthorization:
 
 @dataclass(frozen=True)
 class FailedAssessmentRuntimeMigrationAuthorization:
-    """Pinned recovery for a source-level failure after expensive fitting."""
+    """Pinned recovery for a failed or intentionally interrupted assessment."""
 
     migration_id: str
     run_id: str
@@ -305,6 +310,7 @@ class FailedAssessmentRuntimeMigrationAuthorization:
     required_changed_source_files: frozenset[str]
     required_artifact_digests: Mapping[str, str]
     expected_failure_stage: str
+    expected_status: str
     expected_error_type: str
     expected_error_message: str
 
@@ -523,8 +529,78 @@ SHARED_UNIT_MATH_IMPORT_RECOVERY_MIGRATION = (
             ),
         },
         expected_failure_stage="assessment",
+        expected_status="failed",
         expected_error_type="NameError",
         expected_error_message="name 'math' is not defined",
+    )
+)
+
+
+PARALLEL_ASSESSMENT_RECOVERY_MIGRATION = (
+    FailedAssessmentRuntimeMigrationAuthorization(
+        migration_id="article-v3-parallel-assessment-v1",
+        run_id="article_full_50000_three_route_001",
+        authorized_date="2026-08-25",
+        reason=(
+            "User-authorized stop and replacement of serial assessment loops by "
+            "deterministic process batches with atomic resumable checkpoints, "
+            "without changing surrogate, projection, gate, or optimization "
+            "mathematics."
+        ),
+        runner_schema=11,
+        predecessor_source_digest=(
+            "8a573fdb6e014f27f5e1182bf9f9153d7585a7f7e390ade7fe4265cc84b0add4"
+        ),
+        predecessor_contract_file_digest=(
+            "7ac524208b00206acca756530cf5d88a8c1b2fde19835b5730078f3a98e9eff1"
+        ),
+        required_prior_migration_ids=(
+            "article-v3-frozen-accepted-v1",
+            "article-v3-reduced-response-article_full_50000_three_route_001",
+            "article-v3-shared-unit-math-import-v1",
+        ),
+        predecessor_source_snapshot=(
+            "inputs/contract_migrations/"
+            "article-v3-parallel-assessment-v1-predecessor-source"
+        ),
+        allowed_changed_source_files=frozenset({
+            "scripts/run_article_v3_5000.py",
+            "closed_loop/manuscript_v3.py",
+            "closed_loop/v3_parallel.py",
+            "closed_loop/v3_shared_unit.py",
+            "closed_loop/v3_trust.py",
+            "config/params_manuscript_v3.json",
+            "scripts/build_main_closed_loop_v3.py",
+            "main_closed_loop.ipynb",
+        }),
+        required_changed_source_files=frozenset({
+            "scripts/run_article_v3_5000.py",
+            "closed_loop/manuscript_v3.py",
+            "closed_loop/v3_parallel.py",
+            "closed_loop/v3_shared_unit.py",
+            "closed_loop/v3_trust.py",
+            "config/params_manuscript_v3.json",
+            "scripts/build_main_closed_loop_v3.py",
+            "main_closed_loop.ipynb",
+        }),
+        required_artifact_digests={
+            "datasets/frozen_accepted_complete.json": (
+                "c1f374c0242d62d78247ddf0746347e4bba51d68ca048b1af5a2fa4c8b99a55c"
+            ),
+            "models/ridge_complete.json": (
+                "606eaff8b631770d3b9023cf3b15dc6ece56747c0fe8cbd17f6ea494ec884986"
+            ),
+            "models/shared_unit_complete.json": (
+                "99af3fa6842b47829b9a56389784556b9e4a82afa90d864938e6ef56b924b7f6"
+            ),
+        },
+        expected_failure_stage="assessment",
+        expected_status="interrupted",
+        expected_error_type="UserAuthorizedInterruption",
+        expected_error_message=(
+            "Stopped at user request before installing deterministic parallel "
+            "assessment batches and resumable checkpoints."
+        ),
     )
 )
 
@@ -1364,6 +1440,40 @@ def _canonical_json_digest(value: Any) -> str:
         _json_ready(value), sort_keys=True, separators=(",", ":"), allow_nan=False,
     ).encode("utf-8")
     return sha256(payload).hexdigest()
+
+
+def _assessment_batch_contract(
+    *, stage: str, source_id: str, input_id: str,
+) -> str:
+    """Bind a resumable batch to code, complete inputs, and row semantics."""
+
+    return _canonical_json_digest({
+        "schema": 1,
+        "protocol": ASSESSMENT_BATCH_PROTOCOL,
+        "stage": stage,
+        "source_digest": source_id,
+        "input_digest": input_id,
+    })
+
+
+def _assessment_progress_callback(run: Path) -> Callable[[BatchProgress], None]:
+    def publish(value: BatchProgress) -> None:
+        _write_state(
+            run,
+            "assessment",
+            "running",
+            assessment_substage=value.stage,
+            completed_rows=value.completed_rows,
+            total_rows=value.total_rows,
+            reused_rows=value.reused_rows,
+            newly_completed_rows=value.newly_completed_rows,
+            completed_batches=value.completed_batches,
+            total_batches=value.total_batches,
+            parallel_workers=value.parallel_workers,
+            batch_size=value.batch_size,
+        )
+
+    return publish
 
 
 def _load_json_object(path: Path, *, description: str) -> dict[str, Any]:
@@ -2409,7 +2519,7 @@ def _validate_retained_failed_assessment_checkpoints(
     state = _load_json_object(run / "run_state.json", description="failed run state")
     if (
         state.get("stage") != authorization.expected_failure_stage
-        or state.get("status") != "failed"
+        or state.get("status") != authorization.expected_status
         or state.get("error_type") != authorization.expected_error_type
         or state.get("message") != authorization.expected_error_message
     ):
@@ -2465,8 +2575,15 @@ def _validate_retained_failed_assessment_checkpoints(
         checkpoint = run / relative
         marker = _load_json_object(checkpoint, description=f"{stage} checkpoint")
         artifacts = marker.get("artifacts")
+        marker_source_id = str(marker.get("source_digest", ""))
         if (
-            marker.get("source_digest") != authorization.predecessor_source_digest
+            not _checkpoint_source_is_authorized(
+                run,
+                stage=stage,
+                checkpoint=checkpoint,
+                observed_source_id=marker_source_id,
+                current_source_id=authorization.predecessor_source_digest,
+            )
             or not isinstance(artifacts, Mapping)
             or not _artifacts_match(run, artifacts)
         ):
@@ -2474,7 +2591,7 @@ def _validate_retained_failed_assessment_checkpoints(
         stages[stage] = {
             "checkpoint": relative,
             "checkpoint_sha256": file_digest(checkpoint),
-            "artifact_source_digest": authorization.predecessor_source_digest,
+            "artifact_source_digest": marker_source_id,
             "artifacts": dict(artifacts),
         }
     return {
@@ -3182,6 +3299,7 @@ def establish_contract(
     authorize_convergence_poll_refinement_migration: bool = False,
     authorize_casewise_timing_migration: bool = False,
     authorize_shared_unit_runtime_recovery_migration: bool = False,
+    authorize_parallel_assessment_migration: bool = False,
 ) -> None:
     if sum(map(bool, (
         authorize_generation_replacement_migration,
@@ -3191,6 +3309,7 @@ def establish_contract(
         authorize_convergence_poll_refinement_migration,
         authorize_casewise_timing_migration,
         authorize_shared_unit_runtime_recovery_migration,
+        authorize_parallel_assessment_migration,
     ))) > 1:
         raise ValueError("authorize exactly one source-contract migration at a time")
     path = run / "inputs" / "contract.json"
@@ -3246,6 +3365,14 @@ def establish_contract(
                 previous,
                 normalized,
                 SHARED_UNIT_MATH_IMPORT_RECOVERY_MIGRATION,
+            )
+            return
+        if authorize_parallel_assessment_migration:
+            _migrate_failed_assessment_runtime_contract(
+                run,
+                previous,
+                normalized,
+                PARALLEL_ASSESSMENT_RECOVERY_MIGRATION,
             )
             return
         raise RuntimeError(
@@ -5712,6 +5839,12 @@ def _evaluate_shared_unit_holdout(
     decisions: np.ndarray,
     influents: np.ndarray,
     mechanistic: np.ndarray,
+    *,
+    parallel_workers: int = 1,
+    batch_size: int = DEFAULT_ASSESSMENT_BATCH_SIZE,
+    checkpoint_directory: Path | None = None,
+    checkpoint_contract: str | None = None,
+    progress: Callable[[BatchProgress], None] | None = None,
 ) -> dict[str, Any]:
     """Cold-evaluate U on every holdout row while retaining root failures."""
 
@@ -5719,80 +5852,85 @@ def _evaluate_shared_unit_holdout(
     feed = np.asarray(influents, dtype=float)
     truth = np.asarray(mechanistic, dtype=float)
     count = len(theta)
-    raw = np.full_like(truth, np.nan)
-    projected = np.full_like(truth, np.nan)
-    projected_targets = np.full_like(truth, np.nan)
-    available = np.zeros(count, dtype=bool)
     normalized = (theta - assets.theta_lower) / assets.theta_span
+    batches = evaluate_shared_unit_holdout_batches(
+        assets,
+        theta,
+        feed,
+        truth,
+        parallel_workers=parallel_workers,
+        batch_size=batch_size,
+        checkpoint_directory=checkpoint_directory,
+        checkpoint_contract=checkpoint_contract,
+        progress=progress,
+    )
+    raw = np.vstack([batch["raw"] for batch in batches])
+    projected = np.vstack([batch["projected"] for batch in batches])
+    projected_targets = np.vstack(
+        [batch["projected_targets"] for batch in batches]
+    )
+    available = np.concatenate([
+        batch["available"].astype(bool, copy=False) for batch in batches
+    ])
+    target_accepted = np.concatenate([
+        batch["target_accepted"].astype(bool, copy=False) for batch in batches
+    ])
+    target_elapsed_ns = np.concatenate([
+        batch["target_elapsed_ns"].astype(np.int64, copy=False) for batch in batches
+    ])
+    evaluation_records = [
+        json.loads(str(record))
+        for batch in batches for record in batch["evaluation_json"]
+    ]
+    target_records = [
+        json.loads(str(record))
+        for batch in batches for record in batch["target_diagnostics_json"]
+    ]
     root_records: list[dict[str, Any]] = []
     trust_records: list[dict[str, Any]] = []
     violation_records: list[dict[str, Any]] = []
     projection_records: list[dict[str, Any]] = []
     feasibility_records: list[dict[str, Any]] = []
     for row in range(count):
-        evaluation = evaluate_shared_unit(
-            assets,
-            SharedUnitCase(influent=feed[row], case_id=f"test_{row:06d}"),
-            normalized[row],
+        evaluation = evaluation_records[row]
+        closure_diagnostics = SharedUnitClosureDiagnostics.from_dict(
+            evaluation["closure"]["diagnostics"]
         )
         root_records.append(_shared_unit_root_diagnostic_record(
-            f"test_{row:06d}", evaluation.closure.diagnostics,
+            f"test_{row:06d}", closure_diagnostics,
         ))
-        valid = bool(
-            evaluation.available
-            and evaluation.raw is not None
-            and evaluation.projected is not None
-            and np.all(np.isfinite(evaluation.raw))
-            and np.all(np.isfinite(evaluation.projected))
-        )
-        available[row] = valid
-        if valid:
-            raw[row] = np.asarray(evaluation.raw, dtype=float)
-            projected[row] = np.asarray(evaluation.projected, dtype=float)
-        if evaluation.projection is None:
+        valid = bool(available[row])
+        projection = evaluation.get("projection")
+        if projection is None:
             projection_records.append({
                 "row": row,
                 "projection_input": "raw_prediction",
                 "accepted": False,
-                "elapsed_ns": int(round(evaluation.projection_seconds * 1.0e9)),
-                "unavailable_reason": evaluation.reason,
+                "elapsed_ns": int(round(
+                    float(evaluation["projection_seconds"]) * 1.0e9
+                )),
+                "unavailable_reason": evaluation["reason"],
             })
         else:
             projection_records.append({
                 "row": row,
                 "projection_input": "raw_prediction",
-                "accepted": bool(evaluation.projection.accepted),
-                "elapsed_ns": int(round(evaluation.projection_seconds * 1.0e9)),
+                "accepted": bool(projection["accepted"]),
+                "elapsed_ns": int(round(
+                    float(evaluation["projection_seconds"]) * 1.0e9
+                )),
                 "unavailable_reason": None,
-                **evaluation.projection.diagnostics.as_dict(),
+                **projection["diagnostics"],
             })
-        target_started = perf_counter_ns()
-        target_projection = project_shared_unit_raw(
-            truth[row],
-            theta[row],
-            feed[row],
-            assets.common_response_scale,
-            assets.row_scales,
-            layout=assets.layout,
-            invariant_operator=assets.invariant_operator,
-            tss_weights=assets.tss_weights,
-            clarifier_volume_m3=assets.engineering.clarifier_volume_m3,
-            raise_on_failure=False,
-        )
-        target_elapsed = perf_counter_ns() - target_started
-        target_valid = bool(
-            target_projection.accepted
-            and np.all(np.isfinite(target_projection.state))
-        )
-        if target_valid:
-            projected_targets[row] = target_projection.state
+        target_projection = target_records[row]
+        target_valid = bool(target_accepted[row])
         projection_records.append({
             "row": row,
             "projection_input": "mechanistic_target",
-            "accepted": bool(target_projection.accepted),
-            "elapsed_ns": target_elapsed,
+            "accepted": bool(target_projection["accepted"]),
+            "elapsed_ns": int(target_elapsed_ns[row]),
             "unavailable_reason": None if target_valid else "target_projection_failed",
-            **target_projection.diagnostics.as_dict(),
+            **target_projection["diagnostics"],
         })
         if valid and target_valid:
             raw_distance = float(np.linalg.norm(
@@ -5821,27 +5959,28 @@ def _evaluate_shared_unit_holdout(
             "bound_slack": bound_slack,
             "bound_passed": bound_passed,
             "raw_projection_qp_passed": bool(
-                evaluation.projection is not None and evaluation.projection.accepted
+                projection is not None and projection["accepted"]
             ),
-            "target_projection_qp_passed": bool(target_projection.accepted),
+            "target_projection_qp_passed": bool(target_projection["accepted"]),
         })
         trust_record: dict[str, Any] = {
             "row": row,
             "available": valid,
             **{name: math.nan for name in assets.trust_row_names},
         }
-        if evaluation.trust is not None:
+        trust = evaluation.get("trust")
+        if trust is not None:
             trust_record.update({
-                "correction": evaluation.trust.correction_rms,
+                "correction": trust["correction_rms"],
                 **{
                     f"reactor_leverage_{stage}": value
                     for stage, value in enumerate(
-                        evaluation.trust.reactor_leverage, start=1,
+                        trust["reactor_leverage"], start=1,
                     )
                 },
-                "clarifier_leverage": evaluation.trust.clarifier_leverage,
-                "particulate_split": evaluation.trust.particulate_split_rms,
-                "reactor_residual": evaluation.trust.reactor_residual_rms,
+                "clarifier_leverage": trust["clarifier_leverage"],
+                "particulate_split": trust["particulate_split_rms"],
+                "reactor_residual": trust["reactor_residual_rms"],
             })
         trust_records.append(trust_record)
         for method, response in (
@@ -5868,7 +6007,7 @@ def _evaluate_shared_unit_holdout(
                     "case": f"test_{row:06d}",
                     "method": method,
                     "audit_available": False,
-                    "audit_unavailable_reason": evaluation.reason,
+                    "audit_unavailable_reason": evaluation["reason"],
                     "mass_conservation_violation_max": math.nan,
                     "mass_conservation_violation_count": 0,
                     "nonnegativity_violation_max": math.nan,
@@ -5914,6 +6053,8 @@ def _run_or_resume_shared_unit_assessment(
     whole_system_model: QuadraticSurrogate,
     surrogate_assets: Any,
     source_files: Mapping[str, str],
+    parallel_workers: int,
+    batch_size: int,
 ) -> tuple[SharedUnitFitResult, SharedUnitAssets, dict[str, Any], dict[str, Any], tuple[Path, ...]]:
     """Fit, assess, and checkpoint the independent shared-unit architecture."""
 
@@ -5968,6 +6109,7 @@ def _run_or_resume_shared_unit_assessment(
         return fit, assets, assessment, gate, (*artifact_paths, marker_path)
 
     callbacks = surrogate_assets.trust_callbacks
+    progress = _assessment_progress_callback(run)
     calibration = calibrate_shared_unit_trust(
         fit,
         training,
@@ -5980,6 +6122,17 @@ def _run_or_resume_shared_unit_assessment(
         engineering=surrogate_assets.engineering,
         split_rows=callbacks.split_rows,
         reactor_rows=callbacks.reactor_rows,
+        parallel_workers=parallel_workers,
+        batch_size=batch_size,
+        checkpoint_directory=(
+            run / "assessment_checkpoints" / "shared_unit_development"
+        ),
+        checkpoint_contract=_assessment_batch_contract(
+            stage="shared_unit_development_calibration",
+            source_id=source_id,
+            input_id=assessment_input_id,
+        ),
+        progress=progress,
     )
     if calibration.limits is None:
         raise RuntimeError(
@@ -6002,6 +6155,17 @@ def _run_or_resume_shared_unit_assessment(
         test_decisions,
         test_influents,
         test_reduced,
+        parallel_workers=parallel_workers,
+        batch_size=batch_size,
+        checkpoint_directory=(
+            run / "assessment_checkpoints" / "shared_unit_holdout"
+        ),
+        checkpoint_contract=_assessment_batch_contract(
+            stage="shared_unit_holdout_projection_audit",
+            source_id=source_id,
+            input_id=assessment_input_id,
+        ),
+        progress=progress,
     )
     available = np.asarray(assessment["available"], dtype=bool)
     holdout_qp = assessment["qp_diagnostics"]
@@ -6442,6 +6606,8 @@ def run_assessment(
     *,
     profile: StudyProfile,
     source_files: Mapping[str, str],
+    parallel_workers: int | None = None,
+    batch_size: int = DEFAULT_ASSESSMENT_BATCH_SIZE,
 ) -> AnalysisBundle:
     development_decisions = np.asarray(design["development_decisions"])
     development_influents = np.asarray(design["development_influents"])
@@ -6459,6 +6625,14 @@ def run_assessment(
     )
     input_id = _assessment_binding(design, development_targets, test_targets)
     source_id = source_digest(source_files)
+    worker_count = (
+        profile.parallel_workers
+        if parallel_workers is None
+        else int(parallel_workers)
+    )
+    if worker_count < 1 or batch_size < 1:
+        raise ValueError("assessment workers and batch size must be positive")
+    progress = _assessment_progress_callback(run)
     existing_gate = load_assessment_checkpoint(
         run, source_id=source_id, input_id=input_id,
     )
@@ -6474,6 +6648,17 @@ def run_assessment(
     trust = calibrate_trust_diagnostics(
         model, development_decisions, development_influents, development_reduced,
         oof_raw, direct_assets, layout=layout,
+        parallel_workers=worker_count,
+        batch_size=batch_size,
+        checkpoint_directory=(
+            run / "assessment_checkpoints" / "whole_system_development"
+        ),
+        checkpoint_contract=_assessment_batch_contract(
+            stage="whole_system_development_projection",
+            source_id=source_id,
+            input_id=input_id,
+        ),
+        progress=progress,
     )
     surrogate_assets = build_surrogate_assets(
         model, development_decisions, development_influents, development_reduced,
@@ -6528,6 +6713,8 @@ def run_assessment(
             whole_system_model=model,
             surrogate_assets=surrogate_assets,
             source_files=source_files,
+            parallel_workers=worker_count,
+            batch_size=batch_size,
         )
         shared_fit_marker_path = run / "models" / "shared_unit_complete.json"
         shared_fit_marker = _load_json_object(
@@ -6573,6 +6760,17 @@ def run_assessment(
         np.asarray(design["test_influents"]),
         test_reduced,
         profile,
+        parallel_workers=worker_count,
+        batch_size=batch_size,
+        checkpoint_directory=(
+            run / "assessment_checkpoints" / "whole_system_holdout"
+        ),
+        checkpoint_contract=_assessment_batch_contract(
+            stage="whole_system_holdout_projection_audit",
+            source_id=source_id,
+            input_id=input_id,
+        ),
+        progress=progress,
     )
     _validate_assessment(
         assessment, test_count=profile.test_count,
@@ -10499,7 +10697,7 @@ def run_optimization_stage(
 def _prepare_run_directories(run: Path) -> None:
     for relative in (
         "inputs", "datasets", "models", "predictions", "metrics",
-        "optimization", "report/tables", "report/figures",
+        "optimization", "assessment_checkpoints", "report/tables", "report/figures",
     ):
         (run / relative).mkdir(parents=True, exist_ok=True)
 
@@ -10524,9 +10722,16 @@ def main(
     authorize_convergence_poll_refinement_migration: bool = False,
     authorize_casewise_timing_migration: bool = False,
     authorize_shared_unit_runtime_recovery_migration: bool = False,
+    authorize_parallel_assessment_migration: bool = False,
+    assessment_workers: int | None = None,
+    assessment_batch_size: int = DEFAULT_ASSESSMENT_BATCH_SIZE,
 ) -> None:
     if through not in {"generation", "assessment", "complete"}:
         raise ValueError("through must be generation, assessment, or complete")
+    if assessment_workers is not None and assessment_workers < 1:
+        raise ValueError("assessment_workers must be positive")
+    if assessment_batch_size < 1:
+        raise ValueError("assessment_batch_size must be positive")
     validate_authorized_profile(profile)
     if use_frozen_accepted_checkpoints != (profile.name == FROZEN_PROFILE_NAME):
         raise ValueError("frozen checkpoint mode and profile must be selected together")
@@ -10567,6 +10772,9 @@ def main(
         authorize_casewise_timing_migration=authorize_casewise_timing_migration,
         authorize_shared_unit_runtime_recovery_migration=(
             authorize_shared_unit_runtime_recovery_migration
+        ),
+        authorize_parallel_assessment_migration=(
+            authorize_parallel_assessment_migration
         ),
     )
     try:
@@ -10620,6 +10828,8 @@ def main(
         analysis = run_assessment(
             run, design, development_targets, test_targets,
             profile=profile, source_files=source_files,
+            parallel_workers=assessment_workers,
+            batch_size=assessment_batch_size,
         )
         if not assessment_gate_allows_optimization(analysis.passed):
             _write_state(run, "assessment", "admission_gate_failed")
@@ -10785,6 +10995,33 @@ if __name__ == "__main__":
             "completed generation and ridge-fit checkpoints"
         ),
     )
+    parser.add_argument(
+        "--authorize-parallel-assessment-migration",
+        action="store_true",
+        help=(
+            "apply the pinned deterministic parallel-assessment migration to "
+            "the intentionally stopped three-route run"
+        ),
+    )
+    parser.add_argument(
+        "--assessment-workers",
+        type=int,
+        default=(
+            None
+            if os.environ.get("ARTICLE_V3_ASSESSMENT_WORKERS") is None
+            else int(os.environ["ARTICLE_V3_ASSESSMENT_WORKERS"])
+        ),
+        help="assessment worker processes; defaults to the selected profile",
+    )
+    parser.add_argument(
+        "--assessment-batch-size",
+        type=int,
+        default=int(os.environ.get(
+            "ARTICLE_V3_ASSESSMENT_BATCH_SIZE",
+            str(DEFAULT_ASSESSMENT_BATCH_SIZE),
+        )),
+        help="fixed contiguous rows per durable assessment checkpoint",
+    )
     arguments = parser.parse_args()
     selected_profile = (
         frozen_accepted_profile()
@@ -10800,6 +11037,7 @@ if __name__ == "__main__":
         arguments.authorize_convergence_poll_refinement_migration,
         arguments.authorize_casewise_timing_migration,
         arguments.authorize_shared_unit_runtime_recovery_migration,
+        arguments.authorize_parallel_assessment_migration,
     ))
     if (
         reuse_from_run_id is None
@@ -10834,4 +11072,9 @@ if __name__ == "__main__":
         authorize_shared_unit_runtime_recovery_migration=(
             arguments.authorize_shared_unit_runtime_recovery_migration
         ),
+        authorize_parallel_assessment_migration=(
+            arguments.authorize_parallel_assessment_migration
+        ),
+        assessment_workers=arguments.assessment_workers,
+        assessment_batch_size=arguments.assessment_batch_size,
     )

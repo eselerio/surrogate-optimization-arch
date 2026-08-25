@@ -38,6 +38,9 @@ class MainClosedLoopNotebookTests(unittest.TestCase):
         self.assertIn("shared_unit_trust_post_selection_holdout.csv", source)
         self.assertIn("casewise_exact_common_reference_v4", source)
         self.assertIn("robustness_casewise_three_route_v2", source)
+        self.assertIn("ARTICLE_V3_ASSESSMENT_WORKERS", source)
+        self.assertIn("ARTICLE_V3_ASSESSMENT_BATCH_SIZE", source)
+        self.assertIn("authorize_parallel_assessment_migration", source)
         self.assertEqual(len({cell.id for cell in actual.cells}), len(actual.cells))
         for cell in actual.cells:
             if cell.cell_type == "code":
@@ -52,6 +55,16 @@ class MainClosedLoopNotebookTests(unittest.TestCase):
         )
         self.assertEqual(config["schema_version"], 5)
         self.assertEqual(config["execution"]["runner_schema"], 11)
+        self.assertEqual(
+            config["execution"]["assessment_batch_protocol"],
+            "deterministic_spawn_batches_v1",
+        )
+        self.assertEqual(config["execution"]["assessment_batch_size"], 64)
+        self.assertTrue(
+            config["execution"][
+                "assessment_checkpoints_are_atomic_and_input_bound"
+            ]
+        )
         optimization = config["optimization"]
         self.assertEqual(
             optimization["route_ids"], ["surrogate", "shared_unit", "direct"]

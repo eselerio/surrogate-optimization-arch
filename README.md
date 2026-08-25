@@ -221,6 +221,9 @@ $env:ARTICLE_V3_DATASET_COUNT = "50000"
 $env:ARTICLE_V3_USE_FROZEN_ACCEPTED_CHECKPOINTS = "1"
 $env:ARTICLE_V3_RUN_ID = "article_full_50000_three_route_001"
 $env:ARTICLE_V3_REUSE_FROM_RUN_ID = "article_full_50000_003"
+$env:ARTICLE_V3_ASSESSMENT_WORKERS = "12"
+$env:ARTICLE_V3_ASSESSMENT_BATCH_SIZE = "64"
+$env:ARTICLE_V3_AUTHORIZE_PARALLEL_ASSESSMENT_MIGRATION = "1"
 uv run jupyter nbconvert --to notebook --execute main_closed_loop.ipynb `
   --output "main_closed_loop.$($env:ARTICLE_V3_RUN_ID).executed.ipynb" `
   --output-dir results\executed_notebooks `
@@ -246,10 +249,18 @@ computational source manifest. For the current revised run, use:
 $env:PYTHONPATH = "."
 uv run python -u scripts\run_article_v3_5000.py `
   --run-id article_full_50000_three_route_001 `
-  --reuse-from-run-id article_full_50000_003 `
   --use-frozen-accepted-checkpoints `
+  --authorize-parallel-assessment-migration `
+  --assessment-workers 12 `
+  --assessment-batch-size 64 `
   --through complete
 ```
+
+Assessment rows run in deterministic process batches with one numerical
+thread per worker. Each completed batch is atomically checkpointed under
+`assessment_checkpoints`, bound to the exact source and assessment inputs, and
+reused after interruption. Worker count may be changed on restart; changing
+the batch size intentionally starts a new checkpoint geometry.
 
 Generation publishes `all_attempts.csv`, `accepted_provenance.csv`,
 `accepted_inputs.npz`, `mechanistic_accepted_v3.npz`,

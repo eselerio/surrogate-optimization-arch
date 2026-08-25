@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 import json
+from pathlib import Path
+import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -32,8 +34,10 @@ from closed_loop.v3_shared_unit import (
     SharedUnitRidgeScore,
     SharedUnitRootAttempt,
     SharedUnitTrustLimits,
+    calibrate_shared_unit_trust,
     cross_validate_shared_unit_models,
     evaluate_shared_unit,
+    evaluate_shared_unit_holdout_batches,
     extract_shared_unit_training,
     fit_shared_unit_leverage,
     optimize_shared_unit_case,
@@ -179,6 +183,188 @@ def optimization_fixture() -> tuple[
 
 
 class SharedUnitTests(unittest.TestCase):
+    def test_parallel_calibration_matches_serial_and_resumes_batches(self) -> None:
+        layout = small_layout()
+        models = identity_models()
+        theta = np.tile(
+            0.5
+            * (
+                np.asarray([6.0, 0.0, 0.0, 0.0, 0.0, 0.25, 0.001])
+                + np.asarray([36.0, 1.0, 1.0, 1.0, 4.0, 1.25, 0.05])
+            ),
+            (4, 1),
+        )
+        feed = np.tile(np.asarray([2.0, 3.0]), (4, 1))
+        truth = np.tile(
+            solve_shared_unit_closure(
+                models,
+                theta[0],
+                feed[0],
+                np.r_[np.ones(16), 100.0],
+                layout=layout,
+            ).raw,
+            (4, 1),
+        )
+        training = extract_shared_unit_training(theta, truth, layout=layout)
+        membership = np.asarray([1, 2, 1, 2])
+        fit = SharedUnitFitResult(
+            models=models,
+            fold_models=(models, models),
+            scores=tuple(),
+            plant_fold_membership=membership,
+            reactor_out_of_fold_raw=np.zeros((20, 2)),
+            clarifier_out_of_fold_raw=np.zeros((4, 5)),
+            elapsed_seconds=0.0,
+        )
+        row_scales = NetworkRowScales(
+            equality=np.ones(10), inequality=np.ones(3)
+        )
+        arguments = dict(
+            layout=layout,
+            invariant_operator=np.asarray([[1.0, 0.0]]),
+            tss_weights=np.asarray([0.0, 1.0]),
+            batch_size=2,
+        )
+        serial = calibrate_shared_unit_trust(
+            fit,
+            training,
+            theta,
+            feed,
+            truth,
+            np.r_[np.ones(16), 100.0],
+            row_scales,
+            parallel_workers=1,
+            **arguments,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            checkpoint = Path(temporary)
+            parallel = calibrate_shared_unit_trust(
+                fit,
+                training,
+                theta,
+                feed,
+                truth,
+                np.r_[np.ones(16), 100.0],
+                row_scales,
+                parallel_workers=2,
+                checkpoint_directory=checkpoint,
+                checkpoint_contract="shared-calibration-test",
+                **arguments,
+            )
+            with patch(
+                "closed_loop.v3_shared_unit._shared_calibration_batch",
+                side_effect=AssertionError("completed batches were recomputed"),
+            ):
+                resumed = calibrate_shared_unit_trust(
+                    fit,
+                    training,
+                    theta,
+                    feed,
+                    truth,
+                    np.r_[np.ones(16), 100.0],
+                    row_scales,
+                    parallel_workers=1,
+                    checkpoint_directory=checkpoint,
+                    checkpoint_contract="shared-calibration-test",
+                    **arguments,
+                )
+        for observed in (parallel, resumed):
+            np.testing.assert_allclose(
+                observed.out_of_fold_raw, serial.out_of_fold_raw, rtol=0.0, atol=0.0
+            )
+            np.testing.assert_allclose(
+                observed.out_of_fold_projected,
+                serial.out_of_fold_projected,
+                rtol=0.0,
+                atol=0.0,
+            )
+            np.testing.assert_array_equal(
+                observed.closure_accepted, serial.closure_accepted
+            )
+            np.testing.assert_array_equal(
+                observed.projection_accepted, serial.projection_accepted
+            )
+            np.testing.assert_allclose(
+                observed.development_values,
+                serial.development_values,
+                rtol=0.0,
+                atol=1.0e-14,
+            )
+            self.assertEqual(
+                [item.as_dict() for item in observed.closure_diagnostics],
+                [item.as_dict() for item in serial.closure_diagnostics],
+            )
+
+    def test_parallel_holdout_core_matches_serial_and_reuses_checkpoints(self) -> None:
+        assets, case, _ = optimization_fixture()
+        theta = np.tile(
+            assets.theta_lower + 0.5 * assets.theta_span,
+            (3, 1),
+        )
+        feed = np.tile(case.influent, (3, 1))
+        evaluation = evaluate_shared_unit(assets, case, np.full(7, 0.5))
+        self.assertTrue(evaluation.available, evaluation.reason)
+        truth = np.tile(evaluation.projected, (3, 1))
+        serial = evaluate_shared_unit_holdout_batches(
+            assets,
+            theta,
+            feed,
+            truth,
+            parallel_workers=1,
+            batch_size=2,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            checkpoint = Path(temporary)
+            parallel = evaluate_shared_unit_holdout_batches(
+                assets,
+                theta,
+                feed,
+                truth,
+                parallel_workers=2,
+                batch_size=2,
+                checkpoint_directory=checkpoint,
+                checkpoint_contract="shared-holdout-test",
+            )
+            with patch(
+                "closed_loop.v3_shared_unit._shared_holdout_batch",
+                side_effect=AssertionError("completed batches were recomputed"),
+            ):
+                resumed = evaluate_shared_unit_holdout_batches(
+                    assets,
+                    theta,
+                    feed,
+                    truth,
+                    parallel_workers=1,
+                    batch_size=2,
+                    checkpoint_directory=checkpoint,
+                    checkpoint_contract="shared-holdout-test",
+                )
+
+        def combined(batches, name):
+            return np.concatenate([batch[name] for batch in batches], axis=0)
+
+        for observed in (parallel, resumed):
+            for name in (
+                "raw",
+                "projected",
+                "projected_targets",
+                "available",
+                "target_accepted",
+            ):
+                np.testing.assert_allclose(
+                    combined(observed, name),
+                    combined(serial, name),
+                    rtol=0.0,
+                    atol=1.0e-12,
+                )
+            self.assertEqual(
+                [
+                    json.loads(str(item))["case_id"]
+                    for batch in observed for item in batch["evaluation_json"]
+                ],
+                ["test_000000", "test_000001", "test_000002"],
+            )
+
     def test_extracts_plant_major_shared_rows_with_exact_case_inputs(self) -> None:
         layout = small_layout()
         theta = controls(3)

@@ -1,7 +1,8 @@
-"""Generate the twelve requested article-v3 result-comparison charts."""
+"""Generate the article-v3 result-comparison charts, including objective values."""
 
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 import csv
 import sys
@@ -11,16 +12,48 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 import numpy as np
 import pandas as pd
 
-from closed_loop.model import COMPONENTS, COMPOSITE_MATRIX, TSS_VECTOR
+from closed_loop.model import COMPONENTS, COMPOSITE_MATRIX, NOMINAL_INFLUENT, TSS_VECTOR
 
 
-RUN = ROOT / "results" / "article_v3" / "article_full_50000_reduced_001"
+parser = argparse.ArgumentParser(
+    description="Generate the twelve article-v3 comparison charts for one completed run."
+)
+parser.add_argument(
+    "--run-id",
+    default="article_full_50000_three_route_001",
+    help="Run directory name below results/article_v3 (default: %(default)s).",
+)
+parser.add_argument(
+    "--routes",
+    default="surrogate,shared_unit,direct",
+    help="Comma-separated routes to include, in display order (default: %(default)s).",
+)
+parser.add_argument(
+    "--figure-subdirectory",
+    default="requested_comparisons",
+    help="Output directory below report/figures (default: %(default)s).",
+)
+arguments = parser.parse_args()
+
+requested_routes = tuple(route.strip() for route in arguments.routes.split(",") if route.strip())
+if not requested_routes or len(set(requested_routes)) != len(requested_routes) or any(
+    route not in ("surrogate", "shared_unit", "direct") for route in requested_routes
+):
+    raise ValueError("--routes must be a nonempty, nonrepeating subset of (surrogate, shared_unit, direct)")
+output_subdirectory = Path(arguments.figure_subdirectory)
+if output_subdirectory.is_absolute() or ".." in output_subdirectory.parts:
+    raise ValueError("--figure-subdirectory must be a relative path below report/figures")
+
+RUN = ROOT / "results" / "article_v3" / arguments.run_id
 TABLES = RUN / "report" / "tables"
-OUT = RUN / "report" / "figures" / "requested_comparisons"
+OUT = RUN / "report" / "figures" / output_subdirectory
+if not TABLES.is_dir():
+    raise FileNotFoundError(f"Completed report tables were not found: {TABLES}")
 OUT.mkdir(parents=True, exist_ok=True)
 
 RAW = "#D97904"
@@ -124,49 +157,164 @@ def route_parity_chart(route: str, prediction_method: str, stem: str, title: str
     }
 
 
+def route_removal_parity_chart(route: str, prediction_method: str, stem: str, title: str) -> dict[str, float]:
+    """Compare predicted and exact composite removals on the selected cases."""
+    subset = quality[
+        (quality["decision_route"] == route)
+        & (quality["response_method"].isin([prediction_method, "reference"]))
+        & quality["available"].astype(bool)
+    ]
+    pivot = subset.pivot(index="case", columns="response_method", values=composites)
+    influent = influent_composites.reindex(pivot.index)
+    if influent.isna().any().any() or np.any(influent.to_numpy(float) <= 0.0):
+        raise RuntimeError("positive composite influent concentrations are required for removal plots")
+    fig, axes = plt.subplots(2, 2, figsize=(10.5, 8.2))
+    errors: list[float] = []
+    r2_values: list[float] = []
+    for ax, component in zip(axes.flat, composites, strict=True):
+        feed = influent[component].to_numpy(float)
+        exact_removal = 100.0 * (1.0 - pivot[(component, "reference")].to_numpy(float) / feed)
+        predicted_removal = 100.0 * (1.0 - pivot[(component, prediction_method)].to_numpy(float) / feed)
+        limits = [min(exact_removal.min(), predicted_removal.min()), max(exact_removal.max(), predicted_removal.max())]
+        pad = max(1.0, 0.06 * (limits[1] - limits[0]))
+        limits = [limits[0] - pad, limits[1] + pad]
+        ax.plot(limits, limits, color=REFERENCE, lw=1.2, ls="--", label="perfect match")
+        ax.scatter(exact_removal, predicted_removal, s=42, color=ROUTE_COLOR[route],
+                   edgecolor="white", linewidth=0.6, zorder=3)
+        for label, xx, yy in zip([case_label[c] for c in pivot.index], exact_removal, predicted_removal, strict=True):
+            ax.annotate(label, (xx, yy), xytext=(3, 2), textcoords="offset points", fontsize=6)
+        absolute_error = np.abs(predicted_removal - exact_removal)
+        denominator = np.sum((exact_removal - np.mean(exact_removal)) ** 2)
+        r2 = np.nan if denominator <= 1.0e-12 else 1.0 - np.sum((predicted_removal - exact_removal) ** 2) / denominator
+        errors.extend(absolute_error.tolist())
+        r2_values.append(float(r2))
+        ax.set_xlim(limits); ax.set_ylim(limits)
+        ax.set_aspect("equal", adjustable="box")
+        ax.set_title(f"{component}: median |error| = {np.median(absolute_error):.1f} pp")
+        ax.set_xlabel("Exact mechanistic removal (%)")
+        ax.set_ylabel(f"{prediction_method.capitalize()} removal (%)")
+    handles, labels = axes.flat[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="upper center", bbox_to_anchor=(0.5, 0.94))
+    fig.suptitle(title, fontsize=14, y=0.99)
+    fig.text(0.5, 0.01, "Removal = 100 × (influent − effluent) / influent; each point is nominal or one robustness case.", ha="center")
+    fig.tight_layout(rect=(0, 0.03, 1, 0.94))
+    save(fig, stem)
+    return {
+        "median_absolute_removal_error_percentage_points": float(np.median(errors)),
+        "mean_absolute_removal_error_percentage_points": float(np.mean(errors)),
+        "mean_component_r2": float(np.nanmean(r2_values)),
+    }
+
+
 prediction = pd.read_csv(TABLES / "prediction_metrics.csv")
 quality = pd.read_csv(TABLES / "selected_quality.csv")
 controls = pd.read_csv(TABLES / "scenario_controls.csv")
 comparison = pd.read_csv(TABLES / "scenario_comparison.csv")
+nominal_comparison = pd.read_csv(TABLES / "nominal_comparison.csv")
 timing = pd.read_csv(RUN / "metrics" / "robustness_case_timing.csv")
+profiles = pd.read_csv(TABLES / "process_profiles.csv")
 
 present_routes = set(quality.get("decision_route", pd.Series(dtype=str)).astype(str))
 present_routes.update(controls.get("route", pd.Series(dtype=str)).astype(str))
 routes = tuple(
-    route for route in ROUTE_ORDER
-    if route in present_routes or any(
-        (RUN / "optimization").glob(f"*/{route}_selected.npz")
-    )
+    route for route in requested_routes
+    if route in present_routes or any((RUN / "optimization").glob(f"*/{route}_selected.npz"))
 )
-if "shared_unit" not in routes:
-    routes = ("surrogate", "direct")
+missing_routes = tuple(route for route in requested_routes if route not in routes)
+if missing_routes:
+    raise RuntimeError(f"requested routes are unavailable: {missing_routes}")
 
 robust_cases = [f"robustness_{index:02d}" for index in range(1, 11)]
 all_cases = ["nominal", *robust_cases]
 case_label = {"nominal": "N", **{case: f"R{i}" for i, case in enumerate(robust_cases, 1)}}
 composites = ["COD", "TN", "TP", "TSS"]
+with np.load(RUN / "datasets" / "effective_design.npz", allow_pickle=False) as design_for_removal:
+    robustness_influents = np.asarray(design_for_removal["robustness_influents"], dtype=float)
+if robustness_influents.shape != (len(robust_cases), len(COMPONENTS)):
+    raise RuntimeError("robustness influents have an unexpected shape")
+influent_composites = pd.DataFrame(
+    np.vstack((np.asarray(NOMINAL_INFLUENT, dtype=float), robustness_influents)) @ COMPOSITE_MATRIX.T,
+    index=all_cases,
+    columns=composites,
+)
 summary_rows: list[dict[str, object]] = []
+
+# 1--4. Holdout emulation diagnostics.  The shared-unit and whole-system
+# surrogates have distinct audited holdouts, so they are plotted side by side
+# rather than pooled into a misleading single raw/projected metric.
+prediction_routes = tuple(
+    route for route in ("surrogate", "shared_unit")
+    if route in routes and route in set(prediction["route"].astype(str))
+)
+prediction_columns = tuple(
+    (route, method) for route in prediction_routes for method in ("raw", "projected")
+)
+prediction_labels = {
+    ("surrogate", "raw"): "System\nraw",
+    ("surrogate", "projected"): "System\nprojected",
+    ("shared_unit", "raw"): "Shared-unit\nraw",
+    ("shared_unit", "projected"): "Shared-unit\nprojected",
+}
+prediction_colors = {
+    ("surrogate", "raw"): RAW,
+    ("surrogate", "projected"): SURROGATE,
+    ("shared_unit", "raw"): "#E6A44A",
+    ("shared_unit", "projected"): SHARED_UNIT,
+}
+prediction_hatches = {
+    ("surrogate", "raw"): "",
+    ("surrogate", "projected"): "",
+    ("shared_unit", "raw"): "..",
+    ("shared_unit", "projected"): "..",
+}
 
 # 1. Complete-response composite prediction.
 overall = prediction[
     prediction["method"].isin(["raw", "projected"])
     & prediction["block"].eq("complete_response")
     & prediction["coordinate"].eq("ALL")
-].set_index("method")
+].set_index(["route", "method"])
 metrics = [("nrmse", "Normalized RMSE", True), ("nmae", "Normalized MAE", True), ("r2_mean", "Mean $R^2$", False)]
-fig, axes = plt.subplots(1, 3, figsize=(11, 3.8))
+fig, axes = plt.subplots(1, 3, figsize=(12.5, 4.3))
 for ax, (column, label, lower_better) in zip(axes, metrics, strict=True):
-    values = overall.loc[["raw", "projected"], column].to_numpy(float)
-    bars = ax.bar(["Raw", "Projected"], values, color=[RAW, PROJECTED], width=0.62)
-    annotate_bars(ax, bars)
+    values = overall.loc[list(prediction_columns), column].to_numpy(float)
+    bars = ax.bar(
+        [prediction_labels[key] for key in prediction_columns], values,
+        color=[prediction_colors[key] for key in prediction_columns], width=0.68,
+    )
+    for bar, key in zip(bars, prediction_columns, strict=True):
+        bar.set_hatch(prediction_hatches[key])
+    if column != "r2_mean":
+        annotate_bars(ax, bars)
     ax.set_title(label + (" (lower is better)" if lower_better else " (higher is better)"))
     ax.set_ylabel(label)
-    ax.set_ylim(0, max(values) * 1.22)
-fig.suptitle("Q1. Reduced-response prediction on the 3,343-row post-selection holdout", fontsize=14)
-fig.tight_layout(rect=(0, 0, 1, 0.92))
+    if column in {"nrmse", "nmae"}:
+        # The shared-unit gate failure produces errors orders of magnitude
+        # larger than the whole-system route; log axes preserve both signals.
+        ax.set_yscale("log")
+        ax.set_ylim(float(np.nanmin(values[values > 0])) * 0.55, float(np.nanmax(values)) * 1.8)
+    else:
+        ax.set_yscale("symlog", linthresh=1.0)
+        lower, upper = min(0.0, float(np.nanmin(values))), max(0.0, float(np.nanmax(values)))
+        padding = max(1.0, 0.12 * (upper - lower))
+        ax.set_ylim(lower - padding, upper + padding)
+if "shared_unit" in prediction_routes:
+    q1_title = "Q1. Complete-response prediction on the route-specific post-selection holdouts"
+    q1_note = "The whole-system and shared-unit routes use separate audited holdouts; compare raw-to-projected change within each route."
+else:
+    q1_title = "Q1. Whole-system surrogate prediction on the post-selection holdout"
+    q1_note = "Raw and projected predictions use the same 3,343-row post-selection holdout."
+fig.suptitle(q1_title, fontsize=14)
+fig.text(0.5, 0.01, q1_note, ha="center")
+fig.tight_layout(rect=(0, 0.05, 1, 0.92))
 save(fig, "q01_holdout_composite_accuracy")
-q1_improvement = 100.0 * (overall.loc["raw", "nrmse"] - overall.loc["projected", "nrmse"]) / overall.loc["raw", "nrmse"]
-summary_rows.append({"question": 1, "metric": "projection_nrmse_improvement_percent", "value": q1_improvement})
+for route in prediction_routes:
+    q1_improvement = 100.0 * (
+        overall.loc[(route, "raw"), "nrmse"] - overall.loc[(route, "projected"), "nrmse"]
+    ) / overall.loc[(route, "raw"), "nrmse"]
+    summary_rows.append({"question": 1, "metric": f"{route}_projection_nrmse_improvement_percent", "value": q1_improvement})
+    if route == "surrogate":
+        summary_rows.append({"question": 1, "metric": "projection_nrmse_improvement_percent", "value": q1_improvement})
 
 # 2. Block-level reduced-response prediction. The Clarifier contributes outlet
 # component flows and one inventory coordinate, never a surrogate layer profile.
@@ -188,23 +336,41 @@ stage = prediction[
     prediction["method"].isin(["raw", "projected"])
     & prediction["block"].isin(stage_blocks)
     & prediction["coordinate"].eq("ALL")
-].pivot(index="block", columns="method", values="nrmse").loc[stage_blocks]
+].pivot(index="block", columns=["route", "method"], values="nrmse").reindex(
+    index=stage_blocks, columns=list(prediction_columns),
+)
 x = np.arange(len(stage))
-fig, (ax, delta_ax) = plt.subplots(2, 1, figsize=(10.5, 7), gridspec_kw={"height_ratios": [2, 1]})
-width = 0.36
-ax.bar(x - width / 2, stage["raw"], width, color=RAW, label="Raw")
-ax.bar(x + width / 2, stage["projected"], width, color=PROJECTED, label="Projected")
+fig, (ax, delta_ax) = plt.subplots(2, 1, figsize=(12.5, 7.5), gridspec_kw={"height_ratios": [2, 1]})
+width = 0.78 / len(prediction_columns)
+for index, key in enumerate(prediction_columns):
+    offset = (index - (len(prediction_columns) - 1) / 2) * width
+    bars = ax.bar(x + offset, stage[key], width, color=prediction_colors[key], label=prediction_labels[key])
+    for bar in bars:
+        bar.set_hatch(prediction_hatches[key])
 ax.set_xticks(x, stage_names); ax.set_ylabel("Normalized RMSE")
-ax.set_title("Response-block accuracy (lower is better)"); ax.legend(ncol=2)
-change = 100.0 * (stage["projected"] - stage["raw"]) / stage["raw"]
-delta_ax.bar(x, change, color=np.where(change <= 0, PROJECTED, "#C44E52"))
+ax.set_title("Response-block accuracy (lower is better)"); ax.legend(ncol=len(prediction_columns))
+stage_values = stage.to_numpy(float)
+ax.set_yscale("log")
+ax.set_ylim(float(np.nanmin(stage_values[stage_values > 0])) * 0.55, float(np.nanmax(stage_values)) * 1.8)
+changes: dict[str, pd.Series] = {}
+for index, route in enumerate(prediction_routes):
+    change = 100.0 * (stage[(route, "projected")] - stage[(route, "raw")]) / stage[(route, "raw")]
+    changes[route] = change
+    offset = (index - (len(prediction_routes) - 1) / 2) * 0.36
+    bars = delta_ax.bar(x + offset, change, 0.34, color=prediction_colors[(route, "projected")], label=ROUTE_LABEL[route])
+    for bar in bars:
+        bar.set_hatch(prediction_hatches[(route, "projected")])
 delta_ax.axhline(0, color=REFERENCE, lw=0.8)
 delta_ax.set_xticks(x, stage_names); delta_ax.set_ylabel("Projection change (%)")
-delta_ax.set_title("Negative values mean projection improved accuracy")
+delta_ax.set_title("Negative values mean projection improved accuracy"); delta_ax.legend(ncol=len(prediction_routes))
 fig.suptitle("Q2. Prediction accuracy by reduced-response block", fontsize=14)
 fig.tight_layout(rect=(0, 0, 1, 0.95))
 save(fig, "q02_holdout_accuracy_by_response_block")
-summary_rows.append({"question": 2, "metric": "stages_improved_by_projection", "value": int((change < 0).sum())})
+for route, change in changes.items():
+    count = int((change < 0).sum())
+    summary_rows.append({"question": 2, "metric": f"{route}_stages_improved_by_projection", "value": count})
+    if route == "surrogate":
+        summary_rows.append({"question": 2, "metric": "stages_improved_by_projection", "value": count})
 
 # 3. Component-level prediction aggregated over mixer/reactors/outlets.
 process_blocks = ["mixer", *[f"reactor_{i}" for i in range(1, 6)], "clarifier_overflow", "clarifier_underflow"]
@@ -218,48 +384,67 @@ coordinate_rows["stage_prefix"] = coordinate_rows["coordinate"].str.split(":").s
 allowed_prefixes = ["mixer", *[f"reactor_{i}" for i in range(1, 6)], "overflow_flow", "underflow_flow"]
 coordinate_rows = coordinate_rows[coordinate_rows["stage_prefix"].isin(allowed_prefixes)]
 component_metric = (
-    coordinate_rows.groupby(["method", "component"])["nrmse"]
+    coordinate_rows.groupby(["route", "method", "component"])["nrmse"]
     .apply(lambda values: float(np.sqrt(np.mean(np.square(values)))))
-    .unstack("method").loc[list(COMPONENTS)]
+    .reindex(pd.MultiIndex.from_product([prediction_routes, ("raw", "projected"), list(COMPONENTS)]))
+    .unstack([0, 1]).reindex(list(COMPONENTS))
 )
 y = np.arange(len(component_metric))
-fig, ax = plt.subplots(figsize=(9.5, 9.2))
-ax.barh(y + 0.19, component_metric["raw"], 0.38, color=RAW, label="Raw")
-ax.barh(y - 0.19, component_metric["projected"], 0.38, color=PROJECTED, label="Projected")
+fig, ax = plt.subplots(figsize=(11, 9.2))
+height = 0.78 / len(prediction_columns)
+for index, key in enumerate(prediction_columns):
+    offset = (index - (len(prediction_columns) - 1) / 2) * height
+    bars = ax.barh(y + offset, component_metric[key], height, color=prediction_colors[key], label=prediction_labels[key])
+    for bar in bars:
+        bar.set_hatch(prediction_hatches[key])
 ax.set_yticks(y, component_metric.index); ax.invert_yaxis()
 ax.set_xlabel("Stage-aggregated normalized RMSE (lower is better)")
 ax.set_title("Q3. Component prediction across mixer, reactors, and Clarifier outlets")
 ax.legend(ncol=2)
+component_values = component_metric.to_numpy(float)
+ax.set_xscale("log")
+ax.set_xlim(float(np.nanmin(component_values[component_values > 0])) * 0.55, float(np.nanmax(component_values)) * 1.8)
 fig.tight_layout()
 save(fig, "q03_holdout_component_accuracy")
-summary_rows.append({"question": 3, "metric": "components_improved_by_projection", "value": int((component_metric["projected"] < component_metric["raw"]).sum())})
+for route in prediction_routes:
+    count = int((component_metric[(route, "projected")] < component_metric[(route, "raw")]).sum())
+    summary_rows.append({"question": 3, "metric": f"{route}_components_improved_by_projection", "value": count})
+    if route == "surrogate":
+        summary_rows.append({"question": 3, "metric": "components_improved_by_projection", "value": count})
 
 # 4. Component-level prediction by stage.
 stage_prefixes = [*[f"reactor_{i}" for i in range(1, 6)], "overflow_flow", "underflow_flow"]
 stage_labels = [*[f"R{i}" for i in range(1, 6)], "Overflow", "Underflow"]
 stage_component = coordinate_rows[coordinate_rows["stage_prefix"].isin(stage_prefixes)]
-raw_matrix = stage_component[stage_component.method.eq("raw")].pivot(index="stage_prefix", columns="component", values="nrmse").loc[stage_prefixes, list(COMPONENTS)]
-projected_matrix = stage_component[stage_component.method.eq("projected")].pivot(index="stage_prefix", columns="component", values="nrmse").loc[stage_prefixes, list(COMPONENTS)]
-delta_matrix = 100.0 * (projected_matrix - raw_matrix) / raw_matrix
-fig, axes = plt.subplots(3, 1, figsize=(16, 9.5), gridspec_kw={"height_ratios": [1, 1, 1.1]})
-for ax, matrix, title, cmap, vmin, vmax in (
-    (axes[0], raw_matrix, "Raw normalized RMSE", "YlOrRd", 0, float(max(raw_matrix.max().max(), projected_matrix.max().max()))),
-    (axes[1], projected_matrix, "Projected normalized RMSE", "YlOrRd", 0, float(max(raw_matrix.max().max(), projected_matrix.max().max()))),
-):
-    im = ax.imshow(matrix, aspect="auto", cmap=cmap, vmin=vmin, vmax=vmax)
-    fig.colorbar(im, ax=ax, pad=0.01, label="nRMSE")
-    ax.set_title(title); ax.set_yticks(range(len(stage_labels)), stage_labels)
-    ax.set_xticks(range(len(COMPONENTS)), COMPONENTS, rotation=55, ha="right")
-limit = float(np.nanmax(np.abs(delta_matrix.to_numpy())))
-im = axes[2].imshow(delta_matrix, aspect="auto", cmap="RdBu_r", vmin=-limit, vmax=limit)
-fig.colorbar(im, ax=axes[2], pad=0.01, label="Projection change (%)")
-axes[2].set_title("Projection change: blue/negative improves; red/positive worsens")
-axes[2].set_yticks(range(len(stage_labels)), stage_labels)
-axes[2].set_xticks(range(len(COMPONENTS)), COMPONENTS, rotation=55, ha="right")
+fig, axes = plt.subplots(len(prediction_routes), 3, figsize=(16, 5.2 * len(prediction_routes)), squeeze=False)
+for row, route in enumerate(prediction_routes):
+    raw_matrix = stage_component[
+        stage_component.route.eq(route) & stage_component.method.eq("raw")
+    ].pivot(index="stage_prefix", columns="component", values="nrmse").reindex(index=stage_prefixes, columns=list(COMPONENTS))
+    projected_matrix = stage_component[
+        stage_component.route.eq(route) & stage_component.method.eq("projected")
+    ].pivot(index="stage_prefix", columns="component", values="nrmse").reindex(index=stage_prefixes, columns=list(COMPONENTS))
+    delta_matrix = 100.0 * (projected_matrix - raw_matrix) / raw_matrix
+    maximum = float(np.nanmax([raw_matrix.to_numpy(), projected_matrix.to_numpy()]))
+    limit = float(np.nanmax(np.abs(delta_matrix.to_numpy())))
+    for ax, matrix, title, cmap, vmin, vmax, colorbar_label in (
+        (axes[row, 0], raw_matrix, "Raw nRMSE", "YlOrRd", 0, maximum, "nRMSE"),
+        (axes[row, 1], projected_matrix, "Projected nRMSE", "YlOrRd", 0, maximum, "nRMSE"),
+        (axes[row, 2], delta_matrix, "Projection change", "RdBu_r", -limit, limit, "%"),
+    ):
+        im = ax.imshow(matrix, aspect="auto", cmap=cmap, vmin=vmin, vmax=vmax)
+        fig.colorbar(im, ax=ax, pad=0.01, label=colorbar_label)
+        ax.set_title(f"{ROUTE_LABEL[route]}: {title}")
+        ax.set_yticks(range(len(stage_labels)), stage_labels)
+        ax.set_xticks(range(len(COMPONENTS)), COMPONENTS, rotation=55, ha="right")
+    count = int((delta_matrix.to_numpy() < 0).sum())
+    summary_rows.append({"question": 4, "metric": f"{route}_stage_component_cells_improved", "value": count})
+    if route == "surrogate":
+        summary_rows.append({"question": 4, "metric": "stage_component_cells_improved", "value": count})
 fig.suptitle("Q4. Component prediction accuracy by reactor and Clarifier outlet", fontsize=14)
-fig.tight_layout(rect=(0, 0, 1, 0.96))
+fig.text(0.5, 0.01, "Blue projection-change cells improve nRMSE; each route uses its own nRMSE color scale.", ha="center")
+fig.tight_layout(rect=(0, 0.03, 1, 0.96))
 save(fig, "q04_holdout_component_accuracy_by_stage")
-summary_rows.append({"question": 4, "metric": "stage_component_cells_improved", "value": int((delta_matrix.to_numpy() < 0).sum())})
 
 # 5 and 6. Optimizer-native effluent composites versus exact replay.
 q5 = route_parity_chart(
@@ -272,6 +457,16 @@ q6 = route_parity_chart(
 )
 for key, value in q5.items(): summary_rows.append({"question": 5, "metric": key, "value": value})
 for key, value in q6.items(): summary_rows.append({"question": 6, "metric": key, "value": value})
+q5_removal = route_removal_parity_chart(
+    "surrogate", "projected", "q05_surrogate_percent_removal_vs_mechanistic",
+    "System-surrogate removal prediction vs exact mechanistic replay",
+)
+q6_removal = route_removal_parity_chart(
+    "direct", "smooth", "q06_smooth_nlp_percent_removal_vs_mechanistic",
+    "Smooth-NLP removal prediction vs exact mechanistic replay",
+)
+for key, value in q5_removal.items(): summary_rows.append({"question": "5R", "metric": key, "value": value})
+for key, value in q6_removal.items(): summary_rows.append({"question": "6R", "metric": key, "value": value})
 if (
     "shared_unit" in routes
     and not quality[
@@ -286,6 +481,12 @@ if (
     )
     for key, value in shared_parity.items():
         summary_rows.append({"question": "6U", "metric": key, "value": value})
+    shared_removal_parity = route_removal_parity_chart(
+        "shared_unit", "projected", "shared_unit_percent_removal_vs_mechanistic",
+        "Shared-unit surrogate removal prediction vs exact mechanistic replay",
+    )
+    for key, value in shared_removal_parity.items():
+        summary_rows.append({"question": "6UR", "metric": key, "value": value})
 
 # Exact-reference components for questions 7--10.
 with np.load(RUN / "datasets" / "effective_design.npz", allow_pickle=False) as design_npz:
@@ -372,6 +573,22 @@ pair_masks = {
 eligible_any = np.logical_or.reduce(
     [mask.to_numpy(bool) for mask in pair_masks.values()]
 ) if pair_masks else np.zeros(len(robust_cases), dtype=bool)
+all_three_eligible = (
+    comparison_index["all_three_comparison_eligible"].reindex(robust_cases).fillna(False).astype(bool)
+    if "all_three_comparison_eligible" in comparison_index
+    else pd.Series(eligible_any, index=robust_cases)
+)
+if len(routes) == 3:
+    comparison_eligible = all_three_eligible
+    comparison_scope_label = "all-three comparison"
+    nominal_eligibility_column = "all_three_comparison_eligible"
+elif len(pair_specs) == 1:
+    left_route, right_route, pair_symbol = pair_specs[0]
+    comparison_eligible = pair_masks[pair_symbol]
+    comparison_scope_label = f"{ROUTE_LABEL[left_route]}–{ROUTE_LABEL[right_route]} comparison"
+    nominal_eligibility_column = f"comparison_eligible_{pair_symbol}"
+else:
+    raise RuntimeError("the selected route set does not define one comparison scope")
 
 
 def route_pivot(column: str) -> pd.DataFrame:
@@ -383,7 +600,7 @@ def route_pivot(column: str) -> pd.DataFrame:
 def grouped_exact_bars(column: str, stem: str, title: str, ylabel: str, question: int) -> None:
     pivot = route_pivot(column)
     fig, ax = plt.subplots(figsize=(12, 5.4))
-    shade_ineligible(ax, eligible_any)
+    shade_ineligible(ax, comparison_eligible)
     handles = []
     for route in routes:
         bars = ax.bar(
@@ -392,8 +609,8 @@ def grouped_exact_bars(column: str, stem: str, title: str, ylabel: str, question
         )
         handles.append(bars)
     ax.set_xticks(x, labels); ax.set_ylabel(ylabel); ax.set_title(title)
-    ax.legend(handles=[*handles, Patch(facecolor=BAD, alpha=0.55, label="No eligible pair")], ncol=len(routes) + 1)
-    fig.text(0.5, 0.01, "All available bars use exact nonsmooth mechanistic replay; lower is better.", ha="center")
+    ax.legend(handles=[*handles, Patch(facecolor=BAD, alpha=0.55, label=f"Not eligible for {comparison_scope_label}")], ncol=len(routes) + 1)
+    fig.text(0.5, 0.01, f"All available bars use exact nonsmooth mechanistic replay; pink cases are not eligible for the {comparison_scope_label}.", ha="center")
     fig.tight_layout(rect=(0, 0.04, 1, 1)); save(fig, stem)
     for left, right, symbol in pair_specs:
         valid = pair_masks[symbol] & pivot[left].notna() & pivot[right].notna()
@@ -411,18 +628,53 @@ def grouped_exact_bars(column: str, stem: str, title: str, ylabel: str, question
 
 
 grouped_exact_bars("exact_objective", "q07_exact_optimal_objective", "Q7. Exact objective at selected decisions across robustness cases", "Exact total objective", 7)
+
+# 13. Dedicated objective-value comparison, retaining the nominal case as well
+# as the robustness cases used in Q7.
+all_case_x = np.arange(len(all_cases))
+all_case_labels = [case_label[case] for case in all_cases]
+all_case_objective = exact.pivot(index="case", columns="route", values="exact_objective").reindex(index=all_cases, columns=routes)
+nominal_comparison_eligible = nominal_comparison.set_index("case")[nominal_eligibility_column]
+all_case_eligible = pd.concat([
+    nominal_comparison_eligible.reindex(["nominal"]),
+    comparison_eligible,
+]).reindex(all_cases).fillna(False).astype(bool)
+fig, ax = plt.subplots(figsize=(13, 5.8))
+shade_ineligible(ax, all_case_eligible)
+for route in routes:
+    ax.bar(
+        all_case_x + offsets[route], all_case_objective[route], route_width,
+        color=ROUTE_COLOR[route], label=ROUTE_LABEL[route],
+    )
+ax.set_xticks(all_case_x, all_case_labels)
+ax.set_ylabel("Exact total objective")
+ax.set_title("Q13. Objective-value comparison at the three routes' selected decisions")
+ax.legend(handles=[
+    *[Patch(facecolor=ROUTE_COLOR[route], label=ROUTE_LABEL[route]) for route in routes],
+    Patch(facecolor=BAD, alpha=0.55, label=f"Not eligible for {comparison_scope_label}"),
+], ncol=len(routes) + 1)
+fig.text(0.5, 0.01, f"Values use exact nonsmooth mechanistic replay; lower is better. Pink cases are not eligible for the {comparison_scope_label}.", ha="center")
+fig.tight_layout(rect=(0, 0.04, 1, 1))
+save(fig, "q13_exact_objective_value_comparison")
+for route in routes:
+    summary_rows.append({
+        "question": 13,
+        "metric": f"{route}_nominal_exact_objective",
+        "value": float(all_case_objective.loc["nominal", route]),
+    })
+
 grouped_exact_bars("quality_component", "q08_exact_water_quality_component", "Q8. Exact normalized water-quality component across robustness cases", "Normalized water-quality component", 8)
 
 # 9. Exact effluent quality from every selected decision.
 fig, axes = plt.subplots(2, 2, figsize=(12, 8))
 for ax, component in zip(axes.flat, composites, strict=True):
     pivot = route_pivot(component)
-    shade_ineligible(ax, eligible_any)
+    shade_ineligible(ax, comparison_eligible)
     for route in routes:
         ax.plot(x, pivot[route], marker=ROUTE_MARKER[route], color=ROUTE_COLOR[route], label=ROUTE_LABEL[route])
     ax.set_xticks(x, labels); ax.set_title(component); ax.set_ylabel("Effluent composite")
 handles, legend_labels = axes.flat[0].get_legend_handles_labels()
-handles.append(Patch(facecolor=BAD, alpha=0.55)); legend_labels.append("No eligible pair")
+handles.append(Patch(facecolor=BAD, alpha=0.55)); legend_labels.append(f"Not eligible for {comparison_scope_label}")
 fig.legend(handles, legend_labels, loc="upper center", ncol=len(routes) + 1, bbox_to_anchor=(0.5, 0.95))
 fig.suptitle("Q9. Exact effluent quality yielded by selected decisions", fontsize=14)
 fig.tight_layout(rect=(0, 0, 1, 0.91)); save(fig, "q09_exact_effluent_composites")
@@ -448,7 +700,7 @@ economic_columns = ["hrt_component", "aeration_component", "internal_recycle_com
 economic_names = ["HRT", "Aeration", "Internal recycle", "Return sludge", "Wasting"]
 economic_colors = ["#4C78A8", "#F58518", "#54A24B", "#E45756", "#72B7B2"]
 hatches = {"surrogate": "", "shared_unit": "..", "direct": "///"}
-fig, ax = plt.subplots(figsize=(13, 6.2)); shade_ineligible(ax, eligible_any)
+fig, ax = plt.subplots(figsize=(13, 6.2)); shade_ineligible(ax, comparison_eligible)
 for route in routes:
     route_data = exact[exact.route.eq(route) & exact.case.isin(robust_cases)].set_index("case").reindex(robust_cases)
     bottom = np.zeros(len(robust_cases))
@@ -462,7 +714,7 @@ ax.set_xticks(x, labels); ax.set_ylabel("Weighted economic/resource contribution
 ax.set_title("Q10. Exact economic/resource objective contribution across robustness cases")
 component_handles = [Patch(facecolor=color, label=name) for color, name in zip(economic_colors, economic_names, strict=True)]
 route_handles = [Patch(facecolor="white", edgecolor="black", hatch=hatches[route], label=ROUTE_LABEL[route]) for route in routes]
-ax.legend(handles=[*component_handles, *route_handles, Patch(facecolor=BAD, alpha=0.55, label="No eligible pair")], ncol=4, loc="upper center", bbox_to_anchor=(0.5, -0.12))
+ax.legend(handles=[*component_handles, *route_handles, Patch(facecolor=BAD, alpha=0.55, label=f"Not eligible for {comparison_scope_label}")], ncol=4, loc="upper center", bbox_to_anchor=(0.5, -0.12))
 fig.tight_layout(rect=(0, 0.12, 1, 1)); save(fig, "q10_exact_economic_component")
 economic = route_pivot("economic_contribution")
 for left, right, symbol in pair_specs:
@@ -480,7 +732,7 @@ control_titles = ["HRT H", "Aeration a3", "Aeration a4", "Aeration a5", "Interna
 fig, axes = plt.subplots(4, 2, figsize=(12, 12), sharex=True)
 robust_controls = controls.set_index(["case", "route"])
 for ax, column, title in zip(axes.flat, control_columns, control_titles, strict=False):
-    shade_ineligible(ax, eligible_any)
+    shade_ineligible(ax, comparison_eligible)
     for route in routes:
         values = np.asarray([
             robust_controls.loc[(case, route), column]
@@ -491,7 +743,7 @@ for ax, column, title in zip(axes.flat, control_columns, control_titles, strict=
     ax.set_title(title); ax.set_xticks(x, labels)
 axes.flat[-1].axis("off")
 handles, legend_labels = axes.flat[0].get_legend_handles_labels()
-handles.append(Patch(facecolor=BAD, alpha=0.55)); legend_labels.append("No eligible pair")
+handles.append(Patch(facecolor=BAD, alpha=0.55)); legend_labels.append(f"Not eligible for {comparison_scope_label}")
 fig.legend(handles, legend_labels, loc="lower right", bbox_to_anchor=(0.93, 0.08))
 fig.suptitle("Q11. Selected operating decisions across robustness cases", fontsize=14)
 fig.tight_layout(rect=(0, 0, 1, 0.96)); save(fig, "q11_optimal_operating_values")
@@ -528,15 +780,118 @@ for left, right, symbol in pair_specs:
     if symbol == "S_M":
         summary_rows.append({"question": 12, "metric": "surrogate_faster_case_count", "value": int((time_pivot.loc[valid, left] < time_pivot.loc[valid, right]).sum())})
 
+# 14--17. Exact-replay evolution through the main liquid-treatment train.
+# The clarifier underflow is a side stream, so the serial path terminates at
+# the clarifier overflow (the treated effluent).
+main_profile_locations = [
+    "mixer", *[f"reactor_{index}" for index in range(1, 6)], "clarifier_overflow",
+]
+main_profile_labels = ["Influent", "Mixer", *[f"R{index}" for index in range(1, 6)], "Effluent"]
+case_colors = {
+    "nominal": "#111827",
+    **{
+        case: plt.get_cmap("tab20")(index)
+        for index, case in enumerate(robust_cases)
+    },
+}
+
+
+def main_train_profile_chart(component: str, question: int, stem: str) -> None:
+    figure, axes = plt.subplots(len(routes), 1, figsize=(12, 3.5 * len(routes)), sharex=True)
+    axes = np.atleast_1d(axes)
+    for axis, route in zip(axes, routes, strict=True):
+        for case in all_cases:
+            reference_path = RUN / "optimization" / case / f"{route}_casewise_reference.npz"
+            with np.load(reference_path, allow_pickle=False) as stored:
+                full_response = np.asarray(stored["exact_reference_full"], dtype=float)
+            if full_response.shape != (170,):
+                raise RuntimeError(f"unexpected exact-response shape for {route}/{case}")
+            liquid_path = np.vstack((
+                full_response[0:20],
+                *[full_response[20 * index:20 * (index + 1)] for index in range(1, 6)],
+                full_response[120:140],
+            ))
+            values = np.concatenate((
+                [float(influent_composites.loc[case, component])],
+                liquid_path @ COMPOSITE_MATRIX[composites.index(component)],
+            ))
+            if not np.all(np.isfinite(values)) or np.any(values <= 0.0):
+                raise RuntimeError(f"nonpositive or unavailable {component} profile for {route}/{case}")
+            qualified = bool(all_case_eligible.loc[case])
+            axis.plot(
+                range(len(main_profile_labels)), values,
+                color=case_colors[case], lw=2.2 if case == "nominal" else 1.25,
+                ls="-" if qualified else "--", marker="o", ms=4.2,
+                alpha=1.0 if qualified else 0.72,
+            )
+        axis.set_yscale("log")
+        axis.set_ylabel(f"{component} (mg/L, log scale)")
+        axis.set_title(ROUTE_LABEL[route])
+        axis.set_xticks(range(len(main_profile_labels)), main_profile_labels)
+    handles = [
+        Line2D([0], [0], color=case_colors[case], lw=2.2 if case == "nominal" else 1.5,
+               ls="-" if bool(all_case_eligible.loc[case]) else "--", marker="o",
+               label=case_label[case])
+        for case in all_cases
+    ]
+    figure.legend(handles=handles, loc="lower center", ncol=6, bbox_to_anchor=(0.5, 0.005), title="Case")
+    figure.suptitle(f"Q{question}. {component} evolution through the main treatment train", fontsize=14)
+    figure.text(
+        0.5, 0.13,
+        f"Lines are exact mechanistic replays at each route's selected decision. Dashed cases are not eligible for the {comparison_scope_label}.",
+        ha="center",
+    )
+    figure.tight_layout(rect=(0, 0.18, 1, 0.96))
+    save(figure, stem)
+
+
+for question, component, stem in (
+    (14, "COD", "q14_cod_main_treatment_train_profiles"),
+    (15, "TN", "q15_tn_main_treatment_train_profiles"),
+    (16, "TP", "q16_tp_main_treatment_train_profiles"),
+    (17, "TSS", "q17_tss_main_treatment_train_profiles"),
+):
+    main_train_profile_chart(component, question, stem)
+
 pd.DataFrame(summary_rows).to_csv(OUT / "chart_summary.csv", index=False)
 with (OUT / "chart_index.csv").open("w", newline="", encoding="utf-8") as stream:
     writer = csv.writer(stream)
     writer.writerow(["question", "png", "svg"])
-    for question in range(1, 13):
-        matches = sorted(OUT.glob(f"q{question:02d}_*.png"))
-        if len(matches) != 1:
-            raise RuntimeError(f"question {question} produced {len(matches)} PNG files")
-        writer.writerow([question, matches[0].name, matches[0].with_suffix(".svg").name])
+    primary_stems = {
+        1: "q01_holdout_composite_accuracy",
+        2: "q02_holdout_accuracy_by_response_block",
+        3: "q03_holdout_component_accuracy",
+        4: "q04_holdout_component_accuracy_by_stage",
+        5: "q05_surrogate_effluent_prediction_vs_mechanistic",
+        6: "q06_smooth_nlp_effluent_prediction_vs_mechanistic",
+        7: "q07_exact_optimal_objective",
+        8: "q08_exact_water_quality_component",
+        9: "q09_exact_effluent_composites",
+        10: "q10_exact_economic_component",
+        11: "q11_optimal_operating_values",
+        12: "q12_primary_optimization_time",
+        13: "q13_exact_objective_value_comparison",
+        14: "q14_cod_main_treatment_train_profiles",
+        15: "q15_tn_main_treatment_train_profiles",
+        16: "q16_tp_main_treatment_train_profiles",
+        17: "q17_tss_main_treatment_train_profiles",
+    }
+    for question, stem in primary_stems.items():
+        primary_png = OUT / f"{stem}.png"
+        if not primary_png.is_file():
+            raise RuntimeError(f"question {question} did not produce {primary_png.name}")
+        writer.writerow([question, primary_png.name, primary_png.with_suffix(".svg").name])
+    shared_parity_png = OUT / "shared_unit_effluent_prediction_vs_mechanistic.png"
+    if shared_parity_png.is_file():
+        writer.writerow(["6U", shared_parity_png.name, shared_parity_png.with_suffix(".svg").name])
+    for label, stem in (
+        ("5R", "q05_surrogate_percent_removal_vs_mechanistic"),
+        ("6R", "q06_smooth_nlp_percent_removal_vs_mechanistic"),
+        ("6UR", "shared_unit_percent_removal_vs_mechanistic"),
+    ):
+        removal_png = OUT / f"{stem}.png"
+        if removal_png.is_file():
+            writer.writerow([label, removal_png.name, removal_png.with_suffix(".svg").name])
 
 print(OUT)
 print(pd.DataFrame(summary_rows).to_string(index=False))

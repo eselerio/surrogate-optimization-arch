@@ -595,6 +595,8 @@ class ArticleV3FiveThousandContractTests(unittest.TestCase):
             "closed_loop/v3_smooth.py",
             "closed_loop/v3_surrogate_nlp.py",
             "closed_loop/v3_active_set.py",
+            "closed_loop/v3_parallel.py",
+            "closed_loop/v3_shared_unit.py",
             "closed_loop/v3_trust.py",
             "closed_loop/v3_reporting.py",
             "closed_loop/v3_replacement_generation.py",
@@ -673,6 +675,39 @@ class ArticleV3FiveThousandContractTests(unittest.TestCase):
             runner.establish_contract(run, dict(first))
             with self.assertRaisesRegex(RuntimeError, "choose a new run id"):
                 runner.establish_contract(run, {**first, "source_digest": "b"})
+
+    def test_assessment_batch_contract_binds_stage_source_and_inputs(self) -> None:
+        baseline = runner._assessment_batch_contract(
+            stage="whole_system_holdout_projection_audit",
+            source_id="source-a",
+            input_id="input-a",
+        )
+        self.assertEqual(
+            baseline,
+            runner._assessment_batch_contract(
+                stage="whole_system_holdout_projection_audit",
+                source_id="source-a",
+                input_id="input-a",
+            ),
+        )
+        variants = (
+            runner._assessment_batch_contract(
+                stage="shared_unit_holdout_projection_audit",
+                source_id="source-a",
+                input_id="input-a",
+            ),
+            runner._assessment_batch_contract(
+                stage="whole_system_holdout_projection_audit",
+                source_id="source-b",
+                input_id="input-a",
+            ),
+            runner._assessment_batch_contract(
+                stage="whole_system_holdout_projection_audit",
+                source_id="source-a",
+                input_id="input-b",
+            ),
+        )
+        self.assertTrue(all(value != baseline for value in variants))
 
     def test_explicit_migration_retains_verified_rows_and_is_resumable(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

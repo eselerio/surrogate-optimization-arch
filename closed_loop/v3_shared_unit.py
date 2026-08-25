@@ -17,7 +17,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 import json
 import math
-from time import perf_counter
+from pathlib import Path
+from time import perf_counter, perf_counter_ns
 from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
@@ -41,6 +42,7 @@ from .projection import (
     build_network_operators,
 )
 from .v3_surrogate_nlp import DEFAULT_OBJECTIVE_WEIGHTS, EngineeringLimits
+from .v3_parallel import BatchProgress, run_resumable_batches
 
 
 FloatArray = npt.NDArray[np.float64]
@@ -1510,6 +1512,192 @@ def evaluate_shared_unit_trust(
     return values
 
 
+_SHARED_CALIBRATION_CONTEXT: tuple[
+    tuple[SharedUnitModels, ...],
+    SharedUnitModels,
+    np.ndarray,
+    SharedUnitLeverageContract,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    NetworkRowScales,
+    NetworkLayout,
+    np.ndarray,
+    np.ndarray,
+    EngineeringLimits,
+    TrustRows | None,
+    TrustRows | None,
+] | None = None
+
+
+def _initialize_shared_calibration_worker(
+    fold_models: tuple[SharedUnitModels, ...],
+    final_models: SharedUnitModels,
+    fold_membership: np.ndarray,
+    leverage: SharedUnitLeverageContract,
+    theta: np.ndarray,
+    feed: np.ndarray,
+    scale: np.ndarray,
+    row_scales: NetworkRowScales,
+    layout: NetworkLayout,
+    invariant_operator: np.ndarray,
+    tss_weights: np.ndarray,
+    engineering: EngineeringLimits,
+    split_rows: TrustRows | None,
+    reactor_rows: TrustRows | None,
+) -> None:
+    global _SHARED_CALIBRATION_CONTEXT
+    _SHARED_CALIBRATION_CONTEXT = (
+        fold_models,
+        final_models,
+        np.asarray(fold_membership, dtype=np.int64),
+        leverage,
+        np.asarray(theta, dtype=np.float64),
+        np.asarray(feed, dtype=np.float64),
+        np.asarray(scale, dtype=np.float64),
+        row_scales,
+        layout,
+        np.asarray(invariant_operator, dtype=np.float64),
+        np.asarray(tss_weights, dtype=np.float64),
+        engineering,
+        split_rows,
+        reactor_rows,
+    )
+
+
+def _shared_calibration_batch(
+    bounds: tuple[int, int],
+) -> Mapping[str, np.ndarray]:
+    if _SHARED_CALIBRATION_CONTEXT is None:
+        raise RuntimeError("shared calibration worker was not initialized")
+    (
+        fold_models,
+        final_models,
+        fold_membership,
+        leverage,
+        theta,
+        feed,
+        scale,
+        row_scales,
+        layout,
+        invariant_operator,
+        tss_weights,
+        engineering,
+        split_rows,
+        reactor_rows,
+    ) = _SHARED_CALIBRATION_CONTEXT
+    start, stop = bounds
+    count = stop - start
+    value_count = 7 + int(split_rows is not None) + int(reactor_rows is not None)
+    raw = np.full((count, layout.state_size), np.nan, dtype=np.float64)
+    projected = np.full_like(raw, np.nan)
+    values = np.full((count, value_count), np.nan, dtype=np.float64)
+    closure_accepted = np.zeros(count, dtype=bool)
+    projection_accepted = np.zeros(count, dtype=bool)
+    diagnostics: list[str] = []
+    for local, row in enumerate(range(start, stop)):
+        fold = int(fold_membership[row])
+        closure = solve_shared_unit_closure(
+            fold_models[fold - 1],
+            theta[row],
+            feed[row],
+            scale,
+            layout=layout,
+        )
+        diagnostics.append(json.dumps(closure.diagnostics.as_dict()))
+        closure_accepted[local] = closure.accepted
+        if not closure.accepted or closure.raw is None:
+            continue
+        raw[local] = closure.raw
+        projection = project_shared_unit_raw(
+            closure.raw,
+            theta[row],
+            feed[row],
+            scale,
+            row_scales,
+            layout=layout,
+            invariant_operator=invariant_operator,
+            tss_weights=tss_weights,
+            clarifier_volume_m3=engineering.clarifier_volume_m3,
+            raise_on_failure=False,
+        )
+        projection_accepted[local] = projection.accepted
+        if not projection.accepted or not np.all(np.isfinite(projection.state)):
+            continue
+        projected[local] = projection.state
+        correction = float(
+            np.sqrt(np.mean(np.square((projection.state - closure.raw) / scale)))
+        )
+        reactor_leverage, clarifier_leverage = _local_leverages(
+            final_models, leverage, theta[row], closure
+        )
+        row_values = [
+            correction,
+            *reactor_leverage.tolist(),
+            clarifier_leverage,
+        ]
+        split = _rms_callback(
+            split_rows, theta[row], closure.raw, projection.state, feed[row]
+        )
+        reactor = _rms_callback(
+            reactor_rows, theta[row], closure.raw, projection.state, feed[row]
+        )
+        if split_rows is not None:
+            assert split is not None
+            row_values.append(split)
+        if reactor_rows is not None:
+            assert reactor is not None
+            row_values.append(reactor)
+        values[local] = row_values
+    return {
+        "raw": raw,
+        "projected": projected,
+        "values": values,
+        "closure_accepted": closure_accepted,
+        "projection_accepted": projection_accepted,
+        "diagnostics_json": np.asarray(diagnostics),
+    }
+
+
+def _validate_shared_calibration_batch(
+    start: int, stop: int, payload: Mapping[str, np.ndarray],
+) -> None:
+    count = stop - start
+    raw = np.asarray(payload["raw"])
+    projected = np.asarray(payload["projected"])
+    values = np.asarray(payload["values"])
+    closure = np.asarray(payload["closure_accepted"])
+    projection = np.asarray(payload["projection_accepted"])
+    diagnostics = np.asarray(payload["diagnostics_json"])
+    if (
+        raw.ndim != 2
+        or raw.shape[0] != count
+        or projected.shape != raw.shape
+        or values.ndim != 2
+        or values.shape[0] != count
+        or closure.shape != (count,)
+        or projection.shape != (count,)
+        or closure.dtype.kind != "b"
+        or projection.dtype.kind != "b"
+        or diagnostics.shape != (count,)
+        or np.any(projection & ~closure)
+    ):
+        raise ValueError("shared calibration batch payload has invalid dimensions")
+    finite_raw = np.all(np.isfinite(raw), axis=1)
+    finite_projected = np.all(np.isfinite(projected), axis=1)
+    finite_values = np.all(np.isfinite(values), axis=1)
+    if (
+        np.any(closure != finite_raw)
+        or np.any(projection != finite_projected)
+        or np.any(projection != finite_values)
+    ):
+        raise ValueError("shared calibration batch finite-state contract failed")
+    for local, value in enumerate(diagnostics.tolist()):
+        restored = SharedUnitClosureDiagnostics.from_dict(json.loads(str(value)))
+        if bool(restored.accepted) != bool(closure[local]):
+            raise ValueError("shared calibration diagnostic acceptance is inconsistent")
+
+
 def calibrate_shared_unit_trust(
     fit: SharedUnitFitResult,
     training: SharedUnitTrainingData,
@@ -1525,8 +1713,19 @@ def calibrate_shared_unit_trust(
     engineering: EngineeringLimits | None = None,
     split_rows: TrustRows | None = None,
     reactor_rows: TrustRows | None = None,
+    parallel_workers: int = 1,
+    batch_size: int = 64,
+    checkpoint_directory: Path | None = None,
+    checkpoint_contract: str | None = None,
+    progress: Callable[[BatchProgress], None] | None = None,
 ) -> SharedUnitTrustCalibration:
-    """Run fold-specific free closure/projection and freeze route-U limits."""
+    """Run fold-specific free closure/projection and freeze route-U limits.
+
+    The expensive row kernel can run in deterministic process batches.  Batch
+    checkpoints contain the complete row result needed for the unchanged
+    population reductions below, so an interrupted calibration resumes only
+    missing batches.
+    """
 
     layout = layout or NetworkLayout(component_count=training.component_count)
     theta = _finite_matrix(decisions, 7, "development decisions", rows=training.plant_count)
@@ -1545,10 +1744,6 @@ def calibrate_shared_unit_trust(
     if len(fit.fold_models) != int(np.max(fit.plant_fold_membership)):
         raise ValueError("selected fold models do not cover plant membership")
     leverage = fit_shared_unit_leverage(fit.models, training)
-    raw = np.full_like(truth, np.nan)
-    projected = np.full_like(truth, np.nan)
-    closure_accepted = np.zeros(training.plant_count, dtype=bool)
-    projection_accepted = np.zeros(training.plant_count, dtype=bool)
     value_columns = [
         "correction",
         *(f"reactor_leverage_{stage}" for stage in range(1, 6)),
@@ -1562,59 +1757,61 @@ def calibrate_shared_unit_trust(
     if reactor_rows is not None:
         reactor_column = len(value_columns)
         value_columns.append("reactor_residual")
-    values = np.full((training.plant_count, len(value_columns)), np.nan)
-    diagnostics: list[SharedUnitClosureDiagnostics] = []
     limits_config = engineering or EngineeringLimits()
-    for row in range(training.plant_count):
-        fold = int(fit.plant_fold_membership[row])
-        closure = solve_shared_unit_closure(
-            fit.fold_models[fold - 1],
-            theta[row],
-            feed[row],
-            scale,
-            layout=layout,
+    if checkpoint_directory is not None and not checkpoint_contract:
+        raise ValueError(
+            "checkpoint_contract is required when shared calibration checkpoints "
+            "are enabled"
         )
-        diagnostics.append(closure.diagnostics)
-        closure_accepted[row] = closure.accepted
-        if not closure.accepted or closure.raw is None:
-            continue
-        raw[row] = closure.raw
-        projection = project_shared_unit_raw(
-            closure.raw,
-            theta[row],
-            feed[row],
+    batches = run_resumable_batches(
+        stage="shared_unit_development_calibration",
+        row_count=training.plant_count,
+        batch_size=batch_size,
+        parallel_workers=parallel_workers,
+        checkpoint_directory=checkpoint_directory,
+        contract_digest=checkpoint_contract or "unpersisted",
+        payload_names=(
+            "raw",
+            "projected",
+            "values",
+            "closure_accepted",
+            "projection_accepted",
+            "diagnostics_json",
+        ),
+        worker=_shared_calibration_batch,
+        validate=_validate_shared_calibration_batch,
+        initializer=_initialize_shared_calibration_worker,
+        initargs=(
+            fit.fold_models,
+            fit.models,
+            fit.plant_fold_membership,
+            leverage,
+            theta,
+            feed,
             scale,
             row_scales,
-            layout=layout,
-            invariant_operator=invariant_operator,
-            tss_weights=tss_weights,
-            clarifier_volume_m3=limits_config.clarifier_volume_m3,
-            raise_on_failure=False,
-        )
-        projection_accepted[row] = projection.accepted
-        if not projection.accepted or not np.all(np.isfinite(projection.state)):
-            continue
-        projected[row] = projection.state
-        correction = float(
-            np.sqrt(np.mean(np.square((projection.state - closure.raw) / scale)))
-        )
-        reactor_leverage, clarifier_leverage = _local_leverages(
-            fit.models, leverage, theta[row], closure
-        )
-        split = _rms_callback(
-            split_rows, theta[row], closure.raw, projection.state, feed[row]
-        )
-        reactor = _rms_callback(
-            reactor_rows, theta[row], closure.raw, projection.state, feed[row]
-        )
-        row_values = [correction, *reactor_leverage.tolist(), clarifier_leverage]
-        if split_column is not None:
-            assert split is not None
-            row_values.append(split)
-        if reactor_column is not None:
-            assert reactor is not None
-            row_values.append(reactor)
-        values[row] = row_values
+            layout,
+            np.asarray(invariant_operator, dtype=np.float64),
+            np.asarray(tss_weights, dtype=np.float64),
+            limits_config,
+            split_rows,
+            reactor_rows,
+        ),
+        progress=progress,
+    )
+    raw = np.vstack([batch["raw"] for batch in batches])
+    projected = np.vstack([batch["projected"] for batch in batches])
+    values = np.vstack([batch["values"] for batch in batches])
+    closure_accepted = np.concatenate([
+        batch["closure_accepted"].astype(bool, copy=False) for batch in batches
+    ])
+    projection_accepted = np.concatenate([
+        batch["projection_accepted"].astype(bool, copy=False) for batch in batches
+    ])
+    diagnostics = [
+        SharedUnitClosureDiagnostics.from_dict(json.loads(str(record)))
+        for batch in batches for record in batch["diagnostics_json"]
+    ]
     finite_rows = (
         closure_accepted
         & projection_accepted
@@ -2288,6 +2485,210 @@ def evaluate_shared_unit(
     )
 
 
+_SHARED_HOLDOUT_CONTEXT: tuple[
+    SharedUnitAssets,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+] | None = None
+
+
+def _initialize_shared_holdout_worker(
+    assets: SharedUnitAssets,
+    theta: np.ndarray,
+    feed: np.ndarray,
+    truth: np.ndarray,
+    normalized: np.ndarray,
+) -> None:
+    global _SHARED_HOLDOUT_CONTEXT
+    _SHARED_HOLDOUT_CONTEXT = (
+        assets,
+        np.asarray(theta, dtype=np.float64),
+        np.asarray(feed, dtype=np.float64),
+        np.asarray(truth, dtype=np.float64),
+        np.asarray(normalized, dtype=np.float64),
+    )
+
+
+def _shared_holdout_batch(bounds: tuple[int, int]) -> Mapping[str, np.ndarray]:
+    if _SHARED_HOLDOUT_CONTEXT is None:
+        raise RuntimeError("shared holdout worker was not initialized")
+    assets, theta, feed, truth, normalized = _SHARED_HOLDOUT_CONTEXT
+    start, stop = bounds
+    count = stop - start
+    raw = np.full((count, assets.layout.state_size), np.nan, dtype=np.float64)
+    projected = np.full_like(raw, np.nan)
+    projected_targets = np.full_like(raw, np.nan)
+    available = np.zeros(count, dtype=bool)
+    target_accepted = np.zeros(count, dtype=bool)
+    target_elapsed_ns = np.zeros(count, dtype=np.int64)
+    evaluation_json: list[str] = []
+    target_diagnostics_json: list[str] = []
+    for local, row in enumerate(range(start, stop)):
+        evaluation = evaluate_shared_unit(
+            assets,
+            SharedUnitCase(influent=feed[row], case_id=f"test_{row:06d}"),
+            normalized[row],
+        )
+        valid = bool(
+            evaluation.available
+            and evaluation.raw is not None
+            and evaluation.projected is not None
+            and np.all(np.isfinite(evaluation.raw))
+            and np.all(np.isfinite(evaluation.projected))
+        )
+        available[local] = valid
+        if valid:
+            raw[local] = np.asarray(evaluation.raw, dtype=np.float64)
+            projected[local] = np.asarray(evaluation.projected, dtype=np.float64)
+        evaluation_json.append(json.dumps(evaluation.as_dict(include_arrays=False)))
+
+        target_started = perf_counter_ns()
+        target_projection = project_shared_unit_raw(
+            truth[row],
+            theta[row],
+            feed[row],
+            assets.common_response_scale,
+            assets.row_scales,
+            layout=assets.layout,
+            invariant_operator=assets.invariant_operator,
+            tss_weights=assets.tss_weights,
+            clarifier_volume_m3=assets.engineering.clarifier_volume_m3,
+            raise_on_failure=False,
+        )
+        target_elapsed_ns[local] = perf_counter_ns() - target_started
+        target_valid = bool(
+            target_projection.accepted
+            and np.all(np.isfinite(target_projection.state))
+        )
+        target_accepted[local] = target_valid
+        if target_valid:
+            projected_targets[local] = target_projection.state
+        target_diagnostics_json.append(json.dumps({
+            "accepted": bool(target_projection.accepted),
+            "diagnostics": target_projection.diagnostics.as_dict(),
+        }))
+    return {
+        "raw": raw,
+        "projected": projected,
+        "projected_targets": projected_targets,
+        "available": available,
+        "target_accepted": target_accepted,
+        "target_elapsed_ns": target_elapsed_ns,
+        "evaluation_json": np.asarray(evaluation_json),
+        "target_diagnostics_json": np.asarray(target_diagnostics_json),
+    }
+
+
+def _validate_shared_holdout_batch(
+    start: int, stop: int, payload: Mapping[str, np.ndarray],
+) -> None:
+    count = stop - start
+    raw = np.asarray(payload["raw"])
+    projected = np.asarray(payload["projected"])
+    projected_targets = np.asarray(payload["projected_targets"])
+    available = np.asarray(payload["available"])
+    target_accepted = np.asarray(payload["target_accepted"])
+    elapsed = np.asarray(payload["target_elapsed_ns"])
+    evaluation_json = np.asarray(payload["evaluation_json"])
+    target_json = np.asarray(payload["target_diagnostics_json"])
+    if (
+        raw.ndim != 2
+        or raw.shape[0] != count
+        or projected.shape != raw.shape
+        or projected_targets.shape != raw.shape
+        or available.shape != (count,)
+        or available.dtype.kind != "b"
+        or target_accepted.shape != (count,)
+        or target_accepted.dtype.kind != "b"
+        or elapsed.shape != (count,)
+        or elapsed.dtype.kind not in "iu"
+        or np.any(elapsed < 0)
+        or evaluation_json.shape != (count,)
+        or target_json.shape != (count,)
+    ):
+        raise ValueError("shared holdout batch payload has invalid dimensions")
+    if (
+        np.any(np.all(np.isfinite(raw), axis=1) != available)
+        or np.any(np.all(np.isfinite(projected), axis=1) != available)
+        or np.any(np.all(np.isfinite(projected_targets), axis=1) != target_accepted)
+    ):
+        raise ValueError("shared holdout batch finite-state contract failed")
+    for local, value in enumerate(evaluation_json.tolist()):
+        record = json.loads(str(value))
+        expected_case = f"test_{start + local:06d}"
+        if (
+            bool(record.get("available")) != bool(available[local])
+            or record.get("case_id") != expected_case
+            or bool(record.get("closure", {}).get("accepted"))
+            != bool(record.get("closure", {}).get("diagnostics", {}).get("accepted"))
+        ):
+            raise ValueError("shared holdout availability record is inconsistent")
+    for local, value in enumerate(target_json.tolist()):
+        record = json.loads(str(value))
+        if bool(record.get("accepted")) != bool(target_accepted[local]):
+            raise ValueError("shared holdout target record is inconsistent")
+
+
+def evaluate_shared_unit_holdout_batches(
+    assets: SharedUnitAssets,
+    decisions: npt.ArrayLike,
+    influents: npt.ArrayLike,
+    mechanistic: npt.ArrayLike,
+    *,
+    parallel_workers: int = 1,
+    batch_size: int = 64,
+    checkpoint_directory: Path | None = None,
+    checkpoint_contract: str | None = None,
+    progress: Callable[[BatchProgress], None] | None = None,
+) -> list[dict[str, np.ndarray]]:
+    """Evaluate route U and both holdout QPs in resumable process batches."""
+
+    theta = _finite_matrix(decisions, 7, "holdout decisions")
+    feed = _finite_matrix(
+        influents,
+        assets.layout.component_count,
+        "holdout influents",
+        rows=len(theta),
+    )
+    truth = _finite_matrix(
+        mechanistic,
+        assets.layout.state_size,
+        "holdout mechanistic targets",
+        rows=len(theta),
+    )
+    normalized = (theta - assets.theta_lower) / assets.theta_span
+    if checkpoint_directory is not None and not checkpoint_contract:
+        raise ValueError(
+            "checkpoint_contract is required when shared holdout checkpoints are "
+            "enabled"
+        )
+    return run_resumable_batches(
+        stage="shared_unit_holdout_projection_audit",
+        row_count=len(theta),
+        batch_size=batch_size,
+        parallel_workers=parallel_workers,
+        checkpoint_directory=checkpoint_directory,
+        contract_digest=checkpoint_contract or "unpersisted",
+        payload_names=(
+            "raw",
+            "projected",
+            "projected_targets",
+            "available",
+            "target_accepted",
+            "target_elapsed_ns",
+            "evaluation_json",
+            "target_diagnostics_json",
+        ),
+        worker=_shared_holdout_batch,
+        validate=_validate_shared_holdout_batch,
+        initializer=_initialize_shared_holdout_worker,
+        initargs=(assets, theta, feed, truth, normalized),
+        progress=progress,
+    )
+
+
 @dataclass(frozen=True)
 class SharedUnitOptimizationSettings:
     maximum_iterations: int = 250
@@ -2916,6 +3317,7 @@ __all__ = [
     "calibrate_shared_unit_trust",
     "cross_validate_shared_unit_models",
     "evaluate_shared_unit",
+    "evaluate_shared_unit_holdout_batches",
     "evaluate_shared_unit_trust",
     "extract_shared_unit_training",
     "fit_shared_unit_leverage",

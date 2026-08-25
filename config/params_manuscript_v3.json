@@ -11,7 +11,12 @@
     "run_id_environment_variable": "ARTICLE_V3_RUN_ID",
     "results_root": "results/article_v3",
     "resume_requires_exact_contract_hash": true,
-    "numerical_threads_per_worker": 1
+    "numerical_threads_per_worker": 1,
+    "assessment_batch_protocol": "deterministic_spawn_batches_v1",
+    "assessment_batch_size": 64,
+    "assessment_parallel_workers": "profile_default",
+    "assessment_checkpoint_root": "assessment_checkpoints",
+    "assessment_checkpoints_are_atomic_and_input_bound": true
   },
   "profiles": {
     "test_500_l5": {

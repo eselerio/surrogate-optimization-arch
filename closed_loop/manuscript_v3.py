@@ -16,6 +16,7 @@ import json
 import math
 import os
 import tempfile
+from typing import Any, Callable, Mapping
 
 import numpy as np
 import pandas as pd
@@ -50,6 +51,7 @@ from .projection import (
     build_network_operators,
     fit_network_row_scales,
 )
+from .v3_parallel import BatchProgress, run_resumable_batches
 
 
 DECISION_NAMES = ("H", "a_3", "a_4", "a_5", "r_I", "r_R", "w")
@@ -671,6 +673,190 @@ def _prediction_metric_rows(
     return rows
 
 
+_HOLDOUT_PROJECTION_CONTEXT: tuple[
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    NetworkLayout,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    PhysicalProjector,
+] | None = None
+
+
+def _initialize_holdout_projection_worker(
+    raw: np.ndarray,
+    targets: np.ndarray,
+    decisions: np.ndarray,
+    influents: np.ndarray,
+    layout: NetworkLayout,
+    state_scale: np.ndarray,
+    equality_scale: np.ndarray,
+    inequality_scale: np.ndarray,
+) -> None:
+    global _HOLDOUT_PROJECTION_CONTEXT
+    _HOLDOUT_PROJECTION_CONTEXT = (
+        np.asarray(raw, dtype=np.float64),
+        np.asarray(targets, dtype=np.float64),
+        np.asarray(decisions, dtype=np.float64),
+        np.asarray(influents, dtype=np.float64),
+        layout,
+        np.asarray(state_scale, dtype=np.float64),
+        np.asarray(equality_scale, dtype=np.float64),
+        np.asarray(inequality_scale, dtype=np.float64),
+        PhysicalProjector(
+            state_scale,
+            equality_scale,
+            inequality_scale,
+            absolute_tolerance=1.0e-12,
+            relative_tolerance=1.0e-12,
+        ),
+    )
+
+
+def _holdout_projection_batch(bounds: tuple[int, int]) -> Mapping[str, np.ndarray]:
+    if _HOLDOUT_PROJECTION_CONTEXT is None:
+        raise RuntimeError("holdout-projection worker was not initialized")
+    (
+        raw,
+        targets,
+        decisions,
+        influents,
+        layout,
+        state_scale,
+        equality_scale,
+        inequality_scale,
+        projector,
+    ) = _HOLDOUT_PROJECTION_CONTEXT
+    start, stop = bounds
+    count = stop - start
+    projected = np.empty((count, layout.state_size), dtype=np.float64)
+    projected_targets = np.empty_like(projected)
+    qp_rows: list[str] = []
+    feasibility_rows: list[str] = []
+    violation_rows: list[str] = []
+    for local, row in enumerate(range(start, stop)):
+        operators = _operators(decisions[row], influents[row], layout)
+        started = perf_counter_ns()
+        projection = projector.project(
+            raw[row],
+            operators.equality_matrix,
+            operators.equality_rhs,
+            operators.inequality_matrix,
+            raise_on_failure=False,
+        )
+        qp_elapsed = perf_counter_ns() - started
+        projected[local] = projection.state
+        target_projection = projector.project(
+            targets[row],
+            operators.equality_matrix,
+            operators.equality_rhs,
+            operators.inequality_matrix,
+            raise_on_failure=False,
+        )
+        projected_targets[local] = target_projection.state
+        for kind, result, elapsed in (
+            ("raw_prediction", projection, qp_elapsed),
+            ("mechanistic_target", target_projection, math.nan),
+        ):
+            qp_rows.append(json.dumps({
+                "row": row,
+                "projection_input": kind,
+                "accepted": bool(result.accepted),
+                "elapsed_ns": elapsed,
+                **result.diagnostics.as_dict(),
+            }))
+        raw_distance = float(np.linalg.norm(
+            (raw[row] - targets[row]) / state_scale
+        ))
+        projected_distance = float(np.linalg.norm(
+            (projected[local] - targets[row]) / state_scale
+        ))
+        target_feasibility = float(np.linalg.norm(
+            (projected_targets[local] - targets[row]) / state_scale
+        ))
+        upper_bound = raw_distance + target_feasibility
+        feasibility_rows.append(json.dumps({
+            "row": row,
+            "target_feasibility_distance": target_feasibility,
+            "raw_distance": raw_distance,
+            "projected_distance": projected_distance,
+            "finite_feasibility_bound": upper_bound,
+            "bound_slack": upper_bound - projected_distance,
+            "bound_passed": bool(projected_distance <= upper_bound + 1.0e-10),
+            "raw_projection_qp_passed": bool(projection.accepted),
+            "target_projection_qp_passed": bool(target_projection.accepted),
+        }))
+        for method, state in (
+            ("raw", raw[row]),
+            ("projected", projected[local]),
+            ("mechanistic", targets[row]),
+        ):
+            violation_rows.append(json.dumps(violation_record(
+                method,
+                f"test_{row:04d}",
+                state,
+                decisions[row],
+                influents[row],
+                layout,
+                equality_scale,
+                inequality_scale,
+                state_scale,
+            )))
+    return {
+        "projected": projected,
+        "projected_targets": projected_targets,
+        "qp_json": np.asarray(qp_rows),
+        "feasibility_json": np.asarray(feasibility_rows),
+        "violations_json": np.asarray(violation_rows),
+    }
+
+
+def _validate_holdout_projection_batch(
+    start: int, stop: int, payload: Mapping[str, np.ndarray],
+) -> None:
+    count = stop - start
+    projected = np.asarray(payload["projected"])
+    projected_targets = np.asarray(payload["projected_targets"])
+    if (
+        projected.ndim != 2
+        or projected.shape[0] != count
+        or projected_targets.shape != projected.shape
+        or np.asarray(payload["qp_json"]).shape != (2 * count,)
+        or np.asarray(payload["feasibility_json"]).shape != (count,)
+        or np.asarray(payload["violations_json"]).shape != (3 * count,)
+    ):
+        raise ValueError("holdout-projection batch payload has invalid dimensions")
+    qp = [json.loads(str(value)) for value in np.asarray(payload["qp_json"])]
+    feasibility = [
+        json.loads(str(value)) for value in np.asarray(payload["feasibility_json"])
+    ]
+    violations = [
+        json.loads(str(value)) for value in np.asarray(payload["violations_json"])
+    ]
+    expected_rows = list(range(start, stop))
+    if [int(item.get("row", -1)) for item in qp] != [
+        row for row in expected_rows for _ in range(2)
+    ] or [item.get("projection_input") for item in qp] != [
+        kind
+        for _ in expected_rows
+        for kind in ("raw_prediction", "mechanistic_target")
+    ]:
+        raise ValueError("holdout-projection QP row ordering is invalid")
+    if [int(item.get("row", -1)) for item in feasibility] != expected_rows:
+        raise ValueError("holdout-projection feasibility row ordering is invalid")
+    if [item.get("case") for item in violations] != [
+        f"test_{row:04d}" for row in expected_rows for _ in range(3)
+    ] or [item.get("method") for item in violations] != [
+        method
+        for _ in expected_rows
+        for method in ("raw", "projected", "mechanistic")
+    ]:
+        raise ValueError("holdout-projection violation row ordering is invalid")
+
+
 def assess_raw_projected_mechanistic(
     model: QuadraticSurrogate,
     development_decisions: np.ndarray,
@@ -680,6 +866,12 @@ def assess_raw_projected_mechanistic(
     test_influents: np.ndarray,
     test_targets: np.ndarray,
     profile: StudyProfile,
+    *,
+    parallel_workers: int = 1,
+    batch_size: int = 64,
+    checkpoint_directory: Path | None = None,
+    checkpoint_contract: str | None = None,
+    progress: Callable[[BatchProgress], None] | None = None,
 ) -> AssessmentResult:
     layout = NetworkLayout(layer_count=profile.layer_count)
     state_scale = model.response_scale
@@ -691,64 +883,56 @@ def assess_raw_projected_mechanistic(
         invariant_operator=INVARIANT_MATRIX, tss_weights=TSS_VECTOR,
         layout=layout, minimum_scale=1.0,
     )
-    projector = PhysicalProjector(
-        state_scale, row_scales.equality, row_scales.inequality,
-        absolute_tolerance=1.0e-12, relative_tolerance=1.0e-12,
-    )
     raw = model.predict(test_decisions, test_influents)
-    projected = np.empty_like(raw)
-    projected_targets = np.empty_like(raw)
-    violations: list[dict[str, object]] = []
-    qp_rows: list[dict[str, object]] = []
-    feasibility_rows: list[dict[str, object]] = []
-    for i in range(len(raw)):
-        operators = _operators(test_decisions[i], test_influents[i], layout)
-        started = perf_counter_ns()
-        projection = projector.project(
-            raw[i], operators.equality_matrix, operators.equality_rhs,
-            operators.inequality_matrix, raise_on_failure=False,
+    if checkpoint_directory is not None and not checkpoint_contract:
+        raise ValueError(
+            "checkpoint_contract is required when holdout checkpoints are enabled"
         )
-        qp_elapsed = perf_counter_ns() - started
-        projected[i] = projection.state
-        target_projection = projector.project(
-            test_targets[i], operators.equality_matrix, operators.equality_rhs,
-            operators.inequality_matrix, raise_on_failure=False,
-        )
-        projected_targets[i] = target_projection.state
-        for kind, result, elapsed in (
-            ("raw_prediction", projection, qp_elapsed),
-            ("mechanistic_target", target_projection, math.nan),
-        ):
-            qp_rows.append({
-                "row": i, "projection_input": kind, "accepted": bool(result.accepted),
-                "elapsed_ns": elapsed, **result.diagnostics.as_dict(),
-            })
-        raw_distance = float(np.linalg.norm((raw[i] - test_targets[i]) / model.response_scale))
-        projected_distance = float(np.linalg.norm(
-            (projected[i] - test_targets[i]) / model.response_scale
-        ))
-        target_feasibility = float(np.linalg.norm(
-            (projected_targets[i] - test_targets[i]) / model.response_scale
-        ))
-        upper_bound = raw_distance + target_feasibility
-        feasibility_rows.append({
-            "row": i, "target_feasibility_distance": target_feasibility,
-            "raw_distance": raw_distance, "projected_distance": projected_distance,
-            "finite_feasibility_bound": upper_bound,
-            "bound_slack": upper_bound - projected_distance,
-            "bound_passed": bool(projected_distance <= upper_bound + 1.0e-10),
-            "raw_projection_qp_passed": bool(projection.accepted),
-            "target_projection_qp_passed": bool(target_projection.accepted),
-        })
-        for method, state in (
-            ("raw", raw[i]), ("projected", projected[i]),
-            ("mechanistic", test_targets[i]),
-        ):
-            violations.append(violation_record(
-                method, f"test_{i:04d}", state, test_decisions[i],
-                test_influents[i], layout, row_scales.equality,
-                row_scales.inequality, state_scale,
-            ))
+    batches = run_resumable_batches(
+        stage="whole_system_holdout_projection_audit",
+        row_count=len(raw),
+        batch_size=batch_size,
+        parallel_workers=parallel_workers,
+        checkpoint_directory=checkpoint_directory,
+        contract_digest=checkpoint_contract or "unpersisted",
+        payload_names=(
+            "projected",
+            "projected_targets",
+            "qp_json",
+            "feasibility_json",
+            "violations_json",
+        ),
+        worker=_holdout_projection_batch,
+        validate=_validate_holdout_projection_batch,
+        initializer=_initialize_holdout_projection_worker,
+        initargs=(
+            raw,
+            test_targets,
+            test_decisions,
+            test_influents,
+            layout,
+            state_scale,
+            row_scales.equality,
+            row_scales.inequality,
+        ),
+        progress=progress,
+    )
+    projected = np.vstack([batch["projected"] for batch in batches])
+    projected_targets = np.vstack(
+        [batch["projected_targets"] for batch in batches]
+    )
+    qp_rows = [
+        json.loads(str(record))
+        for batch in batches for record in batch["qp_json"]
+    ]
+    feasibility_rows = [
+        json.loads(str(record))
+        for batch in batches for record in batch["feasibility_json"]
+    ]
+    violations = [
+        json.loads(str(record))
+        for batch in batches for record in batch["violations_json"]
+    ]
     metrics: list[dict[str, object]] = []
     for method, values in (("raw", raw), ("projected", projected)):
         metrics.extend(_prediction_metric_rows(

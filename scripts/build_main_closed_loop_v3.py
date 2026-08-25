@@ -122,7 +122,9 @@ from IPython.display import display
 
 from closed_loop.manuscript_v3 import ARTICLE_FULL
 from scripts.run_article_v3_5000 import (
+    ASSESSMENT_BATCH_PROTOCOL,
     AUTHORIZED_DATASET_TOTALS,
+    DEFAULT_ASSESSMENT_BATCH_SIZE,
     DEFAULT_RUN_ID,
     LEGACY_RUN_ID,
     OPTIMIZATION_PROTOCOL,
@@ -156,6 +158,14 @@ PROFILE = (
     if USE_FROZEN_ACCEPTED
     else profile_for_dataset_total(DATASET_COUNT)
 )
+ASSESSMENT_WORKERS = int(os.environ.get(
+    "ARTICLE_V3_ASSESSMENT_WORKERS", str(PROFILE.parallel_workers)
+))
+ASSESSMENT_BATCH_SIZE = int(os.environ.get(
+    "ARTICLE_V3_ASSESSMENT_BATCH_SIZE", str(DEFAULT_ASSESSMENT_BATCH_SIZE)
+))
+if ASSESSMENT_WORKERS < 1 or ASSESSMENT_BATCH_SIZE < 1:
+    raise ValueError("Assessment workers and batch size must be positive.")
 default_run_id = (
     "article_full_50000_three_route_001" if USE_FROZEN_ACCEPTED
     else DEFAULT_RUN_ID if DATASET_COUNT == 5_000
@@ -177,6 +187,10 @@ REUSE_FROM_RUN_ID = os.environ.get(
 )
 if REUSE_FROM_RUN_ID == RUN_ID:
     raise ValueError("The rerun source and target run IDs must differ.")
+AUTHORIZE_PARALLEL_ASSESSMENT_MIGRATION = os.environ.get(
+    "ARTICLE_V3_AUTHORIZE_PARALLEL_ASSESSMENT_MIGRATION",
+    "1" if RUN_ID == "article_full_50000_three_route_001" else "0",
+).strip().lower() in {"1", "true", "yes"}
 
 profile = asdict(PROFILE)
 expected_profile = {
@@ -209,6 +223,14 @@ if contract_config.get("schema_version") != 5:
     raise RuntimeError("The three-route reduced-response configuration schema is required.")
 if contract_config.get("execution", {}).get("runner_schema") != 11 or RUNNER_SCHEMA != 11:
     raise RuntimeError("The three-route calculation requires runner schema 11.")
+execution_contract = contract_config["execution"]
+if (
+    execution_contract.get("assessment_batch_protocol")
+    != ASSESSMENT_BATCH_PROTOCOL
+    or int(execution_contract.get("assessment_batch_size", -1))
+    != DEFAULT_ASSESSMENT_BATCH_SIZE
+):
+    raise RuntimeError("The deterministic assessment-batch contract is inconsistent.")
 surrogate_contract = contract_config["surrogate"]
 required_surrogate = {
     "route_id": "surrogate",
@@ -596,6 +618,11 @@ def invoke_stage(through: str) -> None:
             profile=PROFILE,
             use_frozen_accepted_checkpoints=USE_FROZEN_ACCEPTED,
             reuse_from_run_id=(None if RUN_ROOT.exists() else REUSE_FROM_RUN_ID),
+            authorize_parallel_assessment_migration=(
+                AUTHORIZE_PARALLEL_ASSESSMENT_MIGRATION
+            ),
+            assessment_workers=ASSESSMENT_WORKERS,
+            assessment_batch_size=ASSESSMENT_BATCH_SIZE,
         )
     finally:
         show_status(through)
@@ -813,7 +840,12 @@ display(pd.DataFrame(
 If execution is interrupted, rerun the setup and helper cells with the same
 target and source IDs, then rerun the cell for the desired terminal stage.
 Calling `complete` is sufficient to resume every missing prerequisite in that
-target directory. A schema-10 two-route directory is never resumed as a
+target directory. The assessment uses deterministic process batches (64 rows
+by default), one numerical thread per worker, and atomic input-bound
+checkpoints below `assessment_checkpoints`; completed batches are reused in
+fixed row order even when the worker count changes. Configure concurrency with
+`ARTICLE_V3_ASSESSMENT_WORKERS` and batch geometry with
+`ARTICLE_V3_ASSESSMENT_BATCH_SIZE`. A schema-10 two-route directory is never resumed as a
 schema-11 three-route directory. The first three-route calculation uses a fresh
 target such as `article_full_50000_three_route_001` and may reuse only verified
 mechanistic-generation artifacts from its declared predecessor. A later rerun
