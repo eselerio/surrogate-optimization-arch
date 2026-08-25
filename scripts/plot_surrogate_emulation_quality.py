@@ -9,10 +9,7 @@ import numpy as np
 import pandas as pd
 
 
-COLORS = {
-    "raw": "#d97706", "projected": "#2563eb", "truth": "#111827",
-    "shared_raw": "#65a30d", "shared_projected": "#16a34a",
-}
+COLORS = {"raw": "#d97706", "projected": "#2563eb", "truth": "#111827"}
 REDUCED_RESPONSE_COUNT = 161
 
 
@@ -78,48 +75,6 @@ def main() -> None:
         raise ValueError("Prediction arrays and metric coordinate names do not align")
 
     methods = {"Raw ridge": raw, "Projected surrogate": projected}
-    shared_prediction_path = run / "predictions" / "shared_unit_post_selection_holdout.npz"
-    shared_raw: np.ndarray | None = None
-    shared_projected: np.ndarray | None = None
-    if shared_prediction_path.is_file():
-        with np.load(shared_prediction_path, allow_pickle=False) as arrays:
-            shared_truth = np.asarray(
-                arrays["mechanistic"] if "mechanistic" in arrays.files
-                else arrays["truth"] if "truth" in arrays.files else truth,
-                dtype=float,
-            )
-            raw_key = "raw_predictions" if "raw_predictions" in arrays.files else "raw"
-            projected_key = (
-                "projected_predictions"
-                if "projected_predictions" in arrays.files else "projected"
-            )
-            shared_raw = np.asarray(arrays[raw_key], dtype=float)
-            shared_projected = np.asarray(arrays[projected_key], dtype=float)
-            available = np.asarray(
-                arrays["available"] if "available" in arrays.files
-                else np.ones(len(shared_raw), dtype=bool),
-                dtype=bool,
-            )
-        if shared_truth.shape != truth.shape:
-            raise ValueError("shared-unit and system-surrogate holdouts do not align")
-        if shared_raw.shape != truth.shape or shared_projected.shape != truth.shape:
-            raise ValueError("shared-unit holdout predictions do not use the reduced schema")
-        if available.shape != (len(truth),):
-            raise ValueError("shared-unit holdout availability mask does not align")
-        available &= np.all(np.isfinite(shared_raw), axis=1)
-        available &= np.all(np.isfinite(shared_projected), axis=1)
-        if not np.any(available):
-            raise ValueError("shared-unit holdout contains no available finite rows")
-        truth = truth[available]
-        raw = raw[available]
-        projected = projected[available]
-        shared_truth = shared_truth[available]
-        shared_raw = shared_raw[available]
-        shared_projected = shared_projected[available]
-        if not np.allclose(shared_truth, truth):
-            raise ValueError("shared-unit and system-surrogate holdout targets differ")
-        methods["Raw shared-unit"] = shared_raw
-        methods["Projected shared-unit"] = shared_projected
     summary = []
     for label, pred in methods.items():
         _, nrmse, r2 = coordinate_metrics(truth, pred)
@@ -137,12 +92,9 @@ def main() -> None:
     std = truth.std(axis=0)
     valid = std > 1e-14
     tz = ((truth[:, valid] - mean[valid]) / std[valid]).ravel()
-    fig, axes = plt.subplots(
-        1, len(methods), figsize=(5.4 * len(methods), 4.8),
-        sharex=True, sharey=True, constrained_layout=True, squeeze=False,
-    )
+    fig, axes = plt.subplots(1, 2, figsize=(11.2, 4.8), sharex=True, sharey=True, constrained_layout=True)
     lim = (-4, 4)
-    for ax, (label, pred) in zip(axes.flat, methods.items(), strict=True):
+    for ax, (label, pred) in zip(axes, methods.items()):
         pz = ((pred[:, valid] - mean[valid]) / std[valid]).ravel()
         hb = ax.hexbin(tz, pz, gridsize=75, bins="log", mincnt=1, cmap="viridis", extent=(*lim, *lim))
         ax.plot(lim, lim, color="#ef4444", lw=1.2, ls="--", label="Perfect agreement")
@@ -150,7 +102,7 @@ def main() -> None:
         ax.set_aspect("equal", adjustable="box")
         ax.legend(loc="upper left", frameon=False)
         fig.colorbar(hb, ax=ax, label="log count")
-    axes.flat[0].set_ylabel("Surrogate prediction (standardized)")
+    axes[0].set_ylabel("Surrogate prediction (standardized)")
     fig.suptitle(f"Post-selection-holdout parity across {truth.shape[1]} outputs × {truth.shape[0]:,} cases", fontsize=13, fontweight="bold")
     save(fig, output, "01_all_output_parity")
 
@@ -160,25 +112,14 @@ def main() -> None:
     raw_rmse, raw_nrmse, raw_r2 = coordinate_metrics(truth, raw)
     order = np.argsort(projected_r2)[::-1]
     x = np.arange(len(names))
-    axes[0].plot(x, raw_r2[order], color=COLORS["raw"], lw=1.1, label="Raw system")
-    axes[0].plot(x, projected_r2[order], color=COLORS["projected"], lw=1.4, label="Projected system")
+    axes[0].plot(x, raw_r2[order], color=COLORS["raw"], lw=1.1, label="Raw ridge")
+    axes[0].plot(x, projected_r2[order], color=COLORS["projected"], lw=1.4, label="Projected surrogate")
     axes[0].axhline(.90, color="#16a34a", ls="--", lw=1, label="R² = 0.90")
     axes[0].axhline(.75, color="#64748b", ls=":", lw=1, label="R² = 0.75")
     axes[0].set(ylabel="R²", title="A. Explained variance by output coordinate", ylim=(min(-.1, np.nanmin(projected_r2)), 1.02))
     axes[0].legend(ncol=4, frameon=False, loc="lower left")
-    axes[1].semilogy(x, raw_nrmse[order], color=COLORS["raw"], lw=1.1, label="Raw system")
-    axes[1].semilogy(x, projected_nrmse[order], color=COLORS["projected"], lw=1.4, label="Projected system")
-    if shared_raw is not None and shared_projected is not None:
-        _, shared_raw_nrmse, shared_raw_r2 = coordinate_metrics(truth, shared_raw)
-        _, shared_projected_nrmse, shared_projected_r2 = coordinate_metrics(
-            truth, shared_projected,
-        )
-        axes[0].plot(x, shared_raw_r2[order], color=COLORS["shared_raw"], lw=1.0, ls=":", label="Raw shared-unit")
-        axes[0].plot(x, shared_projected_r2[order], color=COLORS["shared_projected"], lw=1.3, label="Projected shared-unit")
-        axes[1].semilogy(x, shared_raw_nrmse[order], color=COLORS["shared_raw"], lw=1.0, ls=":", label="Raw shared-unit")
-        axes[1].semilogy(x, shared_projected_nrmse[order], color=COLORS["shared_projected"], lw=1.3, label="Projected shared-unit")
-    axes[0].legend(ncol=3, frameon=False, loc="lower left")
-    axes[1].legend(ncol=2, frameon=False)
+    axes[1].semilogy(x, raw_nrmse[order], color=COLORS["raw"], lw=1.1, label="Raw ridge")
+    axes[1].semilogy(x, projected_nrmse[order], color=COLORS["projected"], lw=1.4, label="Projected surrogate")
     axes[1].set(xlabel="Output coordinates (sorted by projected R²)", ylabel="NRMSE (RMSE / holdout range)", title="B. Range-normalized prediction error")
     fig.suptitle("Accuracy distribution and weak-output tail", fontsize=13, fontweight="bold")
     save(fig, output, "02_coordinate_accuracy")
@@ -194,11 +135,6 @@ def main() -> None:
         lo = min(truth[:, j].min(), projected[:, j].min())
         hi = max(truth[:, j].max(), projected[:, j].max())
         ax.scatter(truth[:, j], projected[:, j], s=8, alpha=.35, color=COLORS["projected"], edgecolors="none")
-        if shared_projected is not None:
-            ax.scatter(
-                truth[:, j], shared_projected[:, j], s=7, alpha=.25,
-                color=COLORS["shared_projected"], edgecolors="none",
-            )
         ax.plot([lo, hi], [lo, hi], color="#ef4444", ls="--", lw=1)
         ax.set_title(names[j].replace("_flow", "").replace(":", " · "))
         ax.text(.03, .95, f"R² = {projected_r2[j]:.3f}\nNRMSE = {projected_nrmse[j]:.3f}", transform=ax.transAxes, va="top",
@@ -211,18 +147,6 @@ def main() -> None:
     detail = pd.DataFrame({"coordinate": names, "raw_r2": raw_r2, "projected_r2": projected_r2,
                            "raw_nrmse": raw_nrmse, "projected_nrmse": projected_nrmse,
                            "projected_rmse": projected_rmse})
-    if shared_raw is not None and shared_projected is not None:
-        shared_projected_rmse, shared_projected_nrmse, shared_projected_r2 = coordinate_metrics(
-            truth, shared_projected,
-        )
-        _, shared_raw_nrmse, shared_raw_r2 = coordinate_metrics(truth, shared_raw)
-        detail = detail.assign(
-            shared_unit_raw_r2=shared_raw_r2,
-            shared_unit_projected_r2=shared_projected_r2,
-            shared_unit_raw_nrmse=shared_raw_nrmse,
-            shared_unit_projected_nrmse=shared_projected_nrmse,
-            shared_unit_projected_rmse=shared_projected_rmse,
-        )
     detail.sort_values("projected_r2").to_csv(output / "coordinate_fidelity.csv", index=False)
     print(output)
     print(pd.DataFrame(summary).to_string(index=False))

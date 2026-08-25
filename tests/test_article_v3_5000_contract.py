@@ -585,22 +585,18 @@ class ArticleV3FiveThousandContractTests(unittest.TestCase):
             "scripts/run_article_v3_5000.py",
             "scripts/build_main_closed_loop_v3.py",
             "main_closed_loop.ipynb",
-            "closed_loop/__init__.py",
-            "closed_loop/design.py",
             "closed_loop/model.py",
             "closed_loop/manuscript_v3.py",
             "closed_loop/projection.py",
-            "closed_loop/surrogate.py",
-            "closed_loop/workflow.py",
             "closed_loop/v3_smooth.py",
             "closed_loop/v3_surrogate_nlp.py",
             "closed_loop/v3_active_set.py",
-            "closed_loop/v3_parallel.py",
-            "closed_loop/v3_shared_unit.py",
             "closed_loop/v3_trust.py",
             "closed_loop/v3_reporting.py",
             "closed_loop/v3_replacement_generation.py",
             "config/params_manuscript_v3.json",
+            "article/wip_v3/manuscript.tex",
+            "article/wip_v3/supplementary_material.tex",
             "pyproject.toml",
             "uv.lock",
         }
@@ -608,52 +604,6 @@ class ArticleV3FiveThousandContractTests(unittest.TestCase):
         manifest = runner.source_file_digests()
         self.assertTrue(required.issubset(manifest))
         self.assertTrue(all(len(manifest[name]) == 64 for name in required))
-
-    def test_mutable_article_documentation_is_outside_source_contract(self) -> None:
-        self.assertFalse(
-            any(
-                Path(relative).as_posix().startswith("article/")
-                for relative in runner.SOURCE_FILES
-            )
-        )
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            (root / "code.py").write_text("VALUE = 1\n", encoding="utf-8")
-            article = root / "article" / "wip_v3" / "manuscript.tex"
-            article.parent.mkdir(parents=True)
-            article.write_text("first draft\n", encoding="utf-8")
-            with patch.object(runner, "ROOT", root), patch.object(
-                runner, "SOURCE_FILES", ("code.py",),
-            ):
-                before = runner.source_file_digests()
-                contract = runner._build_contract(
-                    "article_full_5000_doc_edit_test", tiny_profile(), before,
-                )
-                runner.establish_contract(root / "run", contract)
-                article.write_text("continuously revised draft\n", encoding="utf-8")
-                runner.assert_source_unchanged(before)
-                self.assertEqual(before, runner.source_file_digests())
-                resumed_contract = runner._build_contract(
-                    "article_full_5000_doc_edit_test",
-                    tiny_profile(),
-                    runner.source_file_digests(),
-                )
-                runner.establish_contract(root / "run", resumed_contract)
-
-                (root / "code.py").write_text("VALUE = 2\n", encoding="utf-8")
-                with self.assertRaisesRegex(
-                    RuntimeError, "computational source changed",
-                ):
-                    runner.assert_source_unchanged(before)
-
-    def test_source_contract_rejects_reintroducing_article_documentation(self) -> None:
-        with patch.object(
-            runner, "SOURCE_FILES", ("article/wip_v3/manuscript.tex",),
-        ):
-            with self.assertRaisesRegex(
-                RuntimeError, "must exclude mutable article documentation",
-            ):
-                runner.source_file_digests()
 
     def test_run_directory_cannot_alias_preflight_or_escape_root(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -675,39 +625,6 @@ class ArticleV3FiveThousandContractTests(unittest.TestCase):
             runner.establish_contract(run, dict(first))
             with self.assertRaisesRegex(RuntimeError, "choose a new run id"):
                 runner.establish_contract(run, {**first, "source_digest": "b"})
-
-    def test_assessment_batch_contract_binds_stage_source_and_inputs(self) -> None:
-        baseline = runner._assessment_batch_contract(
-            stage="whole_system_holdout_projection_audit",
-            source_id="source-a",
-            input_id="input-a",
-        )
-        self.assertEqual(
-            baseline,
-            runner._assessment_batch_contract(
-                stage="whole_system_holdout_projection_audit",
-                source_id="source-a",
-                input_id="input-a",
-            ),
-        )
-        variants = (
-            runner._assessment_batch_contract(
-                stage="shared_unit_holdout_projection_audit",
-                source_id="source-a",
-                input_id="input-a",
-            ),
-            runner._assessment_batch_contract(
-                stage="whole_system_holdout_projection_audit",
-                source_id="source-b",
-                input_id="input-a",
-            ),
-            runner._assessment_batch_contract(
-                stage="whole_system_holdout_projection_audit",
-                source_id="source-a",
-                input_id="input-b",
-            ),
-        )
-        self.assertTrue(all(value != baseline for value in variants))
 
     def test_explicit_migration_retains_verified_rows_and_is_resumable(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1052,6 +969,29 @@ class ArticleV3FiveThousandContractTests(unittest.TestCase):
                     load.call_args.kwargs["route_contract"], "retained-route"
                 )
                 np.testing.assert_array_equal(load.call_args.kwargs["starts"], starts)
+
+    def test_fresh_run_does_not_require_legacy_migration_history(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            run = Path(temporary)
+            case_directory = run / "optimization" / "nominal"
+            case_directory.mkdir(parents=True)
+            (run / "inputs").mkdir()
+            (run / "inputs/contract.json").write_text(
+                json.dumps({"runner_schema": runner.RUNNER_SCHEMA}),
+                encoding="utf-8",
+            )
+            starts = np.asarray(runner.EXACT_QP_CENTER_START).reshape(1, 7)
+            with patch.object(
+                runner, "_validate_migration_history"
+            ) as validate_history:
+                restored = runner._load_retained_complete_route(
+                    case_directory,
+                    route="surrogate",
+                    route_protocol=runner.EXACT_QP_SINGLE_START_PROTOCOL,
+                    starts=starts,
+                )
+            self.assertIsNone(restored)
+            validate_history.assert_not_called()
 
     def test_single_start_migration_requires_explicit_flag(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

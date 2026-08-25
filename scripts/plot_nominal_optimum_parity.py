@@ -73,26 +73,6 @@ def main() -> None:
         direct_exact = np.asarray(stored["exact_reference"], dtype=float)
         direct_full = np.asarray(stored["optimizer_native_full"], dtype=float)
         direct_exact_full = np.asarray(stored["exact_reference_full"], dtype=float)
-    shared_path = (
-        run / "optimization" / "nominal" / "shared_unit_casewise_reference.npz"
-    )
-    shared_prediction: np.ndarray | None = None
-    shared_exact: np.ndarray | None = None
-    if shared_path.is_file():
-        with np.load(shared_path, allow_pickle=False) as stored:
-            reference_key = next(
-                (key for key in ("reference_response", "exact_reference", "reference") if key in stored.files),
-                None,
-            )
-            if reference_key is not None:
-                shared_exact = reduced_response(stored[reference_key])
-            for key in (
-                "projected_response", "optimizer_native", "projected",
-                "raw_response", "raw",
-            ):
-                if key in stored.files:
-                    shared_prediction = reduced_response(stored[key])
-                    break
     with np.load(run / "models" / "ridge_surrogate.npz", allow_pickle=False) as surrogate:
         scale = np.asarray(surrogate["response_scale"], dtype=float)
     exact = reduced_response(exact_response)
@@ -212,51 +192,12 @@ def main() -> None:
     direct_output = output / "nominal_optimum_smooth_nlp_vs_bdf.png"
     fig2.savefig(direct_output, dpi=220, bbox_inches="tight")
     fig2.savefig(direct_output.with_suffix(".pdf"), bbox_inches="tight")
-
-    shared_outputs: list[Path] = []
-    if shared_prediction is not None and shared_exact is not None:
-        if shared_prediction.shape != shared_exact.shape or shared_prediction.shape != scale.shape:
-            raise ValueError("shared-unit nominal responses do not share the reduced schema")
-        shared_block_rmse = [
-            float(np.sqrt(np.mean(
-                ((shared_prediction[index] - shared_exact[index]) / scale[index]) ** 2
-            )))
-            for _, index in blocks
-        ]
-        fig3, (ax_shared, ax_shared_error) = plt.subplots(
-            1, 2, figsize=(14, 5.8), constrained_layout=True,
-        )
-        parity_axis(
-            ax_shared, shared_exact, shared_prediction,
-            reactor_groups + outlet_groups + [("Inventory", slice(160, 161), "#b279a2")],
-        )
-        ax_shared.set_title("A. Shared-unit surrogate versus exact BDF replay")
-        ax_shared.set_ylabel("Shared-unit prediction")
-        ax_shared.legend(loc="upper left", fontsize=8, ncol=2)
-        location = np.arange(len(blocks))
-        ax_shared_error.bar(location, shared_block_rmse, color="#16a34a")
-        ax_shared_error.axhline(1.0, color="black", lw=1.1, ls="--")
-        ax_shared_error.set_xticks(location, [name for name, _ in blocks], rotation=38)
-        ax_shared_error.set_ylabel("RMS error / system-surrogate development scale")
-        ax_shared_error.set_title("B. Shared-unit replay error by response block")
-        ax_shared_error.grid(True, axis="y", alpha=0.25)
-        fig3.suptitle(
-            "Nominal optimum: shared reactor/Clarifier surrogate versus exact mechanistic replay",
-            fontsize=13, fontweight="bold",
-        )
-        shared_output = output / "nominal_optimum_shared_unit_vs_bdf.png"
-        fig3.savefig(shared_output, dpi=220, bbox_inches="tight")
-        fig3.savefig(shared_output.with_suffix(".pdf"), bbox_inches="tight")
-        shared_outputs = [shared_output, shared_output.with_suffix(".pdf")]
-        plt.close(fig3)
     plt.close(fig)
     plt.close(fig2)
     print(surrogate_output)
     print(surrogate_output.with_suffix(".pdf"))
     print(direct_output)
     print(direct_output.with_suffix(".pdf"))
-    for path in shared_outputs:
-        print(path)
 
 
 if __name__ == "__main__":

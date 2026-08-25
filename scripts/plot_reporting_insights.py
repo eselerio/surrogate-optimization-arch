@@ -16,11 +16,6 @@ from closed_loop.v3_smooth import DEFAULT_OBJECTIVE_WEIGHTS, QUALITY_WEIGHTS
 
 
 BLUE, ORANGE, GREEN, RED = "#2563eb", "#d97706", "#16a34a", "#dc2626"
-ROUTE_COLORS = {"surrogate": ORANGE, "shared_unit": GREEN, "direct": BLUE}
-ROUTE_LABELS = {
-    "surrogate": "System surrogate", "shared_unit": "Shared-unit surrogate",
-    "direct": "Smooth NLP",
-}
 SHARED_RESPONSE_COUNT = 160
 REDUCED_RESPONSE_COUNT = 161
 CLARIFIER_VOLUME_M3 = 6_000.0
@@ -77,32 +72,16 @@ def main() -> None:
 
     # 1. Timing: distinguish the primary solve from the end-to-end route cost.
     timing = pd.read_csv(tables / "timing_summary.csv")
-    routes = ["surrogate", "direct"]
-    if timing["category"].astype(str).str.startswith("shared_unit_").any():
-        routes = ["surrogate", "shared_unit", "direct"]
-    wanted = [
-        f"{route}_{phase}"
-        for route in routes
-        for phase in ("primary_optimization", "complete_optimization", "exact_reference")
-    ]
-    available = timing.set_index("category")
-    wanted = [category for category in wanted if category in available.index]
-    t = available.loc[wanted].reset_index()
-    phase_label = {
-        "primary_optimization": "primary", "complete_optimization": "complete",
-        "exact_reference": "reference replay",
-    }
-    labels, colors = [], []
-    for category in wanted:
-        route = next(item for item in routes if category.startswith(f"{item}_"))
-        phase = category.removeprefix(f"{route}_")
-        labels.append(f"{ROUTE_LABELS[route]}\n{phase_label[phase]}")
-        colors.append(ROUTE_COLORS[route] if phase != "exact_reference" else "#94a3b8")
+    wanted = ["surrogate_primary_optimization", "surrogate_complete_optimization",
+              "direct_primary_optimization", "direct_complete_optimization", "surrogate_exact_reference", "direct_exact_reference"]
+    t = timing.set_index("category").loc[wanted].reset_index()
+    labels = ["Surrogate\nprimary", "Surrogate\ncomplete", "Smooth NLP\nprimary", "Smooth NLP\ncomplete", "Surrogate\nreference replay", "Smooth NLP\nreference replay"]
+    colors = [ORANGE, ORANGE, BLUE, BLUE, "#94a3b8", "#94a3b8"]
     fig, ax = plt.subplots(figsize=(10.8, 5.2), constrained_layout=True)
     bars = ax.bar(np.arange(len(t)), t["median"], yerr=[t["median"] - (t["median"] - t["iqr"] / 2).clip(lower=0), t["iqr"] / 2], color=colors, capsize=3)
     for bar, row in zip(bars, t.itertuples(), strict=True): ax.text(bar.get_x()+bar.get_width()/2, bar.get_height()+.35, f"{row.median:.1f}s", ha="center", va="bottom")
     ax.set(xticks=np.arange(len(t)), xticklabels=labels, ylabel="Median seconds per robustness case", title="Computational duration by optimization route and validation step")
-    ax.text(.01, .97, "Primary, complete-route, and exact-replay costs are shown separately.", transform=ax.transAxes, va="top", fontsize=8)
+    ax.text(.01, .97, "Primary optimization: surrogate is faster; complete route includes surrogate local certification.", transform=ax.transAxes, va="top", fontsize=8)
     save(fig, output, "01_computational_timing")
 
     # Derive the objective's effluent composites directly from the shared
@@ -116,44 +95,6 @@ def main() -> None:
         }
         development_theta = design["development_decisions"]
         development_response = reduced_response(development["targets"])
-    response_theta = {label: theta for label in responses}
-    fidelity_pairs = [
-        ("Raw surrogate", "Mechanistic"),
-        ("Projected surrogate", "Mechanistic"),
-    ]
-    shared_path = run / "predictions" / "shared_unit_post_selection_holdout.npz"
-    if shared_path.is_file():
-        with np.load(shared_path, allow_pickle=False) as shared:
-            raw_key = "raw_predictions" if "raw_predictions" in shared.files else "raw"
-            projected_key = (
-                "projected_predictions"
-                if "projected_predictions" in shared.files else "projected"
-            )
-            shared_raw = np.asarray(shared[raw_key], dtype=float)
-            shared_projected = np.asarray(shared[projected_key], dtype=float)
-            available = np.asarray(
-                shared["available"] if "available" in shared.files
-                else np.ones(len(shared_raw), dtype=bool), dtype=bool,
-            )
-            shared_theta = np.asarray(
-                shared["decisions"] if "decisions" in shared.files else theta,
-                dtype=float,
-            )
-        if available.shape != (len(theta),):
-            raise ValueError("shared-unit holdout availability mask does not align")
-        available &= np.all(np.isfinite(shared_raw), axis=1)
-        available &= np.all(np.isfinite(shared_projected), axis=1)
-        if np.any(available):
-            responses["Mechanistic shared-unit"] = responses["Mechanistic"][available]
-            responses["Raw shared-unit"] = reduced_response(shared_raw[available])
-            responses["Projected shared-unit"] = reduced_response(shared_projected[available])
-            response_theta["Mechanistic shared-unit"] = shared_theta[available]
-            response_theta["Raw shared-unit"] = shared_theta[available]
-            response_theta["Projected shared-unit"] = shared_theta[available]
-            fidelity_pairs.extend([
-                ("Raw shared-unit", "Mechanistic shared-unit"),
-                ("Projected shared-unit", "Mechanistic shared-unit"),
-            ])
     development_effluent = (
         development_response[:, 120:140]
         / (1.0 - development_theta[:, 6])[:, None]
@@ -166,8 +107,7 @@ def main() -> None:
     composite_names = ["COD", "TN", "TP", "TSS", "Quality objective"]
     composites: dict[str, np.ndarray] = {}
     for label, response in responses.items():
-        method_theta = response_theta[label]
-        effluent = response[:, 120:140] / (1.0 - method_theta[:, 6])[:, None]
+        effluent = response[:, 120:140] / (1.0 - theta[:, 6])[:, None]
         effluent_composites = effluent @ COMPOSITE_MATRIX.T
         values = np.column_stack((
             effluent_composites,
@@ -175,37 +115,24 @@ def main() -> None:
         ))
         composites[label] = values
     records = []
-    for method, truth_method in fidelity_pairs:
+    for method in ("Raw surrogate", "Projected surrogate"):
         for j, name in enumerate(composite_names):
-            r2, nrmse = score(composites[truth_method][:, j], composites[method][:, j])
+            r2, nrmse = score(composites["Mechanistic"][:, j], composites[method][:, j])
             records.append({"method": method, "composite": name, "r2": r2, "nrmse": nrmse})
     composite_metrics = pd.DataFrame(records); composite_metrics.to_csv(output / "effluent_composite_fidelity.csv", index=False)
 
     # 2. Composite fidelity, including parity for the deployed projected surrogate.
     fig, axes = plt.subplots(1, 2, figsize=(12.5, 4.9), constrained_layout=True)
     pivot = composite_metrics.pivot(index="composite", columns="method", values="r2").reindex(composite_names)
-    x = np.arange(len(composite_names)); width = .8 / len(pivot.columns)
-    metric_colors = {
-        "Raw surrogate": ORANGE, "Projected surrogate": BLUE,
-        "Raw shared-unit": "#65a30d", "Projected shared-unit": GREEN,
-    }
-    offsets = (np.arange(len(pivot.columns)) - (len(pivot.columns) - 1) / 2) * width
-    for offset, method in zip(offsets, pivot.columns, strict=True):
-        axes[0].bar(x + offset, pivot[method], width, color=metric_colors[method], label=method)
+    x = np.arange(len(composite_names)); width = .36
+    axes[0].bar(x-width/2, pivot["Raw surrogate"], width, color=ORANGE, label="Raw")
+    axes[0].bar(x+width/2, pivot["Projected surrogate"], width, color=BLUE, label="Projected")
     axes[0].axhline(.9, color=GREEN, ls="--", lw=1, label="R² = 0.90")
     axes[0].set(xticks=x, xticklabels=composite_names, ylabel="R²", ylim=(-.05, 1.05), title="A. Derived effluent-composite fidelity")
     axes[0].legend(frameon=False)
     q_truth, q_pred = composites["Mechanistic"][:, 4], composites["Projected surrogate"][:, 4]
     lo, hi = min(q_truth.min(), q_pred.min()), max(q_truth.max(), q_pred.max())
     axes[1].hexbin(q_truth, q_pred, gridsize=48, bins="log", mincnt=1, cmap="viridis")
-    if "Projected shared-unit" in composites:
-        shared_truth = composites["Mechanistic shared-unit"][:, 4]
-        shared_pred = composites["Projected shared-unit"][:, 4]
-        axes[1].scatter(
-            shared_truth, shared_pred, s=7, alpha=.2, color=GREEN,
-            label="Shared-unit projected",
-        )
-        axes[1].legend(frameon=False)
     axes[1].plot([lo, hi], [lo, hi], ls="--", color=RED, lw=1)
     q_r2, q_nrmse = score(q_truth, q_pred)
     axes[1].set(xlabel="Mechanistic quality component", ylabel="Projected surrogate quality component", title=f"B. Quality-component parity (R²={q_r2:.3f}; NRMSE={q_nrmse:.3f})")
@@ -235,102 +162,36 @@ def main() -> None:
     axes[1].tick_params(axis="x", rotation=35)
     save(fig, output, "03_fidelity_by_plant_component")
 
-    # 4/5. Optimization burden and quality for every available route. Missing
-    # route artifacts remain NaN and therefore do not invalidate other pairs.
-    comparison = pd.read_csv(
-        run / "report" / "optimization_route_comparison"
-        / "exact_replay_route_comparison.csv"
-    )
-    comparison_routes = [
-        route for route in routes
-        if f"{route}_component_quality" in comparison.columns
-    ]
-    economic: dict[str, pd.Series] = {}
-    for route in comparison_routes:
-        economic[route] = sum(
-            DEFAULT_OBJECTIVE_WEIGHTS[index]
-            * comparison[f"{route}_component_{name}"]
-            for index, name in enumerate(
-                ("hrt", "aeration", "internal_recycle", "return_sludge", "wasting"),
-                start=1,
-            )
-        )
+    # 4/5. Optimization economic burden vs. exact-replay quality component.
+    comparison = pd.read_csv(run / "report" / "optimization_route_comparison" / "exact_replay_route_comparison.csv")
+    economic_s = (DEFAULT_OBJECTIVE_WEIGHTS[1] * comparison.surrogate_component_hrt + DEFAULT_OBJECTIVE_WEIGHTS[2] * comparison.surrogate_component_aeration + DEFAULT_OBJECTIVE_WEIGHTS[3] * comparison.surrogate_component_internal_recycle + DEFAULT_OBJECTIVE_WEIGHTS[4] * comparison.surrogate_component_return_sludge + DEFAULT_OBJECTIVE_WEIGHTS[5] * comparison.surrogate_component_wasting)
+    economic_d = (DEFAULT_OBJECTIVE_WEIGHTS[1] * comparison.direct_component_hrt + DEFAULT_OBJECTIVE_WEIGHTS[2] * comparison.direct_component_aeration + DEFAULT_OBJECTIVE_WEIGHTS[3] * comparison.direct_component_internal_recycle + DEFAULT_OBJECTIVE_WEIGHTS[4] * comparison.direct_component_return_sludge + DEFAULT_OBJECTIVE_WEIGHTS[5] * comparison.direct_component_wasting)
     fig, axes = plt.subplots(1, 2, figsize=(12.5, 5), constrained_layout=True)
-    positions = np.arange(len(comparison_routes))
-    quantities = (
-        (economic, "Economic / operating burden"),
-        ({route: comparison[f"{route}_component_quality"] for route in comparison_routes},
-         "Effluent-quality objective component"),
-    )
-    for ax, (values_by_route, title) in zip(axes, quantities, strict=True):
-        for row_index in range(len(comparison)):
-            values = [values_by_route[route].iloc[row_index] for route in comparison_routes]
-            ax.plot(positions, values, color="#94a3b8", lw=.7)
-        for position, route in enumerate(comparison_routes):
-            ax.scatter(
-                np.full(len(comparison), position), values_by_route[route],
-                color=ROUTE_COLORS[route], label=ROUTE_LABELS[route], zorder=3,
-            )
-        ax.set(xticks=positions, xticklabels=[ROUTE_LABELS[item] for item in comparison_routes],
-               ylabel="Lower is better", title=title)
+    for ax, s, d, title in ((axes[0], economic_s, economic_d, "Economic / operating burden"), (axes[1], comparison.surrogate_component_quality, comparison.direct_component_quality, "Effluent-quality objective component")):
+        for i in range(len(comparison)):
+            ax.plot([0, 1], [s.iloc[i], d.iloc[i]], color="#94a3b8", lw=.8)
+        ax.scatter(np.zeros(len(s)), s, color=ORANGE, label="Surrogate decision", zorder=3)
+        ax.scatter(np.ones(len(d)), d, color=BLUE, label="Smooth NLP decision", zorder=3)
+        ax.set(xlim=(-.35, 1.35), xticks=[0, 1], xticklabels=["Surrogate", "Smooth NLP"], ylabel="Lower is better", title=title)
     axes[0].legend(frameon=False)
-    fig.suptitle("Exact-replay comparison of selected optimization decisions", fontsize=13, fontweight="bold")
+    fig.suptitle("Which optimization decision is preferable? Exact-replay paired comparison", fontsize=13, fontweight="bold")
     save(fig, output, "04_optimization_economics_and_quality")
 
+    # Pairwise Pareto view makes the quality-versus-operating trade-off explicit.
     fig, ax = plt.subplots(figsize=(7.2, 5.4), constrained_layout=True)
-    for row_index in range(len(comparison)):
-        ax.plot(
-            [economic[route].iloc[row_index] for route in comparison_routes],
-            [comparison[f"{route}_component_quality"].iloc[row_index] for route in comparison_routes],
-            color="#94a3b8", lw=.7,
-        )
-    for route in comparison_routes:
-        ax.scatter(
-            economic[route], comparison[f"{route}_component_quality"],
-            color=ROUTE_COLORS[route], label=ROUTE_LABELS[route],
-        )
+    for i, row in comparison.iterrows():
+        ax.plot([economic_s.iloc[i], economic_d.iloc[i]], [row.surrogate_component_quality, row.direct_component_quality], color="#94a3b8", lw=.8)
+    ax.scatter(economic_s, comparison.surrogate_component_quality, color=ORANGE, label="Surrogate decision")
+    ax.scatter(economic_d, comparison.direct_component_quality, color=BLUE, label="Smooth NLP decision")
     ax.set(xlabel="Weighted economic / operating burden (lower is better)", ylabel="Quality component (lower is better)", title="Optimization trade-off frontier across cases")
     ax.legend(frameon=False)
     save(fig, output, "05_optimization_tradeoff_frontier")
 
-    timing_lookup = timing.set_index("category")["median"].to_dict()
-    summary_row: dict[str, object] = {
-        "projected_quality_component_r2": q_r2,
-        "projected_quality_component_nrmse": q_nrmse,
-    }
-    for route in routes:
-        summary_row[f"{route}_primary_median_seconds"] = timing_lookup.get(
-            f"{route}_primary_optimization", np.nan,
-        )
-        summary_row[f"{route}_complete_median_seconds"] = timing_lookup.get(
-            f"{route}_complete_optimization", np.nan,
-        )
-    for left, right, symbol in (
-        ("surrogate", "shared_unit", "S_U"),
-        ("surrogate", "direct", "S_M"),
-        ("shared_unit", "direct", "U_M"),
-    ):
-        if left in economic and right in economic:
-            valid = economic[left].notna() & economic[right].notna()
-            summary_row[f"comparable_cases_{symbol}"] = int(valid.sum())
-            summary_row[f"left_lower_economic_cases_{symbol}"] = int(
-                (economic[left][valid] < economic[right][valid]).sum()
-            )
-            left_quality = comparison[f"{left}_component_quality"]
-            right_quality = comparison[f"{right}_component_quality"]
-            summary_row[f"left_lower_quality_cases_{symbol}"] = int(
-                (left_quality[valid] < right_quality[valid]).sum()
-            )
-    if "surrogate" in economic and "direct" in economic:
-        valid = economic["surrogate"].notna() & economic["direct"].notna()
-        summary_row["surrogate_lower_economic_burden_cases"] = int(
-            (economic["surrogate"][valid] < economic["direct"][valid]).sum()
-        )
-        summary_row["surrogate_lower_quality_component_cases"] = int((
-            comparison.loc[valid, "surrogate_component_quality"]
-            < comparison.loc[valid, "direct_component_quality"]
-        ).sum())
-    summary = pd.DataFrame([summary_row])
+    summary = pd.DataFrame([{"projected_quality_component_r2": q_r2, "projected_quality_component_nrmse": q_nrmse,
+        "surrogate_primary_median_seconds": float(t.loc[0, "median"]), "direct_primary_median_seconds": float(t.loc[2, "median"]),
+        "surrogate_complete_median_seconds": float(t.loc[1, "median"]), "direct_complete_median_seconds": float(t.loc[3, "median"]),
+        "surrogate_lower_economic_burden_cases": int((economic_s < economic_d).sum()),
+        "surrogate_lower_quality_component_cases": int((comparison.surrogate_component_quality < comparison.direct_component_quality).sum())}])
     summary.to_csv(output / "insight_summary.csv", index=False)
     print(summary.to_string(index=False))
 

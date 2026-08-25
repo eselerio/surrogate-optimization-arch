@@ -79,21 +79,6 @@ TRUST_DIAGNOSTICS: tuple[str, ...] = (
     "correction", "regularized_leverage", "particulate_split",
     "reactor_residual",
 )
-BASE_ROUTES: tuple[str, ...] = ("surrogate", "direct")
-THREE_ROUTES: tuple[str, ...] = ("surrogate", "shared_unit", "direct")
-SURROGATE_ROUTES: frozenset[str] = frozenset(("surrogate", "shared_unit"))
-ROUTE_SYMBOLS: Mapping[str, str] = {
-    "surrogate": "S",
-    "shared_unit": "U",
-    "direct": "M",
-}
-SHARED_UNIT_TRUST_DIAGNOSTICS: tuple[str, ...] = (
-    "correction",
-    "particulate_split",
-    "reactor_residual",
-    *(f"reactor_leverage_{stage}" for stage in range(1, N_STAGES + 1)),
-    "clarifier_leverage",
-)
 FAILURE_CLASSES: tuple[str, ...] = (
     "no accepted optimization start",
     "projection failure",
@@ -429,42 +414,6 @@ def _expected_cases(
     return tuple(inferred or ["nominal"])
 
 
-def _reporting_routes(run_directory: Path, cases: Sequence[str]) -> tuple[str, ...]:
-    """Return the legacy routes plus route U only when an artifact declares it.
-
-    Route discovery is deliberately artifact based.  This keeps reports from
-    historical two-route runs byte-for-byte compatible in their row counts,
-    while a partially completed route-U run still receives explicit pending
-    rows for every declared case.
-    """
-
-    shared_markers = (
-        run_directory / "models" / "shared_unit_complete.json",
-        run_directory / "models" / "shared_unit_reactor_ridge.npz",
-        run_directory / "models" / "shared_unit_clarifier_ridge.npz",
-        run_directory / "models" / "shared_unit_reactor.npz",
-        run_directory / "models" / "shared_unit_clarifier.npz",
-        run_directory / "metrics" / "shared_unit_trust_limits.json",
-        run_directory / "metrics" / "shared_unit_development_oof_root_diagnostics.csv",
-        run_directory / "metrics" / "shared_unit_post_selection_root_diagnostics.csv",
-    )
-    if any(path.exists() for path in shared_markers):
-        return THREE_ROUTES
-    for case in cases:
-        directory = run_directory / "optimization" / str(case)
-        if any(directory.glob("shared_unit*")):
-            return THREE_ROUTES
-    timing = run_directory / "metrics" / "robustness_case_timing.csv"
-    if timing.is_file():
-        try:
-            routes = pd.read_csv(timing, usecols=["route"])["route"].astype(str)
-        except (OSError, ValueError, pd.errors.ParserError, pd.errors.EmptyDataError):
-            routes = pd.Series(dtype=str)
-        if routes.eq("shared_unit").any():
-            return THREE_ROUTES
-    return BASE_ROUTES
-
-
 def _infer_geometry(run_directory: Path, warnings: list[str]) -> StudyGeometry:
     contract = _safe_json(run_directory / "inputs" / "contract.json", warnings)
     profile = _mapping(contract.get("profile")) if contract is not None else None
@@ -514,22 +463,6 @@ def _route_snapshot(
     payload = _safe_json(directory / f"{route}.json", warnings)
     partial = _safe_json_list(directory / f"{route}_starts.partial.json", warnings)
     selected_index, selected, starts = _selected_start(payload)
-    if route == "shared_unit" and selected is None and payload is not None:
-        # Route U is a single center-start value-only solve.  Its native
-        # result stores the accepted evaluation directly under ``selected``
-        # rather than manufacturing a legacy multistart record.
-        candidate = _mapping(payload.get("selected"))
-        if candidate is not None:
-            selected_index = _as_int(candidate.get("start_index"))
-            if selected_index is None:
-                selected_index = 0
-            selected = (
-                candidate
-                if _mapping(candidate.get("final")) is not None
-                else {"start_index": selected_index, "final": candidate}
-            )
-            if not starts:
-                starts = (selected,)
     if not starts and partial:
         starts = partial
     selected_arrays = _safe_npz(directory / f"{route}_selected.npz", warnings)
@@ -551,12 +484,12 @@ def _route_snapshot(
     certification = (
         _validated_stage_payload(
             directory,
-            marker_name=f"{route}_local_convergence_complete.json",
-            payload_name=f"{route}_local_convergence.json",
+            marker_name="surrogate_local_convergence_complete.json",
+            payload_name="surrogate_local_convergence.json",
             contract_key="certification_contract",
             warnings=warnings,
         )
-        if route in SURROGATE_ROUTES else None
+        if route == "surrogate" else None
     )
     recovery = (
         _validated_stage_payload(
@@ -569,7 +502,7 @@ def _route_snapshot(
         if route == "direct" else None
     )
     recovery_outcome: str | None = None
-    if route in SURROGATE_ROUTES and certification is not None:
+    if route == "surrogate" and certification is not None:
         certified = _mapping(certification.get("candidate"))
         if certified is not None:
             selected = {
@@ -586,27 +519,15 @@ def _route_snapshot(
                 recovery_outcome = str(recovery_result.get("status", "recovered"))
     if casewise_arrays:
         normalized_arrays = dict(casewise_arrays)
-        reference_value = casewise_arrays.get(
-            "reference_response", casewise_arrays.get("exact_reference")
-        )
-        if reference_value is not None:
-            normalized_arrays["reference"] = reference_value
-            reference_arrays = {"response": reference_value}
-        raw_value = casewise_arrays.get("raw_response", casewise_arrays.get("raw"))
-        projected_value = casewise_arrays.get(
-            "projected_response", casewise_arrays.get("optimizer_native")
-        )
-        if raw_value is not None:
-            normalized_arrays["raw"] = raw_value
-        if projected_value is not None:
-            if route in SURROGATE_ROUTES:
-                normalized_arrays["projected"] = projected_value
+        if "exact_reference" in casewise_arrays:
+            normalized_arrays["reference"] = casewise_arrays["exact_reference"]
+            reference_arrays = {"response": casewise_arrays["exact_reference"]}
+        if "optimizer_native" in casewise_arrays:
+            if route == "surrogate":
+                normalized_arrays["projected"] = casewise_arrays["optimizer_native"]
             else:
-                normalized_arrays["response"] = projected_value
-                normalized_arrays["smooth"] = projected_value
-        controls_value = casewise_arrays.get("controls")
-        if controls_value is not None and "theta" not in normalized_arrays:
-            normalized_arrays["theta"] = controls_value
+                normalized_arrays["response"] = casewise_arrays["optimizer_native"]
+                normalized_arrays["smooth"] = casewise_arrays["optimizer_native"]
         selected_arrays = normalized_arrays
     if payload is not None:
         artifact_state = "complete"
@@ -649,11 +570,7 @@ def _selected_theta(snapshot: RouteSnapshot) -> np.ndarray | None:
     stored = snapshot.selected_arrays.get("theta")
     if stored is not None and stored.shape == (len(CONTROL_NAMES),) and np.all(np.isfinite(stored)):
         return np.asarray(stored, dtype=float)
-    source = (
-        _surrogate_final(snapshot)
-        if snapshot.route in SURROGATE_ROUTES
-        else snapshot.selected
-    )
+    source = _surrogate_final(snapshot) if snapshot.route == "surrogate" else snapshot.selected
     if source is None:
         return None
     values = np.asarray(source.get("theta", []), dtype=float)
@@ -698,7 +615,7 @@ def _selected_response_map(snapshot: RouteSnapshot, geometry: StudyGeometry) -> 
         if candidate is not None:
             responses[name] = candidate
 
-    if snapshot.route in SURROGATE_ROUTES:
+    if snapshot.route == "surrogate":
         for name in ("raw", "projected", "smooth", "reference"):
             if name in snapshot.selected_arrays:
                 retain(name, snapshot.selected_arrays[name])
@@ -737,9 +654,6 @@ def _start_feasible(snapshot: RouteSnapshot, start: Mapping[str, Any]) -> bool:
     if direct is not None:
         return direct
     final = _mapping(start.get("final"))
-    final_feasible = _as_bool(final.get("feasible")) if final is not None else None
-    if final_feasible is not None:
-        return final_feasible
     feasibility = _mapping(final.get("feasibility")) if final is not None else None
     return bool(feasibility is not None and feasibility.get("feasible") is True)
 
@@ -749,16 +663,6 @@ def _start_stationary(snapshot: RouteSnapshot, start: Mapping[str, Any]) -> bool
     if direct is not None:
         return direct
     final = _mapping(start.get("final"))
-    final_stationary = (
-        _as_bool(final.get("stationary")) if final is not None else None
-    )
-    if final_stationary is not None:
-        return final_stationary
-    if snapshot.route == "shared_unit" and final is not None:
-        # The current route-U implementation intentionally makes no strong
-        # stationarity claim; feasible-poll convergence is reported separately.
-        resolved = _as_bool(final.get("stationarity_resolved"))
-        return bool(resolved and final.get("stationary") is True)
     stationarity = _mapping(final.get("stationarity")) if final is not None else None
     return bool(stationarity is not None and stationarity.get("stationary") is True)
 
@@ -817,18 +721,6 @@ def _selected_active_constraints(snapshot: RouteSnapshot) -> int | None:
         kkt = _mapping(snapshot.selected.get("kkt"))
         return _as_int(kkt.get("active_inequality_count")) if kkt is not None else None
     final = _surrogate_final(snapshot)
-    if snapshot.route == "shared_unit" and final is not None:
-        engineering_value = final.get("engineering_rows")
-        trust_value = final.get("trust_rows")
-        rows = np.asarray(
-            [] if engineering_value is None else engineering_value, dtype=float,
-        ).reshape(-1)
-        trust_rows = np.asarray(
-            [] if trust_value is None else trust_value, dtype=float,
-        ).reshape(-1)
-        values = np.concatenate((rows, trust_rows))
-        if values.size and np.all(np.isfinite(values)):
-            return int(np.count_nonzero(values >= -1.0e-7))
     projection = _mapping(final.get("projection")) if final is not None else None
     diagnostics = _mapping(projection.get("diagnostics")) if projection is not None else None
     return _as_int(diagnostics.get("active_inequality_count")) if diagnostics is not None else None
@@ -871,8 +763,6 @@ def _route_status_table(snapshots: Sequence[RouteSnapshot]) -> pd.DataFrame:
         expected_starts = (
             declared_attempts
             if declared_attempts is not None and declared_attempts >= 0
-            else EXPECTED_STARTS
-            if snapshot.route == "shared_unit"
             else LEGACY_EXPECTED_STARTS
         )
         stages = [stage for start in snapshot.starts for stage in _stages(start)]
@@ -883,20 +773,6 @@ def _route_status_table(snapshots: Sequence[RouteSnapshot]) -> pd.DataFrame:
         ]
         feasible = sum(_start_feasible(snapshot, start) for start in snapshot.starts)
         stationary = sum(_start_stationary(snapshot, start) for start in snapshot.starts)
-        locally_converged = (
-            snapshot.certification.get("locally_converged")
-            if snapshot.certification is not None
-            else snapshot.payload.get("locally_converged")
-            if snapshot.route == "shared_unit" and snapshot.payload is not None
-            else _selected_stationary(snapshot)
-        )
-        first_order_certified = (
-            snapshot.certification.get("first_order_certified")
-            if snapshot.certification is not None
-            else snapshot.payload.get("stationarity_resolved")
-            if snapshot.route == "shared_unit" and snapshot.payload is not None
-            else _selected_stationary(snapshot)
-        )
         rows.append({
             "case": snapshot.case,
             "route": snapshot.route,
@@ -906,8 +782,16 @@ def _route_status_table(snapshots: Sequence[RouteSnapshot]) -> pd.DataFrame:
             "selected_start": snapshot.selected_start,
             "selected_feasible": _selected_feasible(snapshot),
             "selected_stationary": _selected_stationary(snapshot),
-            "local_convergence_certified": locally_converged,
-            "first_order_stationarity_certified": first_order_certified,
+            "local_convergence_certified": (
+                snapshot.certification.get("locally_converged")
+                if snapshot.certification is not None
+                else _selected_stationary(snapshot)
+            ),
+            "first_order_stationarity_certified": (
+                snapshot.certification.get("first_order_certified")
+                if snapshot.certification is not None
+                else _selected_stationary(snapshot)
+            ),
             "starts_attempted": len(snapshot.starts),
             "starts_expected": expected_starts,
             "feasible_starts": feasible,
@@ -951,39 +835,24 @@ def _active_constraint_table(snapshots: Sequence[RouteSnapshot]) -> pd.DataFrame
         rows.append({
             "case": snapshot.case,
             "route": snapshot.route,
-            "constraint_group": (
-                "projection_qp" if snapshot.route in SURROGATE_ROUTES else "direct_nlp"
-            ),
+            "constraint_group": "projection_qp" if snapshot.route == "surrogate" else "direct_nlp",
             "constraint": "all_inequalities",
             "residual": math.nan,
             "active": None if count is None else count > 0,
             "active_count": count,
             "violated": None,
         })
-        if snapshot.route not in SURROGATE_ROUTES:
+        if snapshot.route != "surrogate":
             continue
         final = _surrogate_final(snapshot)
         if final is None:
             continue
-        trust = _mapping(final.get("trust"))
-        route_trust_names = trust_names
-        if snapshot.route == "shared_unit" and trust is not None:
-            route_trust_names = (
-                "correction",
-                *(f"reactor_leverage_{stage}" for stage in range(1, N_STAGES + 1)),
-                "clarifier_leverage",
-                *(("particulate_split",) if trust.get("particulate_split_rms") is not None else ()),
-                *(("reactor_residual",) if trust.get("reactor_residual_rms") is not None else ()),
-            )
         for group, names, key in (
             ("engineering", engineering_names, "engineering_rows"),
-            ("trust", route_trust_names, "trust_rows"),
+            ("trust", trust_names, "trust_rows"),
         ):
             try:
-                source = final.get(key)
-                values = np.asarray(
-                    [] if source is None else source, dtype=float,
-                ).reshape(-1)
+                values = np.asarray(final.get(key, []), dtype=float).reshape(-1)
             except (TypeError, ValueError):
                 values = np.asarray([])
             for index, value in enumerate(values):
@@ -1102,19 +971,12 @@ def _response_quantities(
 
 
 def _json_objective(snapshot: RouteSnapshot) -> tuple[float, np.ndarray | None, np.ndarray | None]:
-    source = (
-        _surrogate_final(snapshot)
-        if snapshot.route in SURROGATE_ROUTES
-        else snapshot.selected
-    )
+    source = _surrogate_final(snapshot) if snapshot.route == "surrogate" else snapshot.selected
     if source is None:
         return math.nan, None, None
     objective = _as_float(source.get("objective"))
     components = np.asarray(source.get("objective_components", []), dtype=float)
-    engineering = np.asarray(
-        source.get("engineering", source.get("engineering_rows", [])),
-        dtype=float,
-    )
+    engineering = np.asarray(source.get("engineering", []), dtype=float)
     if components.shape != (len(OBJECTIVE_COMPONENT_NAMES),) or not np.all(np.isfinite(components)):
         components = None
     if engineering.ndim != 1 or not len(engineering) or not np.all(np.isfinite(engineering)):
@@ -1134,9 +996,7 @@ def _objective_engineering_tables(
         theta = _selected_theta(snapshot)
         responses = _selected_response_map(snapshot, geometry)
         solver_objective, solver_components, _ = _json_objective(snapshot)
-        selected_method = (
-            "projected" if snapshot.route in SURROGATE_ROUTES else "smooth"
-        )
+        selected_method = "projected" if snapshot.route == "surrogate" else "smooth"
         row: dict[str, Any] = {
             "case": snapshot.case,
             "route": snapshot.route,
@@ -1435,7 +1295,6 @@ def _trust_table(run_directory: Path, snapshots: Sequence[RouteSnapshot], warnin
         development_values = development[column].to_numpy(dtype=float) if column in development else np.asarray([])
         test_values = test[column].to_numpy(dtype=float) if column in test else np.asarray([])
         rows.append({
-            "route": "surrogate",
             "diagnostic": name,
             "frozen_limit": _as_float(limits.get(name)),
             "development_count": int(np.count_nonzero(np.isfinite(development_values))),
@@ -1447,155 +1306,7 @@ def _trust_table(run_directory: Path, snapshots: Sequence[RouteSnapshot], warnin
                 max(selected_values[name]) if selected_values[name] else math.nan
             ),
         })
-
-    shared_limits_path = run_directory / "metrics" / "shared_unit_trust_limits.json"
-    shared_development_path = (
-        run_directory / "metrics" / "shared_unit_trust_development_oof.csv"
-    )
-    shared_holdout_path = (
-        run_directory / "metrics" / "shared_unit_trust_post_selection_holdout.csv"
-    )
-    shared_present = bool(
-        any(snapshot.route == "shared_unit" for snapshot in snapshots)
-        or shared_limits_path.is_file()
-        or shared_development_path.is_file()
-        or shared_holdout_path.is_file()
-    )
-    if not shared_present:
-        return pd.DataFrame(rows)
-
-    shared_limits = _safe_json(shared_limits_path, warnings) or {}
-    shared_development = _safe_csv(shared_development_path, warnings)
-    shared_holdout = _safe_csv(shared_holdout_path, warnings)
-    column_aliases: dict[str, tuple[str, ...]] = {
-        "correction": ("correction_rms", "correction"),
-        "particulate_split": ("particulate_split_rms", "particulate_split"),
-        "reactor_residual": ("reactor_residual_rms", "reactor_residual"),
-        "clarifier_leverage": ("clarifier_leverage", "regularized_clarifier_leverage"),
-        **{
-            f"reactor_leverage_{stage}": (
-                f"reactor_leverage_{stage}",
-                f"reactor_{stage}_leverage",
-                f"regularized_reactor_leverage_{stage}",
-            )
-            for stage in range(1, N_STAGES + 1)
-        },
-    }
-
-    def column_values(frame: pd.DataFrame, diagnostic: str) -> np.ndarray:
-        for column in column_aliases[diagnostic]:
-            if column in frame:
-                return pd.to_numeric(frame[column], errors="coerce").to_numpy(float)
-        return np.asarray([], dtype=float)
-
-    def shared_limit(diagnostic: str) -> float:
-        key = {
-            "correction": "correction_rms",
-            "particulate_split": "particulate_split_rms",
-            "reactor_residual": "reactor_residual_rms",
-            "clarifier_leverage": "clarifier_leverage",
-        }.get(diagnostic, "reactor_leverage")
-        value = shared_limits.get(key)
-        if diagnostic.startswith("reactor_leverage_") and isinstance(
-            value, (list, tuple)
-        ):
-            index = int(diagnostic.rsplit("_", 1)[1]) - 1
-            value = value[index] if index < len(value) else None
-        return _as_float(value)
-
-    selected_shared: dict[str, list[float]] = {
-        name: [] for name in SHARED_UNIT_TRUST_DIAGNOSTICS
-    }
-    for snapshot in snapshots:
-        if snapshot.route != "shared_unit":
-            continue
-        final = _surrogate_final(snapshot)
-        trust = _mapping(final.get("trust")) if final is not None else None
-        if trust is None:
-            continue
-        scalars = {
-            "correction": trust.get("correction_rms"),
-            "particulate_split": trust.get("particulate_split_rms"),
-            "reactor_residual": trust.get("reactor_residual_rms"),
-            "clarifier_leverage": trust.get("clarifier_leverage"),
-        }
-        for name, value in scalars.items():
-            number = _as_float(value)
-            if math.isfinite(number):
-                selected_shared[name].append(number)
-        reactor = np.asarray(trust.get("reactor_leverage", []), dtype=float).reshape(-1)
-        if reactor.shape == (N_STAGES,) and np.all(np.isfinite(reactor)):
-            for stage, value in enumerate(reactor, start=1):
-                selected_shared[f"reactor_leverage_{stage}"].append(float(value))
-
-    for diagnostic in SHARED_UNIT_TRUST_DIAGNOSTICS:
-        development_values = column_values(shared_development, diagnostic)
-        holdout_values = column_values(shared_holdout, diagnostic)
-        selected = selected_shared[diagnostic]
-        rows.append({
-            "route": "shared_unit",
-            "diagnostic": diagnostic,
-            "frozen_limit": shared_limit(diagnostic),
-            "development_count": int(np.count_nonzero(np.isfinite(development_values))),
-            "development_p95": _nearest_rank(development_values),
-            "test_count": int(np.count_nonzero(np.isfinite(holdout_values))),
-            "test_p95": _nearest_rank(holdout_values),
-            "selected_count": len(selected),
-            "largest_selected_value": max(selected) if selected else math.nan,
-        })
     return pd.DataFrame(rows)
-
-
-def _shared_unit_root_table(
-    run_directory: Path,
-    snapshots: Sequence[RouteSnapshot],
-    warnings: list[str],
-) -> pd.DataFrame:
-    """Combine grouped OOF, holdout, and selected route-U closure audits."""
-
-    frames: list[pd.DataFrame] = []
-    for scope, name in (
-        ("development_oof", "shared_unit_development_oof_root_diagnostics.csv"),
-        ("post_selection_holdout", "shared_unit_post_selection_root_diagnostics.csv"),
-    ):
-        frame = _safe_csv(run_directory / "metrics" / name, warnings)
-        if frame.empty:
-            continue
-        item = frame.copy()
-        if "scope" in item:
-            item["source_scope"] = item["scope"]
-        else:
-            item.insert(0, "source_scope", scope)
-        if "route" not in item:
-            item.insert(1, "route", "shared_unit")
-        frames.append(item)
-
-    selected_rows: list[dict[str, Any]] = []
-    for snapshot in snapshots:
-        if snapshot.route != "shared_unit":
-            continue
-        final = _surrogate_final(snapshot)
-        closure = _mapping(final.get("closure")) if final is not None else None
-        if closure is None:
-            continue
-        row: dict[str, Any] = {
-            "source_scope": "selected_optimization",
-            "route": "shared_unit",
-            "case": snapshot.case,
-        }
-        for key, value in closure.items():
-            if isinstance(value, Mapping):
-                for nested_key, nested_value in value.items():
-                    if not isinstance(nested_value, (Mapping, list, tuple)):
-                        row[f"{key}_{nested_key}"] = nested_value
-            elif not isinstance(value, (list, tuple)):
-                row[key] = value
-        selected_rows.append(row)
-    if selected_rows:
-        frames.append(pd.DataFrame(selected_rows))
-    if not frames:
-        return pd.DataFrame(columns=("source_scope", "route", "case", "accepted"))
-    return pd.concat(frames, ignore_index=True, sort=False)
 
 
 def _case_influents(
@@ -2403,17 +2114,11 @@ def _scope_specific_nonlinear_audit(
 
 
 def _projection_failed(snapshot: RouteSnapshot) -> bool:
-    if snapshot.route not in SURROGATE_ROUTES:
+    if snapshot.route != "surrogate":
         return False
     final = _surrogate_final(snapshot)
     projection = _mapping(final.get("projection")) if final is not None else None
-    accepted = (
-        _as_bool(projection.get("accepted"))
-        if projection is not None
-        else _as_bool(final.get("projection_accepted"))
-        if final is not None
-        else None
-    )
+    accepted = _as_bool(projection.get("accepted")) if projection is not None else None
     return accepted is False
 
 
@@ -2454,11 +2159,8 @@ def _disposition(snapshot: RouteSnapshot) -> str:
             if "physical" in status or "stability" in status or "root_disagreement" in status:
                 return "residual or reduced-stability failure"
             return "reference integration failure"
-        if snapshot.route in SURROGATE_ROUTES and snapshot.certification is not None:
+        if snapshot.route == "surrogate" and snapshot.certification is not None:
             if snapshot.certification.get("locally_converged") is not True:
-                return "upper-stationarity failure"
-        elif snapshot.route == "shared_unit" and snapshot.payload is not None:
-            if snapshot.payload.get("locally_converged") is not True:
                 return "upper-stationarity failure"
         elif _selected_stationary(snapshot) is False:
             return "upper-stationarity failure"
@@ -2499,18 +2201,12 @@ def _case_and_failure_tables(
     expected_cases: Sequence[str],
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     lookup = {(item.case, item.route): item for item in snapshots}
-    routes = tuple(dict.fromkeys(item.route for item in snapshots))
     rows: list[dict[str, Any]] = []
     for case in expected_cases:
         surrogate = lookup[(case, "surrogate")]
         direct = lookup[(case, "direct")]
-        shared = lookup.get((case, "shared_unit"))
-        selected_count = sum(
-            _selected_theta(item) is not None
-            for item in (surrogate, shared, direct)
-            if item is not None
-        )
-        row = {
+        selected_count = sum(_selected_theta(item) is not None for item in (surrogate, direct))
+        rows.append({
             "case": case,
             "surrogate_outcome": surrogate.outcome,
             "mechanistic_outcome": direct.outcome,
@@ -2519,23 +2215,10 @@ def _case_and_failure_tables(
             "mechanistic_replay_outcome": _replay_status(direct),
             "surrogate_disposition": _disposition(surrogate),
             "mechanistic_disposition": _disposition(direct),
-        }
-        if shared is not None:
-            row.update({
-                "shared_unit_outcome": shared.outcome,
-                "shared_unit_replay_outcome": _replay_status(shared),
-                "shared_unit_disposition": _disposition(shared),
-            })
-        rows.append(row)
+        })
     case_status = pd.DataFrame(rows)
     failure_rows: list[dict[str, Any]] = []
-    disposition_columns = {
-        "surrogate": "surrogate_disposition",
-        "shared_unit": "shared_unit_disposition",
-        "direct": "mechanistic_disposition",
-    }
-    for route in routes:
-        column = disposition_columns[route]
+    for route, column in (("surrogate", "surrogate_disposition"), ("direct", "mechanistic_disposition")):
         dispositions = case_status[column].tolist()
         for category in (*FAILURE_CLASSES, PENDING_CLASS):
             failure_rows.append({
@@ -2762,6 +2445,7 @@ def _timing_tables(
     snapshots: Sequence[RouteSnapshot],
     warnings: list[str],
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    del snapshots
     ledger = _safe_csv(
         run_directory / "metrics" / "robustness_case_timing.csv", warnings,
     )
@@ -2778,41 +2462,17 @@ def _timing_tables(
     ledger = ledger.loc[
         ledger["case"].astype(str).str.startswith("robustness_")
     ].copy()
-    shared_available = bool(
-        ledger["route"].astype(str).eq("shared_unit").any()
-        or any(snapshot.route == "shared_unit" for snapshot in snapshots)
-    )
     categories: dict[str, list[float]] = {}
     category_columns = {
         "surrogate_primary_optimization": ("surrogate", "primary_optimization_seconds"),
         "surrogate_complete_optimization": ("surrogate", "complete_optimization_seconds"),
         "surrogate_local_certification": ("surrogate", "certification_seconds"),
         "surrogate_exact_reference": ("surrogate", "exact_reference_seconds"),
-        "shared_unit_primary_optimization": ("shared_unit", "primary_optimization_seconds"),
-        "shared_unit_complete_optimization": ("shared_unit", "complete_optimization_seconds"),
-        "shared_unit_local_certification": ("shared_unit", "certification_seconds"),
-        "shared_unit_exact_reference": ("shared_unit", "exact_reference_seconds"),
         "direct_primary_optimization": ("direct", "primary_optimization_seconds"),
         "direct_complete_optimization": ("direct", "complete_optimization_seconds"),
         "direct_failure_recovery": ("direct", "recovery_seconds"),
         "direct_exact_reference": ("direct", "exact_reference_seconds"),
     }
-    if not shared_available:
-        category_columns = {
-            name: specification
-            for name, specification in category_columns.items()
-            if not name.startswith("shared_unit_")
-        }
-    standard_columns = {column for _, column in category_columns.values()}
-    for column in ledger.columns:
-        if (
-            shared_available
-            and column.endswith("_seconds")
-            and column not in standard_columns
-        ):
-            category_columns[f"shared_unit_{column.removesuffix('_seconds')}"] = (
-                "shared_unit", column,
-            )
     for category, (route, column) in category_columns.items():
         if column not in ledger:
             categories[category] = []
@@ -2831,8 +2491,7 @@ def _timing_tables(
         for category, values in categories.items()
     ])
     workload: list[dict[str, Any]] = []
-    routes = tuple(dict.fromkeys(snapshot.route for snapshot in snapshots))
-    for route in routes:
+    for route in ("surrogate", "direct"):
         route_rows = ledger.loc[ledger["route"].eq(route)]
         complete = pd.to_numeric(
             route_rows["complete_optimization_seconds"], errors="coerce",
@@ -2840,7 +2499,7 @@ def _timing_tables(
         reference = pd.to_numeric(
             route_rows["exact_reference_seconds"], errors="coerce",
         )
-        item: dict[str, Any] = {
+        workload.append({
             "route": route,
             "robustness_case_count": int(len(route_rows)),
             "mean_complete_case_time_seconds": _finite_summary(complete.tolist())["mean"],
@@ -2851,22 +2510,7 @@ def _timing_tables(
                 .fillna(False).astype(bool).sum()
             ),
             "reference_validation_time_seconds": _finite_summary(reference.tolist())["total"],
-        }
-        if route == "shared_unit":
-            for column in (
-                "distinct_evaluations", "failed_evaluations", "root_attempts",
-                "failed_roots", "failed_closures", "projection_solves",
-                "poll_evaluations", "root_seconds", "projection_seconds",
-                "evaluation_seconds",
-            ):
-                values = pd.to_numeric(
-                    route_rows.get(column, pd.Series(dtype=float)), errors="coerce",
-                )
-                item[f"total_{column}"] = (
-                    float(values[np.isfinite(values)].sum())
-                    if np.isfinite(values).any() else math.nan
-                )
-        workload.append(item)
+        })
     return summary, pd.DataFrame(workload)
 
 
@@ -2880,161 +2524,40 @@ def _scenario_comparison(
     rows: list[dict[str, Any]] = []
     cases = tuple(dict.fromkeys(item.case for item in snapshots))
     for case in cases:
-        route_snapshots = {
-            route: lookup.get((case, route)) for route in THREE_ROUTES
-        }
-        theta = {
-            route: _selected_theta(snapshot) if snapshot is not None else None
-            for route, snapshot in route_snapshots.items()
-        }
-        responses = {
-            route: (
-                _selected_response_map(snapshot, geometry)
-                if snapshot is not None else {}
-            )
-            for route, snapshot in route_snapshots.items()
-        }
+        surrogate = lookup[(case, "surrogate")]
+        direct = lookup[(case, "direct")]
+        s_theta, d_theta = _selected_theta(surrogate), _selected_theta(direct)
+        s_response = _selected_response_map(surrogate, geometry)
+        d_response = _selected_response_map(direct, geometry)
 
         def objective(theta: np.ndarray | None, values: Mapping[str, np.ndarray]) -> float:
             if theta is None or "reference" not in values:
                 return math.nan
             return _response_quantities(theta, values["reference"], geometry, quality_scale)[2]
 
-        objectives = {
-            route: objective(theta[route], responses[route])
-            for route in THREE_ROUTES
-        }
+        s_objective = objective(s_theta, s_response)
+        d_objective = objective(d_theta, d_response)
 
         def error(values: Mapping[str, np.ndarray], method: str) -> float:
             if method not in values or "reference" not in values or response_scale is None:
                 return math.nan
             return float(np.sqrt(np.mean(((values[method] - values["reference"]) / response_scale) ** 2)))
 
-        elapsed = {
-            route: (
-                _route_elapsed(snapshot) if snapshot is not None else math.nan
-            )
-            for route, snapshot in route_snapshots.items()
-        }
-
-        def route_eligibility(route: str) -> tuple[bool, str | None]:
-            snapshot = route_snapshots[route]
-            if snapshot is None:
-                return False, f"{route}_not_present"
-            reference = snapshot.casewise_reference
-            if reference is not None:
-                reasons = []
-                if reference.get("candidate_available") is not True:
-                    reasons.append("no_candidate")
-                if reference.get("native_feasible") is False:
-                    reasons.append("native_infeasible")
-                if reference.get("exact_replay_valid") is not True:
-                    reasons.append("exact_replay_invalid")
-                elif reference.get("comparison_valid") is not True:
-                    reasons.append("exact_engineering_infeasible")
-                if reasons:
-                    return False, ";".join(reasons)
-            if not math.isfinite(objectives[route]):
-                return False, "reference_objective_unavailable"
-            return True, None
-
-        eligibility = {route: route_eligibility(route) for route in THREE_ROUTES}
-
-        def pair(left: str, right: str) -> tuple[bool, str | None, float]:
-            eligible = eligibility[left][0] and eligibility[right][0]
-            reasons = ";".join(
-                f"{route}:{eligibility[route][1]}"
-                for route in (left, right)
-                if eligibility[route][1]
-            ) or None
-            delta = (
-                objectives[left] - objectives[right] if eligible else math.nan
-            )
-            return eligible, reasons, delta
-
-        su = pair("surrogate", "shared_unit")
-        sm = pair("surrogate", "direct")
-        um = pair("shared_unit", "direct")
-
-        def control_difference(left: str, right: str) -> tuple[float, float]:
-            if theta[left] is None or theta[right] is None:
-                return math.nan, math.nan
-            difference = (
-                (theta[left] - theta[right]) / (DECISION_UPPER - DECISION_LOWER)
-            )
-            return (
-                float(np.sqrt(np.mean(difference**2))),
-                float(np.max(np.abs(difference))),
-            )
-
-        su_control = control_difference("surrogate", "shared_unit")
-        sm_control = control_difference("surrogate", "direct")
-        um_control = control_difference("shared_unit", "direct")
+        s_time, d_time = _route_elapsed(surrogate), _route_elapsed(direct)
         rows.append({
             "case": case,
-            "shared_unit_present": route_snapshots["shared_unit"] is not None,
-            "J_S_reference": objectives["surrogate"],
-            "J_U_reference": objectives["shared_unit"],
-            "J_M_reference": objectives["direct"],
-            "comparison_eligible_S_U": su[0],
-            "comparison_eligible_S_M": sm[0],
-            "comparison_eligible_U_M": um[0],
-            "all_three_comparison_eligible": bool(su[0] and sm[0] and um[0]),
-            "ineligibility_reasons_S_U": su[1],
-            "ineligibility_reasons_S_M": sm[1],
-            "ineligibility_reasons_U_M": um[1],
-            "delta_J_S_minus_U": su[2],
-            "delta_J_S_minus_M": sm[2],
-            "delta_J_U_minus_M": um[2],
-            "control_rms_difference_S_U": su_control[0],
-            "control_maximum_difference_S_U": su_control[1],
-            "control_rms_difference_S_M": sm_control[0],
-            "control_maximum_difference_S_M": sm_control[1],
-            "control_rms_difference_U_M": um_control[0],
-            "control_maximum_difference_U_M": um_control[1],
-            "projected_reference_nrmse_at_S": error(
-                responses["surrogate"], "projected"
-            ),
-            "projected_reference_nrmse_at_U": error(
-                responses["shared_unit"], "projected"
-            ),
-            "smooth_reference_nrmse_at_M": error(responses["direct"], "smooth"),
-            "surrogate_time_seconds": elapsed["surrogate"],
-            "shared_unit_time_seconds": elapsed["shared_unit"],
-            "mechanistic_time_seconds": elapsed["direct"],
+            "J_S_reference": s_objective,
+            "J_M_reference": d_objective,
+            "delta_J_S_minus_M": s_objective - d_objective,
+            "projected_reference_nrmse_at_S": error(s_response, "projected"),
+            "smooth_reference_nrmse_at_M": error(d_response, "smooth"),
+            "surrogate_time_seconds": s_time,
+            "mechanistic_time_seconds": d_time,
             "mechanistic_surrogate_time_ratio": (
-                elapsed["direct"] / elapsed["surrogate"]
-                if math.isfinite(elapsed["surrogate"])
-                and math.isfinite(elapsed["direct"])
-                and elapsed["surrogate"] > 0.0 else math.nan
-            ),
-            "mechanistic_shared_unit_time_ratio": (
-                elapsed["direct"] / elapsed["shared_unit"]
-                if math.isfinite(elapsed["shared_unit"])
-                and math.isfinite(elapsed["direct"])
-                and elapsed["shared_unit"] > 0.0 else math.nan
+                d_time / s_time if math.isfinite(s_time) and math.isfinite(d_time) and s_time > 0.0 else math.nan
             ),
         })
     return pd.DataFrame(rows)
-
-
-def _merge_common_reference_comparison(
-    derived: pd.DataFrame,
-    recorded: pd.DataFrame,
-) -> pd.DataFrame:
-    """Overlay authoritative runner fields without dropping derived pair columns."""
-
-    if recorded.empty:
-        return derived
-    if derived.empty or "case" not in recorded or "case" not in derived:
-        return recorded
-    result = derived.set_index("case")
-    observed = recorded.set_index("case")
-    for column in observed.columns:
-        result[column] = observed[column]
-    for case in observed.index.difference(result.index):
-        result.loc[case, observed.columns] = observed.loc[case]
-    return result.reset_index()
 
 
 def _model_response_scale(run_directory: Path, geometry: StudyGeometry, warnings: list[str]) -> np.ndarray | None:
@@ -3070,12 +2593,11 @@ def build_reporting_tables(
         raise FileNotFoundError(f"Run directory does not exist: {run}")
     warnings: list[str] = []
     cases = _expected_cases(run, expected_cases, warnings)
-    routes = _reporting_routes(run, cases)
     geometry = _infer_geometry(run, warnings)
     snapshots = tuple(
         _route_snapshot(run, case, route, warnings)
         for case in cases
-        for route in routes
+        for route in ("surrogate", "direct")
     )
     quality_scale = _quality_scale(run, geometry, warnings)
     response_scale = _model_response_scale(run, geometry, warnings)
@@ -3102,68 +2624,23 @@ def build_reporting_tables(
     if not prediction_path.is_file():
         prediction_path = run / "metrics" / "untouched_prediction_metrics.csv"
     prediction = _safe_csv(prediction_path, warnings)
-    if not prediction.empty and "route" not in prediction.columns:
-        prediction.insert(0, "route", "surrogate")
-    shared_prediction_path = (
-        run / "metrics" / "shared_unit_post_selection_prediction_metrics.csv"
-    )
-    if shared_prediction_path.is_file():
-        shared_prediction = _safe_csv(shared_prediction_path, warnings)
-        if not shared_prediction.empty:
-            if "route" not in shared_prediction.columns:
-                shared_prediction.insert(0, "route", "shared_unit")
-            prediction = pd.concat(
-                (prediction, shared_prediction), ignore_index=True, sort=False,
-            )
     projection = _safe_csv(run / "metrics" / "projection_qp_diagnostics.csv", warnings)
-    if not projection.empty and "route" not in projection.columns:
-        projection.insert(0, "route", "surrogate")
-    shared_projection_path = (
-        run / "metrics" / "shared_unit_projection_qp_diagnostics.csv"
-    )
-    if shared_projection_path.is_file():
-        shared_projection = _safe_csv(shared_projection_path, warnings)
-        if not shared_projection.empty:
-            if "route" not in shared_projection.columns:
-                shared_projection.insert(0, "route", "shared_unit")
-            projection = pd.concat(
-                (projection, shared_projection), ignore_index=True, sort=False,
-            )
-    feasibility = _safe_csv(
-        run / "metrics" / "projection_feasibility_bound.csv", warnings,
-    )
-    if not feasibility.empty and "route" not in feasibility.columns:
-        feasibility.insert(0, "route", "surrogate")
-    shared_feasibility_path = (
-        run / "metrics" / "shared_unit_projection_feasibility_bound.csv"
-    )
-    if shared_feasibility_path.is_file():
-        shared_feasibility = _safe_csv(shared_feasibility_path, warnings)
-        if not shared_feasibility.empty:
-            if "route" not in shared_feasibility.columns:
-                shared_feasibility.insert(0, "route", "shared_unit")
-            feasibility = pd.concat(
-                (feasibility, shared_feasibility), ignore_index=True, sort=False,
-            )
     reference_evaluation = _safe_csv(
         run / "metrics" / "selected_candidate_reference_evaluation.csv", warnings,
     )
     common_reference = _safe_csv(
         run / "metrics" / "case_common_reference_comparison.csv", warnings,
     )
-    comparison = _merge_common_reference_comparison(comparison, common_reference)
+    if not common_reference.empty:
+        comparison = common_reference
     tables: dict[str, pd.DataFrame] = {
         **generation,
         "ridge_selection": ridge,
         "prediction_metrics": prediction,
         "projection_diagnostics": projection,
-        "projection_feasibility_bounds": feasibility,
         "selected_candidate_reference_evaluation": reference_evaluation,
         "case_common_reference_comparison": common_reference,
         "trust_diagnostics": _trust_table(run, snapshots, warnings),
-        "shared_unit_root_diagnostics": _shared_unit_root_table(
-            run, snapshots, warnings,
-        ),
         "route_status": _route_status_table(snapshots),
         "active_constraints": _active_constraint_table(snapshots),
         "selected_controls": controls,

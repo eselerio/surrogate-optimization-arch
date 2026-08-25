@@ -503,24 +503,16 @@ class ArticleV3OptimizationHookTests(unittest.TestCase):
                 runner.atomic_json(case / "direct.json", {
                     "elapsed_seconds": float(index + 10), "status": "selected",
                 })
-                runner.atomic_json(case / "shared_unit.json", {
-                    "elapsed_seconds": float(index + 5), "status": "selected",
-                    "root_attempts": 20, "failed_roots": 0,
-                    "projection_solves": 10,
-                })
                 runner.atomic_json(case / "surrogate_local_convergence.json", {
                     "certificate": {"elapsed_seconds": 0.5},
                 })
-                for route in ("surrogate", "shared_unit", "direct"):
+                for route in ("surrogate", "direct"):
                     runner.atomic_json(case / f"{route}_casewise_reference.json", {
                         "candidate_available": True,
                         "comparison_valid": True,
                         "optimization_elapsed_seconds": (
                             float(index) + 0.5
-                            if route == "surrogate"
-                            else float(index + 5)
-                            if route == "shared_unit"
-                            else float(index + 10)
+                            if route == "surrogate" else float(index + 10)
                         ),
                         "reference_elapsed_seconds": 0.25,
                         "recovery": {"attempted": False},
@@ -538,12 +530,11 @@ class ArticleV3OptimizationHookTests(unittest.TestCase):
             frame = runner._run_robustness_case_timing_aggregation(
                 run, source_files={"unit": "source"}, analysis_id="analysis",
             )
-            self.assertEqual(len(frame), 30)
+            self.assertEqual(len(frame), 20)
             means = frame.groupby("route")[
                 "complete_optimization_seconds"
             ].mean()
             self.assertAlmostEqual(means["surrogate"], 6.0)
-            self.assertAlmostEqual(means["shared_unit"], 10.5)
             self.assertAlmostEqual(means["direct"], 15.5)
             summary = json.loads((
                 run / "metrics/robustness_case_timing_summary.json"
@@ -651,21 +642,11 @@ class ArticleV3OptimizationHookTests(unittest.TestCase):
             )
             self.assertFalse(marker["accepted"])
 
-    def test_full_hook_runs_11_cases_and_cross_evaluates_three_routes(self) -> None:
+    def test_full_hook_runs_11_cases_and_cross_evaluates_both_routes(self) -> None:
         self.assertEqual(
-            runner.COMPARISON_PROTOCOL, "casewise_exact_common_reference_v4"
+            runner.COMPARISON_PROTOCOL, "casewise_exact_common_reference_v3"
         )
         design, development_targets, test_targets, analysis = _fixture()
-        analysis = runner.AnalysisBundle(
-            passed=analysis.passed,
-            model=analysis.model,
-            direct_assets=analysis.direct_assets,
-            surrogate_assets=analysis.surrogate_assets,
-            assessment=analysis.assessment,
-            gate=analysis.gate,
-            shared_unit_assets=SimpleNamespace(),
-            shared_unit_gate={"passed": True},
-        )
         surrogate_completed_on_entry: list[set[int]] = []
         direct_completed_on_entry: list[set[int]] = []
 
@@ -680,46 +661,6 @@ class ArticleV3OptimizationHookTests(unittest.TestCase):
                 set((kwargs.get("completed_starts") or {}).keys())
             )
             return _direct_solver(*args, **kwargs)
-
-        def shared_unit_route(
-            case_directory: Path,
-            *,
-            case_id: str,
-            **_kwargs: object,
-        ):
-            normalized = np.full(7, 0.5)
-            candidate = SimpleNamespace(
-                normalized_controls=normalized,
-                theta=DECISION_LOWER + (DECISION_UPPER - DECISION_LOWER) * normalized,
-                objective=1.5,
-                status="validated_feasible_value_only_local",
-            )
-            result = SimpleNamespace(
-                selected=candidate,
-                status="selected_locally_converged",
-                root_attempts=20,
-                failed_roots=0,
-                projection_solves=10,
-            )
-            payload = {
-                "route": "shared_unit",
-                "case_id": case_id,
-                "status": result.status,
-                "classification": "two_scale_feasible_no_descent",
-                "locally_converged": True,
-                "stationarity_resolved": False,
-                "elapsed_seconds": 0.5,
-                "root_attempts": result.root_attempts,
-                "failed_roots": result.failed_roots,
-                "projection_solves": result.projection_solves,
-                "selected": {"objective": candidate.objective},
-            }
-            runner.atomic_json(case_directory / "shared_unit.json", payload)
-            runner.atomic_json(
-                case_directory / "shared_unit_complete.json",
-                {"status": result.status},
-            )
-            return result, payload
 
         def certify(
             case_directory: Path,
@@ -855,8 +796,6 @@ class ArticleV3OptimizationHookTests(unittest.TestCase):
             ) as surrogate_solver, patch.object(
                 runner, "solve_direct_multistart", side_effect=direct_solver,
             ) as direct_solver, patch.object(
-                runner, "_run_shared_unit_route", side_effect=shared_unit_route,
-            ) as shared_unit_solver, patch.object(
                 runner, "_run_robustness_case_timing_aggregation", side_effect=_mock_timing,
             ) as timing_benchmark, patch.object(
                 runner, "write_reporting_tables", side_effect=report,
@@ -874,10 +813,9 @@ class ArticleV3OptimizationHookTests(unittest.TestCase):
                 self.assertTrue(passed)
                 untouched_equivalence.assert_not_called()
                 self.assertEqual(surrogate_solver.call_count, 11)
-                self.assertEqual(shared_unit_solver.call_count, 11)
                 self.assertEqual(direct_solver.call_count, 11)
                 self.assertEqual(certification.call_count, 11)
-                self.assertEqual(reference_evaluation.call_count, 33)
+                self.assertEqual(reference_evaluation.call_count, 22)
                 graph_builder.assert_called_once()
                 for call in surrogate_solver.call_args_list:
                     self.assertNotIn("starts", call.kwargs)
@@ -898,11 +836,11 @@ class ArticleV3OptimizationHookTests(unittest.TestCase):
                 selected = pd.read_csv(
                     run / "metrics/selected_response_physical_audit.csv"
                 )
-                self.assertEqual(len(selected), 11 * 3 * 5)
+                self.assertEqual(len(selected), 11 * 2 * 5)
                 self.assertEqual(
                     selected.groupby("method").size().to_dict(),
                     {
-                        method: 33
+                        method: 22
                         for method in (
                             "raw",
                             "projected",
@@ -920,7 +858,7 @@ class ArticleV3OptimizationHookTests(unittest.TestCase):
                 )
                 self.assertEqual(len(comparison), 11)
                 self.assertTrue(comparison["comparison_eligible"].all())
-                self.assertEqual(len(reference), 33)
+                self.assertEqual(len(reference), 22)
                 self.assertTrue(reference["comparison_valid"].all())
                 retired = json.loads(
                     (run / "metrics/untouched_test_equivalence_retired.json").read_text()
@@ -932,12 +870,12 @@ class ArticleV3OptimizationHookTests(unittest.TestCase):
                     (run / "optimization/final_status.json").read_text(encoding="utf-8")
                 )
                 self.assertEqual(status["case_count"], 11)
-                self.assertEqual(status["route_count"], 33)
+                self.assertEqual(status["route_count"], 22)
                 self.assertEqual(status["required_starts_per_route"], 1)
                 self.assertEqual(status["required_attempts_per_route"], 1)
                 self.assertEqual(status["surrogate_ipopt_continuation_stage_count"], 0)
                 self.assertFalse(status["untouched_test_equivalence_executed"])
-                self.assertEqual(status["selected_decision_count"], 33)
+                self.assertEqual(status["selected_decision_count"], 22)
                 self.assertTrue(status["scientific_validation_passed"])
 
                 for case_id in (
@@ -962,19 +900,11 @@ class ArticleV3OptimizationHookTests(unittest.TestCase):
                         self.assertTrue(
                             (case / f"{route}_casewise_reference_complete.json").is_file()
                         )
-                    shared_payload = json.loads(
-                        (case / "shared_unit.json").read_text(encoding="utf-8")
-                    )
-                    self.assertEqual(shared_payload["route"], "shared_unit")
-                    self.assertTrue(
-                        (case / "shared_unit_casewise_reference_complete.json").is_file()
-                    )
                 self.assertFalse(
                     any(path.name.endswith(".tmp") for path in run.rglob("*"))
                 )
 
                 surrogate_solver.reset_mock()
-                shared_unit_solver.reset_mock()
                 direct_solver.reset_mock()
                 graph_builder.reset_mock()
                 certification.reset_mock()
@@ -991,11 +921,10 @@ class ArticleV3OptimizationHookTests(unittest.TestCase):
                     source_files={"mock": "source"},
                 ))
                 surrogate_solver.assert_not_called()
-                self.assertEqual(shared_unit_solver.call_count, 11)
                 direct_solver.assert_not_called()
                 graph_builder.assert_called_once()
                 self.assertEqual(certification.call_count, 11)
-                self.assertEqual(reference_evaluation.call_count, 33)
+                self.assertEqual(reference_evaluation.call_count, 22)
                 self.assertEqual(timing_benchmark.call_count, 1)
                 self.assertEqual(reporting.call_count, 1)
 
@@ -1330,21 +1259,6 @@ class ArticleV3OptimizationHookTests(unittest.TestCase):
             )
             self.assertTrue(solve.call_args.kwargs["allow_reduced_starts"])
             self.assertTrue((case / "direct_recovery_complete.json").is_file())
-
-    def test_shared_unit_metrics_record_zero_coverage_without_name_error(self) -> None:
-        layout = NetworkLayout(layer_count=ARTICLE_FULL.layer_count)
-        unavailable = np.full((1, layout.state_size), np.nan)
-        metrics = runner._shared_unit_prediction_metrics(
-            unavailable,
-            unavailable,
-            np.ones((1, layout.state_size)),
-            np.asarray([False]),
-            np.ones(layout.state_size),
-            layout,
-        )
-        self.assertFalse(metrics.empty)
-        self.assertTrue(metrics["coverage_fraction"].eq(0.0).all())
-        self.assertTrue(metrics["nrmse"].isna().all())
 
 
 if __name__ == "__main__":

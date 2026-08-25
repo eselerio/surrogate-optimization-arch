@@ -45,13 +45,13 @@ def _retained_stage(source: Path) -> dict[str, object]:
 
 
 class ArticleV3RunForkTests(unittest.TestCase):
-    def test_schema_eleven_declares_the_three_route_protocol(self) -> None:
+    def test_schema_ten_defaults_name_a_new_folder_and_v3_protocol(self) -> None:
         self.assertEqual(runner.LEGACY_RUN_ID, "article_full_5000_001")
         self.assertEqual(runner.DEFAULT_RUN_ID, "article_full_5000_002")
-        self.assertEqual(runner.RUNNER_SCHEMA, 11)
+        self.assertEqual(runner.RUNNER_SCHEMA, 10)
         self.assertEqual(
             runner.COMPARISON_PROTOCOL,
-            "casewise_exact_common_reference_v4",
+            "casewise_exact_common_reference_v3",
         )
 
     def test_reduced_response_fork_copies_generation_but_not_old_models(self) -> None:
@@ -149,79 +149,13 @@ class ArticleV3RunForkTests(unittest.TestCase):
             self.assertFalse((target / "models/ridge_surrogate.npz").exists())
             self.assertFalse((target / "optimization/nominal/surrogate.npz").exists())
             migrated = json.loads((target / "inputs/contract.json").read_text())
-            latest = migrated["contract_migrations"][-1]
-            self.assertTrue(latest["migration_id"].startswith(
-                "article-v3-reduced-response-"
-            ))
-            record = json.loads((target / latest["record"]).read_text())
-            retained = json.loads((
-                target / record["retained_stage_manifest"]["path"]
+            record = json.loads((
+                target / migrated["contract_migrations"][-1]["record"]
             ).read_text())
-            self.assertEqual(
-                retained["policy"],
-                "generation_only_for_clarifier_inventory_response_v1",
-            )
-            self.assertIn("replacement of layer-wise surrogate outputs", record["reason"])
             self.assertEqual(
                 record["run_fork"]["recomputed_scope"],
                 "response_transform_fit_assessment_optimization_replay_timing_reporting",
             )
-
-    def test_schema_ten_fork_records_shared_unit_route_provenance(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            source, target = root / "source", root / "target"
-            old_files, new_files = {"unit.py": "old"}, {"unit.py": "new"}
-            source_contract = {
-                "runner_schema": 10,
-                "source_digest": runner.source_digest(old_files),
-                "source_files": old_files,
-                "contract_migrations": [],
-            }
-            successor_contract = {
-                "runner_schema": 11,
-                "run_id": target.name,
-                "source_digest": runner.source_digest(new_files),
-                "source_files": new_files,
-                "response_schema": {"name": runner.RESPONSE_SCHEMA},
-            }
-            for block in ("development", "test"):
-                artifact = source / "datasets" / block / "mechanistic_accepted_v3.npz"
-                runner.atomic_npz(artifact, targets=np.zeros((1, 170)))
-                runner.atomic_json(
-                    source / "datasets" / block / "block_complete.json",
-                    {
-                        "source_digest": source_contract["source_digest"],
-                        "artifacts": {
-                            artifact.relative_to(source).as_posix(): runner.file_digest(
-                                artifact
-                            ),
-                        },
-                    },
-                )
-            runner.atomic_json(source / "inputs" / "contract.json", source_contract)
-
-            runner._initialize_reduced_response_fork(
-                target,
-                source_run=source,
-                source_contract=source_contract,
-                successor_contract=successor_contract,
-            )
-
-            migrated = json.loads((target / "inputs/contract.json").read_text())
-            latest = migrated["contract_migrations"][-1]
-            self.assertTrue(latest["migration_id"].startswith(
-                "article-v3-shared-unit-route-"
-            ))
-            record = json.loads((target / latest["record"]).read_text())
-            retained = json.loads((
-                target / record["retained_stage_manifest"]["path"]
-            ).read_text())
-            self.assertEqual(
-                retained["policy"], "generation_only_for_shared_unit_route_v1",
-            )
-            self.assertIn("shared-unit surrogate as a third optimization route", record["reason"])
-            self.assertNotIn("replacement of layer-wise surrogate outputs", record["reason"])
 
     def test_copy_reusable_files_is_hash_verified_and_excludes_new_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
