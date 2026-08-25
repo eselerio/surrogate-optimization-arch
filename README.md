@@ -8,15 +8,18 @@ and is not an article-v3 result source.
 
 The v3 calculation uses seven controls, twenty influent coordinates, five
 reactors, and a dimension-parametric layered Clarifier. The mechanistic model
-retains every Clarifier layer, but the 406-feature ridge surrogate predicts a
-161-coordinate operational response: mixer and reactor states, overflow and
-underflow component flows, and one total Clarifier-solids inventory. It does
-not predict or reconstruct the layer profile. Each raw prediction is
-reconciled by an independently audited convex physical projection.
-Operational results compare the projected-surrogate route with a separate
-smooth mechanistic NLP. Each selected decision is then replayed on the same
-exact nonsmooth layered model so that both routes share one physical and
-objective reference.
+retains every Clarifier layer. Route S is the existing 406-feature
+whole-system ridge surrogate. Route U is an added shared-unit architecture:
+one 276-feature, 20-output CSTR map is reused in all five reactors and one
+276-feature, 41-output map represents the Clarifier. A two-start audited root
+closes route U's learned recycle loop. Both statistical routes assemble the
+same 161-coordinate operational response—mixer and reactor states, overflow
+and underflow component flows, and one total Clarifier-solids inventory—and
+neither predicts or reconstructs a layer profile. Both raw predictions use the
+same independently audited convex physical projection. Route M is the
+unchanged smooth mechanistic NLP. Every available S, U, and M decision is
+replayed on the same exact nonsmooth layered model, with pair-specific and
+all-three eligibility reported separately.
 
 Every analysis retains mass-conservation and non-negativity diagnostics for
 raw, projected, optimizer-native, and exact-mechanistic responses. The exact
@@ -36,7 +39,9 @@ uv run python -m unittest discover -s tests -v
 
 CasADi supplies IPOPT/MUMPS for the direct smooth-mechanistic comparator.
 OSQP resolves the physical projection QPs used by assessment and by the
-seven-variable surrogate optimizer. Scientific artifacts are written below
+seven-variable surrogate optimizers. SciPy supplies the two cold nonlinear
+least-squares recycle-root solves required by every distinct route-U
+evaluation. Scientific artifacts are written below
 `results/article_v3/<run-id>`.
 
 ## Mandatory preflight
@@ -80,21 +85,40 @@ post-selection holdout rows. No new mechanistic state is generated. The
 mechanistic generator, direct optimizer, and exact replay retain ten Clarifier
 layers; only the statistical response is reduced. The runner also preserves
 the earlier 5,000- and 50,000-target profiles for explicit historical or fresh
-runs. Ten influent scenarios plus nominal use seed 314159. Both optimization
-routes now use one deterministic
+runs. Ten influent scenarios plus nominal use seed 314159. All three optimization
+routes use one deterministic
 box-center start per case and search only that local basin; they make no
-global-optimality claim. The surrogate route primarily uses analytical
+global-optimality claim.
+
+Route U reuses route S's five plant folds. All five reactor transitions from
+one plant stay together, giving 66,855 development transitions for the shared
+CSTR fit and 13,371 development rows for the Clarifier fit. Separate
+one-standard-error rules select the reactor and Clarifier penalties.
+Teacher-forced unit scores are descriptive; route-U admission uses the full
+fold-specific free-running sequence of two-start root closure, 161-coordinate
+assembly, and common projection. Its trust limits include separate leverage
+rows for each of the five reactor inputs and the Clarifier input. Root
+acceptance is a numerical prerequisite, not an upper trust inequality.
+
+Route S primarily uses analytical
 active-set sensitivities in the seven controls. If those derivatives are
 unavailable, deterministic value-only COBYQA continues from the same center,
 and every distinct fallback trial cold-solves the unchanged exact projection
-QP. No finite-difference derivative replaces a failed active-set audit.
+QP. No finite-difference derivative replaces a failed active-set audit. Route
+U is optimized independently with deterministic value-only search. Every
+distinct trial cold-solves its recycle closure from both declared
+target-independent starts, checks residual, two-start agreement, rank, and
+conditioning, assembles the 161-coordinate raw response, and then cold-solves
+the same projection QP used by route S. Only exact duplicate controls may reuse
+the complete root-plus-QP evaluation.
 
 The fallback retains the best validated feasible point it visited and cold
-replays that point independently. Surrogate convergence has two explicitly
-different tiers: a strong first-order certificate from the independent
-endpoint active-set and upper-KKT audits, or a finite-resolution certificate
-from complete feasible no-descent polls at normalized radii \(10^{-3}\) and
-\(10^{-4}\). Protocol v3 uses 14 signed coordinate directions at the coarse
+replays that point independently. Route S may receive a strong first-order
+certificate from the independent endpoint active-set and upper-KKT audits.
+Both surrogate routes may receive a finite-resolution certificate from
+complete feasible no-descent polls at normalized radii \(10^{-3}\) and
+\(10^{-4}\); the initial route-U implementation makes only this value-only tier
+available. Protocol v3 uses 14 signed coordinate directions at the coarse
 radius and 106 directions at the fine radius: the signed axes, 84 signed
 pairwise diagonals, and eight Helmert-simplex directions. After a winning poll
 step, exact-QP-feasible trials expand deterministically along that same coupled
@@ -110,7 +134,7 @@ finite-resolution evidence only, not a KKT, Clarke-stationarity, local-, or
 global-optimality proof. An incomplete poll or failed audit leaves a feasible
 incumbent with unresolved stationarity.
 
-The surrogate route does not run the former approximately 450-variable
+Neither surrogate route runs the former approximately 450-variable
 embedded-KKT IPOPT problem or any of its seven gap-continuation stages.
 
 Preliminary v1 poll outputs are archived and excluded from article analysis:
@@ -121,12 +145,13 @@ fixed-step fine-poll crawl in robustness case 05 (36 accepted moves before the
 2,500-evaluation safety limit), which motivated v3 ray acceleration. Both
 predecessor result sets remain archived and excluded rather than reclassified.
 
-The direct smooth-mechanistic route remains an IPOPT NLP and retains its
+Route M remains an IPOPT NLP and retains its
 separate three-stage smoothing continuation. It receives at most one recovery
 attempt, only after its primary solve fails and only when that attempt can be
-initialized from the same case's certified surrogate decision; a successful
+initialized from the same case's certified route-S decision; route U never
+changes this recovery rule. A successful
 primary direct solve is never given an extra basin search. The nominal case
-and all ten robustness cases are still attempted for both routes. An
+and all ten robustness cases are attempted for all three routes. An
 optimization failure or unresolved audit is recorded casewise and does not
 suppress the remaining cases, replay, physical audits, timing aggregation, or
 reporting. Runtime comparisons use only the durations recorded for robustness
@@ -136,12 +161,14 @@ frozen post-selection holdout block.
 Whole-holdout smooth/reference equivalence is retired and is not an article
 admission gate. The 3,343-row post-selection holdout block is used only for
 descriptive surrogate prediction assessment. Instead, every available selected
-surrogate and direct candidate is replayed casewise from both declared starts
+S, U, and M candidate is replayed casewise from both declared starts
 on the exact nonsmooth mechanistic model. A branch-boundary ambiguity is retained as a
 qualification and is not by itself a rejection. Comparison eligibility still
 requires a valid exact replay, physical and stability audits, and engineering
 feasibility. A valid replay's exact objective remains reportable when its
-engineering check fails, but that candidate cannot enter a paired comparison.
+engineering check fails, but that candidate cannot enter the applicable
+pairwise comparison. S-U, S-M, and U-M eligibility are independent; an
+all-three comparison requires all three candidates to qualify.
 
 The earlier nine-start surrogate gap-continuation protocol is retired for
 production. The reduced-response revision reuses only verified mechanistic
@@ -192,7 +219,7 @@ To execute the full article notebook from a resumable named run directory:
 ```powershell
 $env:ARTICLE_V3_DATASET_COUNT = "50000"
 $env:ARTICLE_V3_USE_FROZEN_ACCEPTED_CHECKPOINTS = "1"
-$env:ARTICLE_V3_RUN_ID = "article_full_50000_reduced_001"
+$env:ARTICLE_V3_RUN_ID = "article_full_50000_three_route_001"
 $env:ARTICLE_V3_REUSE_FROM_RUN_ID = "article_full_50000_003"
 uv run jupyter nbconvert --to notebook --execute main_closed_loop.ipynb `
   --output "main_closed_loop.$($env:ARTICLE_V3_RUN_ID).executed.ipynb" `
@@ -201,16 +228,24 @@ uv run jupyter nbconvert --to notebook --execute main_closed_loop.ipynb `
   --ExecutePreprocessor.timeout=-1
 ```
 
-Every rerun is created in a new self-contained directory. For the reduced
-response, the runner byte-copies and hash-verifies only the accepted
+Every rerun is created in a new self-contained directory. The three-route
+calculation uses runner schema 11 and cannot resume a schema-10 two-route
+assessment or optimization checkpoint as though route U were present. For the
+reduced response, the runner byte-copies and hash-verifies only the accepted
 mechanistic datasets and generation provenance from the declared source run.
-It derives the 161-coordinate responses in the target and refits all
-downstream artifacts. For the current revised run, use:
+It derives the 161-coordinate responses in the target, preserves routes S and
+M algorithmically, and creates the new route-U fits, root audits, optimization,
+exact replays, and three-route reports. The immutable run contract covers executable model,
+workflow, configuration, and environment files only. Mutable files below
+`article/` are deliberately outside that contract, so editing the manuscript
+or supplement cannot interrupt or invalidate a calculation. A runtime guard
+and regression tests prevent article documentation from being added to the
+computational source manifest. For the current revised run, use:
 
 ```powershell
 $env:PYTHONPATH = "."
 uv run python -u scripts\run_article_v3_5000.py `
-  --run-id article_full_50000_reduced_001 `
+  --run-id article_full_50000_three_route_001 `
   --reuse-from-run-id article_full_50000_003 `
   --use-frozen-accepted-checkpoints `
   --through complete
@@ -228,6 +263,7 @@ it is not the default article workload.
 
 An article result is releasable only when its artifact manifest verifies the
 complete attempt ledger, exactly 13,371/3,343 frozen rows and their provenance,
-all mechanistic and QP audits, trust gates, both optimization
-routes for every case, casewise common-reference checks, physical-violation
-ledger, and required reporting tables.
+all mechanistic, recycle-root, and QP audits, route-specific trust gates, all
+three optimization routes for every case, the 33-candidate/66-start maximum
+exact-reference ledger, pair-specific common-reference checks,
+physical-violation ledger, and required reporting tables.

@@ -23,13 +23,13 @@ def markdown(source: str):
 
 cells = [
     markdown(r"""
-# Manuscript-v3 closed-loop article run
+# Manuscript-v3 three-route closed-loop article run
 
 This notebook is the canonical, resumable interface to
 `scripts/run_article_v3_5000.py`. The production driver, rather than duplicated
 notebook code, owns candidate generation and deterministic replacement, two-start
-mechanistic acceptance, ridge selection,
-post-selection-holdout surrogate assessment, scientific admission gates, paired optimization,
+mechanistic acceptance, the whole-system and shared-unit ridge fits,
+post-selection-holdout surrogate assessment, route-specific scientific admission gates, three-route optimization,
 casewise exact-reference replay, convergence and physical audits, and
 Results/Discussion tables.
 
@@ -43,20 +43,26 @@ robustness cases plus the nominal case and a ten-layer
 Clarifier in the mechanistic model. Each retained 170-coordinate mechanistic
 response is deterministically reduced to 161 operational coordinates: mixer and
 reactor states, Clarifier outlet component flows, and the scalar
-Clarifier-solids inventory $M_{\rm cl}$. The surrogate predicts this reduced
-response and neither predicts nor reconstructs the ten-layer profile. Each
-route uses one deterministic box-center start per case and
-searches only that basin without claiming global optimality. The surrogate
-route primarily runs the seven-variable exact-QP active-set optimizer. If
+Clarifier-solids inventory $M_{\rm cl}$. Neither surrogate predicts or
+reconstructs the ten-layer profile. The existing whole-system projected
+surrogate is route $S$. Added route $U$ reuses one 20-output quadratic CSTR map
+in all five reactors, applies one 41-output quadratic Clarifier map, closes its
+recycle from two target-independent starts, and then uses the same joint
+161-coordinate physical projection as route $S$. The unchanged smooth
+mechanistic NLP is route $M$. Each route uses one deterministic box-center
+start per case and searches only that basin without claiming global
+optimality. Route $S$ primarily runs the seven-variable exact-QP active-set optimizer. If
 exact active-set derivatives are unavailable, deterministic value-only COBYQA
 cold-solves the unchanged projection QP at every distinct fallback trial and
-retains the best feasible visited incumbent. A budget-limited or
+retains the best feasible visited incumbent. Route $U$ uses deterministic
+value-only search; every distinct trial cold-solves and audits both recycle
+roots before cold-solving the common projection QP. A budget-limited or
 stationarity-unresolved incumbent is not called a local optimum. Each selected
-surrogate endpoint then receives a bounded two-scale exact-QP feasible poll;
+surrogate endpoint then receives a bounded two-scale complete-evaluation feasible poll;
 this can support a finite-direction, finite-resolution convergence
-qualification without claiming differentiable KKT stationarity. The surrogate
-route does not execute the retired embedded-KKT IPOPT problem or any of its
-seven gap-continuation stages. The direct smooth-mechanistic route retains its
+qualification without claiming differentiable KKT stationarity. Neither
+surrogate route executes the retired embedded-KKT IPOPT problem or any of its
+seven gap-continuation stages. Route $M$ retains its
 separate three-stage smoothing continuation. There is no wall-time ceiling in
 the full article run. The revised scientific admission thresholds are frozen
 and determine whether results are article-eligible. For this model-function
@@ -64,7 +70,7 @@ exercise they are advisory for execution: failures are recorded and propagated
 while later stages are attempted without refitting. Non-finite or incomplete
 objects needed by a later stage and run-integrity failures remain fatal.
 
-Every projection retains the same strictly convex QP over the reduced response.
+Both surrogate routes retain the same strictly convex QP over the reduced response.
 Its 75 equalities exclude the former layer-endpoint identities; outlet TSS is
 derived from the outlet component flows. Ten particulate-densification rows and
 two tight, division-free inventory-envelope rows form its 12 physical
@@ -83,9 +89,14 @@ artifact are excluded from the revised full article optimization.
     markdown(r"""
 ## Immutable-source execution
 
-The production contract hashes this notebook byte-for-byte. For a robust
-article execution, keep `main_closed_loop.ipynb` unmodified while the run is in
-progress. The safest command is to execute it into a different output file:
+The production contract hashes this notebook byte-for-byte. The three-route
+implementation uses runner schema 11 and must start in a fresh target directory;
+it cannot resume a two-route fit or optimization checkpoint as though that
+checkpoint contained route $U$. Accepted mechanistic generation artifacts may
+be copied from the declared predecessor only through the runner's verified
+generation-reuse path. For a robust article execution, keep
+`main_closed_loop.ipynb` unmodified while the run is in progress. The safest
+command is to execute it into a different output file:
 
 ```powershell
 uv run jupyter nbconvert --to notebook --execute main_closed_loop.ipynb `
@@ -116,6 +127,7 @@ from scripts.run_article_v3_5000 import (
     LEGACY_RUN_ID,
     OPTIMIZATION_PROTOCOL,
     RESPONSE_SCHEMA,
+    RUNNER_SCHEMA,
     RUN_ID_PATTERN,
     frozen_accepted_profile,
     main as run_article,
@@ -145,7 +157,7 @@ PROFILE = (
     else profile_for_dataset_total(DATASET_COUNT)
 )
 default_run_id = (
-    "article_full_50000_reduced_001" if USE_FROZEN_ACCEPTED
+    "article_full_50000_three_route_001" if USE_FROZEN_ACCEPTED
     else DEFAULT_RUN_ID if DATASET_COUNT == 5_000
     else f"article_full_{DATASET_COUNT}_001"
 )
@@ -193,10 +205,15 @@ if profile["development_count"] + profile["test_count"] != expected_total:
 contract_config = json.loads(
     (ROOT / "config" / "params_manuscript_v3.json").read_text(encoding="utf-8")
 )
-if contract_config.get("schema_version") != 4:
-    raise RuntimeError("The reduced-response configuration schema is required.")
+if contract_config.get("schema_version") != 5:
+    raise RuntimeError("The three-route reduced-response configuration schema is required.")
+if contract_config.get("execution", {}).get("runner_schema") != 11 or RUNNER_SCHEMA != 11:
+    raise RuntimeError("The three-route calculation requires runner schema 11.")
 surrogate_contract = contract_config["surrogate"]
 required_surrogate = {
+    "route_id": "surrogate",
+    "route_symbol": "S",
+    "architecture": "whole_system",
     "response_schema": RESPONSE_SCHEMA,
     "mechanistic_target_dimension": 170,
     "response_dimension": 161,
@@ -207,6 +224,59 @@ for field, expected in required_surrogate.items():
         raise RuntimeError(
             f"Surrogate response contract mismatch for {field}: "
             f"{surrogate_contract.get(field)!r} != {expected!r}"
+        )
+unit_contract = contract_config["shared_unit_surrogate"]
+required_unit = {
+    "route_id": "shared_unit",
+    "route_symbol": "U",
+    "response_schema": RESPONSE_SCHEMA,
+    "response_dimension": 161,
+    "reactor_count": 5,
+    "component_count": 20,
+    "reactor_input_dimension": 22,
+    "reactor_output_dimension": 20,
+    "clarifier_input_dimension": 22,
+    "clarifier_output_dimension": 41,
+    "quadratic_feature_count_per_local_model": 276,
+    "reactor_coefficient_shape": [20, 276],
+    "clarifier_coefficient_shape": [41, 276],
+    "shared_reactor_coefficients_across_all_stages": True,
+    "reactor_stage_indicator_included": False,
+    "internal_recycle_in_clarifier_input": False,
+    "fold_count": 5,
+    "development_reactor_transition_count": 66_855,
+    "post_selection_holdout_reactor_transition_count": 16_715,
+}
+for field, expected in required_unit.items():
+    if unit_contract.get(field) != expected:
+        raise RuntimeError(
+            f"Shared-unit contract mismatch for {field}: "
+            f"{unit_contract.get(field)!r} != {expected!r}"
+        )
+root_contract = unit_contract.get("recycle_closure", {})
+required_root = {
+    "solver": "scipy.optimize.least_squares",
+    "method": "trf",
+    "ftol": 1e-10,
+    "xtol": 1e-10,
+    "gtol": 1e-10,
+    "max_nfev": 1000,
+    "target_independent_starts": True,
+    "cold_solve_both_starts_at_every_distinct_control": True,
+    "cross_control_warm_start_permitted": False,
+    "both_starts_must_succeed": True,
+    "normalized_residual_infinity_maximum": 1e-8,
+    "mixer_scaled_agreement_infinity_maximum": 1e-6,
+    "assembled_response_scaled_agreement_infinity_maximum": 1e-6,
+    "required_jacobian_rank": 20,
+    "condition_number_times_machine_epsilon_maximum": 1e-8,
+    "uniqueness_claimed": False,
+}
+for field, expected in required_root.items():
+    if root_contract.get(field) != expected:
+        raise RuntimeError(
+            f"Shared-unit recycle-root contract mismatch for {field}: "
+            f"{root_contract.get(field)!r} != {expected!r}"
         )
 projection_contract = contract_config["projection"]
 required_projection = {
@@ -225,17 +295,38 @@ for field, expected in required_projection.items():
 if contract_config.get("trust", {}).get("diagnostics") != [
     "correction", "regularized_leverage", "particulate_split", "reactor_residual",
 ]:
-    raise RuntimeError("The revised four-diagnostic trust contract is required.")
+    raise RuntimeError("The unchanged route-S four-diagnostic trust contract is required.")
+required_unit_trust = [
+    "correction",
+    "reactor_regularized_leverage_stage_1",
+    "reactor_regularized_leverage_stage_2",
+    "reactor_regularized_leverage_stage_3",
+    "reactor_regularized_leverage_stage_4",
+    "reactor_regularized_leverage_stage_5",
+    "clarifier_regularized_leverage",
+    "particulate_split",
+    "reactor_residual",
+]
+trust_contract = contract_config.get("trust", {})
+if trust_contract.get("route_specific_diagnostics", {}).get("shared_unit") != required_unit_trust:
+    raise RuntimeError("The route-U local-leverage trust contract is required.")
+if trust_contract.get("shared_unit_root_acceptance_is_trust_inequality") is not False:
+    raise RuntimeError("Route-U root acceptance must remain outside upper trust inequalities.")
 optimization = contract_config["optimization"]
 article_config = contract_config["profiles"][profile["name"]]
 required_optimization = {
-    "protocol": "single_start_exact_qp_active_set",
-    "runner_protocol": "single_center_local_exact_qp_v1",
+    "protocol": "three_route_single_start_mixed_surrogate_v1",
+    "runner_protocol": "three_route_single_center_v2",
+    "route_ids": ["surrogate", "shared_unit", "direct"],
+    "route_count": 3,
     "surrogate_protocol": "seven_variable_exact_qp_single_start_v1",
+    "shared_unit_protocol": "shared_unit_value_only_single_center_v1",
     "direct_protocol": "smooth_direct_single_center_v1",
     "start_count": 1,
     "direct_start_count": 1,
     "surrogate_embedded_kkt_ipopt_enabled": False,
+    "shared_unit_analytical_derivatives_enabled": False,
+    "shared_unit_strong_first_order_certificate_available": False,
     "direct_smoothing_continuation_retained": True,
     "optimization_case_count": 11,
     "nominal_case_count": 1,
@@ -253,7 +344,7 @@ if article_config.get("optimization_start_count") != 1:
 if len(optimization.get("smooth_sequence", [])) != 3:
     raise RuntimeError("The direct route must retain its three smoothing stages.")
 if optimization.get("surrogate_gap_sequence") != []:
-    raise RuntimeError("The surrogate route must not execute gap-continuation stages.")
+    raise RuntimeError("The surrogate routes must not execute gap-continuation stages.")
 if OPTIMIZATION_PROTOCOL != optimization["runner_protocol"]:
     raise RuntimeError("The runner and configuration optimization protocols differ.")
 fallback = optimization.get("surrogate_active_set_derivative_fallback", {})
@@ -292,14 +383,22 @@ for field, expected in required_certification.items():
             f"{certification.get(field)!r} != {expected!r}"
         )
 reporting_contract = contract_config["reporting"]
-if reporting_contract.get("validation_protocol") != "casewise_exact_common_reference_v3":
-    raise RuntimeError("The casewise exact common-reference protocol is required.")
+if reporting_contract.get("validation_protocol") != "casewise_exact_common_reference_v4":
+    raise RuntimeError("The three-route casewise exact common-reference protocol is required.")
+if reporting_contract.get("required_routes") != ["surrogate", "shared_unit", "direct"]:
+    raise RuntimeError("The reporting denominator must contain routes S, U, and M.")
+if reporting_contract.get("pairwise_comparisons") != ["S-U", "S-M", "U-M"]:
+    raise RuntimeError("All three pairwise route comparisons are required.")
+if reporting_contract.get("selected_candidate_maximum") != 33:
+    raise RuntimeError("Eleven cases and three routes require up to 33 candidates.")
+if reporting_contract.get("exact_reference_start_maximum") != 66:
+    raise RuntimeError("The three-route comparison requires up to 66 exact starts.")
 if reporting_contract.get("untouched_test_smooth_reference_equivalence_executed") is not False:
     raise RuntimeError("Test-set-wide smooth/reference equivalence must remain retired.")
 if reporting_contract.get("common_reference_start_count_per_decision") != 2:
     raise RuntimeError("Every selected decision requires a two-start exact replay.")
-if reporting_contract.get("timing_protocol") != "robustness_casewise_aggregate_v1":
-    raise RuntimeError("Timing must be aggregated from the ten robustness cases.")
+if reporting_contract.get("timing_protocol") != "robustness_casewise_three_route_v2":
+    raise RuntimeError("Three-route timing must be aggregated from the ten robustness cases.")
 if reporting_contract.get("untouched_test_repeated_inference_benchmark_executed") is not False:
     raise RuntimeError("Repeated untouched-test timing must remain retired.")
 
@@ -307,6 +406,8 @@ display(pd.Series({
     "run_id": RUN_ID,
     "run_directory": str(RUN_ROOT),
     "reused_from_run_id": REUSE_FROM_RUN_ID,
+    "runner_schema": RUNNER_SCHEMA,
+    "optimization_routes": "S=surrogate, U=shared_unit, M=direct",
     "accepted_dataset_target": expected_total,
     "accepted_development_target": profile["development_count"],
     "accepted_post_selection_holdout_target": profile["test_count"],
@@ -318,25 +419,37 @@ display(pd.Series({
     "robustness_cases": profile["robustness_count"],
     "mechanistic_clarifier_layers": profile["layer_count"],
     "mechanistic_response_coordinates": surrogate_contract["mechanistic_target_dimension"],
-    "surrogate_response_coordinates": surrogate_contract["response_dimension"],
-    "surrogate_clarifier_coordinates": "M_cl only",
+    "response_coordinates_per_surrogate": surrogate_contract["response_dimension"],
+    "surrogate_clarifier_coordinates": "outlet flows plus M_cl; no layer profile",
+    "route_S_features": 406,
+    "route_U_reactor_features": unit_contract["quadratic_feature_count_per_local_model"],
+    "route_U_clarifier_features": unit_contract["quadratic_feature_count_per_local_model"],
+    "route_U_reactor_coefficients": unit_contract["reactor_coefficient_shape"],
+    "route_U_clarifier_coefficients": unit_contract["clarifier_coefficient_shape"],
+    "route_U_development_transitions": unit_contract["development_reactor_transition_count"],
+    "route_U_root_starts": 2,
     "projection_equalities": projection_contract["equality_count"],
     "projection_physical_inequalities": projection_contract["physical_inequality_count"],
     "projection_total_inequalities": projection_contract["inequality_count_including_nonnegativity"],
     "starts_per_route_and_case": 1,
-    "surrogate_optimization": optimization["surrogate_protocol"],
-    "surrogate_derivative_fallback": fallback["method"],
+    "route_S_optimization": optimization["surrogate_protocol"],
+    "route_U_optimization": optimization["shared_unit_protocol"],
+    "route_M_optimization": optimization["direct_protocol"],
+    "route_S_derivative_fallback": fallback["method"],
+    "route_U_value_only": True,
     "fallback_value_only": fallback["value_only"],
     "fallback_distinct_trial_qp": fallback["projection_qp_at_each_distinct_trial"],
     "fallback_evaluation_budget": fallback["maximum_function_evaluations"],
     "surrogate_embedded_ipopt_stages": 0,
-    "direct_optimization": optimization["direct_protocol"],
     "direct_smoothing_stages": len(optimization["smooth_sequence"]),
     "local_optimum_label_requires": fallback["local_optimum_label_requires"],
     "surrogate_local_certification": certification["protocol"],
     "casewise_validation": reporting_contract["validation_protocol"],
     "timing_protocol": reporting_contract["timing_protocol"],
     "timing_cases": reporting_contract["timing_case_count"],
+    "maximum_selected_candidates": reporting_contract["selected_candidate_maximum"],
+    "maximum_exact_reference_starts": reporting_contract["exact_reference_start_maximum"],
+    "pairwise_comparisons": ", ".join(reporting_contract["pairwise_comparisons"]),
     "holdout_smooth_reference_equivalence": "retired",
     "unresolved_incumbent_is_called_local_optimum": False,
     "global_optimality_claimed": False,
@@ -360,6 +473,7 @@ STAGE_ARTIFACTS = {
         f"inputs/contract_migrations/article-v3-reduced-response-{RUN_ID}.json",
         f"inputs/contract_migrations/article-v3-reduced-response-{RUN_ID}-retained.json",
         f"inputs/contract_migrations/article-v3-reduced-response-{RUN_ID}-reused-files.json",
+        f"inputs/contract_migrations/article-v3-three-route-{RUN_ID}.json",
         "inputs/contract_migrations/article-v3-generation-replacement-v1.json",
         "inputs/contract_migrations/article-v3-projection-audit-v1.json",
         "inputs/contract_migrations/article-v3-direct-active-set-v1.json",
@@ -392,6 +506,28 @@ STAGE_ARTIFACTS = {
         "datasets/development/surrogate_responses_inventory_v1.npz",
         "datasets/test/surrogate_responses_inventory_v1.npz",
         "models/ridge_complete.json",
+        "models/shared_unit_reactor_ridge.npz",
+        "models/shared_unit_clarifier_ridge.npz",
+        "models/shared_unit_fold_models.npz",
+        "models/shared_unit_complete.json",
+        "metrics/shared_unit_cross_validation.csv",
+        "metrics/shared_unit_reactor_cross_validation.csv",
+        "metrics/shared_unit_clarifier_cross_validation.csv",
+        "metrics/shared_unit_fold_membership.csv",
+        "metrics/shared_unit_teacher_forced_metrics.csv",
+        "metrics/shared_unit_development_oof_root_diagnostics.csv",
+        "metrics/shared_unit_trust_development_oof.csv",
+        "metrics/shared_unit_trust_limits.json",
+        "models/shared_unit_trust_calibration.npz",
+        "metrics/shared_unit_admission_gate.json",
+        "metrics/shared_unit_assessment_complete.json",
+        "predictions/shared_unit_post_selection_holdout.npz",
+        "metrics/shared_unit_post_selection_prediction_metrics.csv",
+        "metrics/shared_unit_post_selection_root_diagnostics.csv",
+        "metrics/shared_unit_trust_post_selection_holdout.csv",
+        "metrics/shared_unit_physical_violations_assessment.csv",
+        "metrics/shared_unit_projection_qp_diagnostics.csv",
+        "metrics/shared_unit_projection_feasibility_bound.csv",
         "metrics/assessment_complete.json",
         "metrics/admission_gate.json",
         "metrics/post_selection_prediction_metrics.csv",
@@ -404,6 +540,8 @@ STAGE_ARTIFACTS = {
         "metrics/convergence_poll_refinement.json",
         "metrics/selected_candidate_reference_evaluation.csv",
         "metrics/case_common_reference_comparison.csv",
+        "metrics/pairwise_common_reference_eligibility.csv",
+        "metrics/shared_unit_root_work.csv",
         "metrics/selected_response_physical_audit.csv",
         "metrics/physical_violations_all_analysis.csv",
         "metrics/robustness_case_timing.csv",
@@ -534,13 +672,21 @@ display(pd.DataFrame(
 
 This call reuses only the full mechanistic checkpoints. It maps each response
 to mixer, five reactors, two Clarifier outlet-flow vectors, and
-$M_{\rm cl}=\sum_\ell V_{{\rm cl},\ell}s_\ell$; performs the frozen five-fold
-ridge selection and four-diagnostic trust calibration; and evaluates the
-post-selection holdout descriptively. Development-only admission checks include
-raw out-of-fold nRMSE below one for both the complete 161-coordinate response
-and the inventory coordinate, plus successful projection audits. A failure is
-not waived or refitted; it is recorded, while execution continues because this
-run is currently serving as a complete model-function exercise.
+$M_{\rm cl}=\sum_\ell V_{{\rm cl},\ell}s_\ell$. Route $S$ retains its frozen
+five-fold whole-system ridge selection and four-diagnostic trust calibration.
+Route $U$ reuses the same plant folds, keeps all five reactor transitions from
+one plant together, selects $\gamma_{\rm rxn}$ and $\gamma_{\rm cl}$ separately,
+and reports both teacher-forced unit metrics and the complete free-running
+two-root recycle pipeline. The final local fits contain 66,855 development
+reactor transitions and 13,371 Clarifier rows. Both routes assemble 161
+coordinates and independently use the same projection QP.
+
+Development-only gates are route-specific. Each route requires complete and
+inventory raw out-of-fold nRMSE below one and successful projection audits;
+route $U$ additionally requires every two-start root residual, agreement, rank,
+conditioning, and finiteness audit. A failure is not waived or refitted and
+does not reclassify the other two routes. The post-selection holdout remains
+descriptive and cannot alter either fitted model or threshold.
 """),
     code(r"""
 invoke_stage("assessment")
@@ -549,9 +695,31 @@ gate = read_json("metrics/admission_gate.json")
 if gate:
     display(pd.Series(gate, name="value").to_frame())
 
+unit_gate = read_json("metrics/shared_unit_admission_gate.json")
+if unit_gate:
+    display(pd.Series(unit_gate, name="value").to_frame())
+
 prediction_path = RUN_ROOT / "metrics" / "post_selection_prediction_metrics.csv"
 if prediction_path.is_file():
     display(pd.read_csv(prediction_path))
+
+unit_prediction_path = (
+    RUN_ROOT / "metrics" / "shared_unit_post_selection_prediction_metrics.csv"
+)
+if unit_prediction_path.is_file():
+    display(pd.read_csv(unit_prediction_path))
+
+unit_root_path = RUN_ROOT / "metrics" / "shared_unit_post_selection_root_diagnostics.csv"
+if unit_root_path.is_file():
+    display(pd.read_csv(unit_root_path))
+
+unit_projection_path = RUN_ROOT / "metrics" / "shared_unit_projection_qp_diagnostics.csv"
+if unit_projection_path.is_file():
+    display(pd.read_csv(unit_projection_path))
+
+unit_bound_path = RUN_ROOT / "metrics" / "shared_unit_projection_feasibility_bound.csv"
+if unit_bound_path.is_file():
+    display(pd.read_csv(unit_bound_path))
 
 physical_path = RUN_ROOT / "metrics" / "physical_violations_assessment.csv"
 if physical_path.is_file():
@@ -567,35 +735,41 @@ if physical_path.is_file():
 ## 3. Optimize, independently replay, audit, and report
 
 This resumes the completed assessment, including any recorded scientific gate
-failure, and runs the nominal plus ten robustness cases. Both routes use one
-deterministic box-center start per case and search only that local basin. The
-surrogate route primarily uses the seven-variable exact-QP active-set solver
+failure, and runs the nominal plus ten robustness cases for routes $S$, $U$,
+and $M$. All three routes use one deterministic box-center start per case and
+search only that local basin. Route $S$ primarily uses the seven-variable exact-QP active-set solver
 with normalized constraints and no embedded-KKT IPOPT continuation. If its
 exact derivatives are unavailable, deterministic value-only COBYQA evaluates
 the same problem, cold-solving the unchanged projection QP at every distinct
-trial. The best feasible visited point is cold-replayed; a budget-limited or
-stationarity-unresolved result remains an incumbent, not a claimed optimum.
-The direct route retains only its separate three-stage smoothing continuation.
-Each retained surrogate endpoint is then certified either by its exact active-
-set KKT audit or by a deterministic two-scale feasible poll; the latter
+trial. Route $U$ is an independent value-only calculation: every distinct
+control first cold-solves the learned recycle closure from both declared starts,
+audits residual, agreement, rank, and conditioning, assembles its raw response,
+and then cold-solves the same projection QP. The best feasible visited point is
+cold-replayed; a budget-limited or stationarity-unresolved result remains an
+incumbent, not a claimed optimum. Route $M$ retains only its separate three-stage
+smoothing continuation. Direct recovery remains conditional only on a certified
+route-$S$ endpoint; route $U$ never changes route $M$'s algorithm or seed.
+Each retained surrogate endpoint receives a deterministic two-scale feasible
+poll; route $S$ may additionally retain its exact active-set KKT tier. The poll
 supports only finite-direction, finite-resolution convergence, not
 mathematical stationarity. A
-failed direct route receives at most one recovery solve initialized from the
-certified surrogate decision.
+failed route remains explicit rather than being replaced by another route.
 
-Both returned decisions are evaluated on the same exact, nonsmooth two-start
+Every available returned decision, at most 33, is evaluated on the same exact, nonsmooth two-start
 mechanistic model in each case. Branch-boundary ambiguity is reported as a
 qualifier instead of being mistaken for solver failure. This casewise replay
 replaces the retired whole-test smooth/reference equivalence sweep. The driver
 records raw and projected 161-coordinate responses together with layer-resolved
 smooth-direct and exact-reference states. Clarifier-flux and layer-envelope
 residuals are evaluated only where a mechanistic layer state exists; the
-surrogate trust region contains correction, leverage, particulate-split, and
-reactor-residual diagnostics. Mass-conservation and non-negativity audits are
+route-$S$ trust region contains its whole-system leverage, whereas route $U$
+contains five reactor leverages and one Clarifier leverage. Root acceptance is
+an evaluation prerequisite, not an upper trust inequality. Mass-conservation and non-negativity audits are
 written before the article tables. A failed or
 unresolved case remains in the denominator and does not suppress subsequent
 cases or downstream audits. Runtime summaries are calculated only from the
-durations recorded in robustness cases 01--10; no repeated timing benchmark is
+durations recorded for all three routes in robustness cases 01--10, including
+route-$U$ root work; no repeated timing benchmark is
 run over the post-selection holdout block. There is no 10-minute ceiling in
 this phase.
 """),
@@ -639,7 +813,11 @@ display(pd.DataFrame(
 If execution is interrupted, rerun the setup and helper cells with the same
 target and source IDs, then rerun the cell for the desired terminal stage.
 Calling `complete` is sufficient to resume every missing prerequisite in that
-target directory. A later rerun must use a new target ID and name its prior run
+target directory. A schema-10 two-route directory is never resumed as a
+schema-11 three-route directory. The first three-route calculation uses a fresh
+target such as `article_full_50000_three_route_001` and may reuse only verified
+mechanistic-generation artifacts from its declared predecessor. A later rerun
+must use a new target ID and name its prior run
 with `ARTICLE_V3_REUSE_FROM_RUN_ID`; the driver creates another self-contained,
 hash-pinned copy rather than overwriting the earlier run. Candidate and
 accepted-row checkpoints are accepted only when their source, profile, input,
@@ -674,7 +852,10 @@ def build_notebook():
                 "interface": "scripts/run_article_v3_5000.py",
                 "profile": "article_frozen_16714",
                 "response_schema": "clarifier_inventory_v1",
-                "schema": 6,
+                "schema": 7,
+                "runner_schema": 11,
+                "routes": ["surrogate", "shared_unit", "direct"],
+                "route_symbols": {"surrogate": "S", "shared_unit": "U", "direct": "M"},
             },
         },
     )

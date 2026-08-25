@@ -6,7 +6,8 @@ split (40,000/10,000). This driver creates a source-bound result tree and never
 reads a preflight artifact. Expensive stages finish with atomic manifests.
 
 Optimization enters through :func:`run_optimization_stage`, which evaluates
-one deterministic local attempt for each route in each of eleven article
+one deterministic local attempt for each of the whole-system surrogate,
+shared-unit surrogate, and smooth-mechanistic routes in each of eleven article
 cases and publishes convergence certification, exact common-reference replay,
 physical-audit, and reporting checkpoints.  The former holdout-wide
 smooth/reference equivalence sweep is retained only as legacy code and is not
@@ -22,6 +23,7 @@ from datetime import datetime, timezone
 from hashlib import sha256
 from importlib.metadata import PackageNotFoundError, version
 import json
+import math
 import os
 from pathlib import Path
 import platform
@@ -49,6 +51,7 @@ from closed_loop.manuscript_v3 import (
     create_design,
     cross_validate_ridge,
     reduce_mechanistic_responses,
+    response_coordinate_names,
     violation_record,
 )
 from closed_loop.model import (
@@ -118,6 +121,28 @@ from closed_loop.v3_surrogate_nlp import (
     cold_reproject,
     solve_surrogate_exact_qp_local,
 )
+from closed_loop.v3_shared_unit import (
+    SharedUnitAssets,
+    SharedUnitCase,
+    SharedUnitClosureDiagnostics,
+    SharedUnitEvaluation,
+    SharedUnitFitResult,
+    SharedUnitLeverageContract,
+    SharedUnitModels,
+    SharedUnitOptimizationResult,
+    SharedUnitOptimizationSettings,
+    SharedUnitRidgeScore,
+    SharedUnitTrustCalibration,
+    SharedUnitTrustLimits,
+    build_shared_unit_assets,
+    calibrate_shared_unit_trust,
+    cross_validate_shared_unit_models,
+    evaluate_shared_unit,
+    extract_shared_unit_training,
+    optimize_shared_unit_case,
+    project_shared_unit_raw,
+    solve_shared_unit_closure,
+)
 from closed_loop.v3_trust import calibrate_trust_diagnostics
 
 
@@ -125,13 +150,14 @@ ROOT = Path(__file__).resolve().parents[1]
 RESULTS_ROOT = ROOT / "results" / "article_v3"
 LEGACY_RUN_ID = "article_full_5000_001"
 DEFAULT_RUN_ID = "article_full_5000_002"
-RUNNER_SCHEMA = 10
+RUNNER_SCHEMA = 11
 RESPONSE_SCHEMA = "clarifier_inventory_v1"
 ASSESSMENT_GATE_EXECUTION_POLICY = "advisory_continue"
 DIRECT_SINGLE_CENTER_PROTOCOL = "smooth_direct_single_center_v1"
-OPTIMIZATION_PROTOCOL = "single_center_local_exact_qp_v1"
-COMPARISON_PROTOCOL = "casewise_exact_common_reference_v3"
-TIMING_PROTOCOL = "robustness_casewise_aggregate_v1"
+SHARED_UNIT_SINGLE_CENTER_PROTOCOL = "shared_unit_value_only_single_center_v1"
+OPTIMIZATION_PROTOCOL = "three_route_single_center_v2"
+COMPARISON_PROTOCOL = "casewise_exact_common_reference_v4"
+TIMING_PROTOCOL = "robustness_casewise_three_route_v2"
 RUN_ID_PATTERN = re.compile(
     r"^article_full_(?:5000|50000)_[A-Za-z0-9][A-Za-z0-9_-]*$"
 )
@@ -145,22 +171,26 @@ SOURCE_FILES = (
     "scripts/run_article_v3_5000.py",
     "scripts/build_main_closed_loop_v3.py",
     "main_closed_loop.ipynb",
+    "closed_loop/__init__.py",
+    "closed_loop/design.py",
     "closed_loop/model.py",
     "closed_loop/manuscript_v3.py",
     "closed_loop/projection.py",
+    "closed_loop/surrogate.py",
+    "closed_loop/workflow.py",
     "closed_loop/v3_smooth.py",
     "closed_loop/v3_surrogate_nlp.py",
+    "closed_loop/v3_shared_unit.py",
     "closed_loop/v3_active_set.py",
     "closed_loop/v3_derivative_audit.py",
     "closed_loop/v3_trust.py",
     "closed_loop/v3_reporting.py",
     "closed_loop/v3_replacement_generation.py",
     "config/params_manuscript_v3.json",
-    "article/wip_v3/manuscript.tex",
-    "article/wip_v3/supplementary_material.tex",
     "pyproject.toml",
     "uv.lock",
 )
+DOCUMENTATION_SOURCE_PREFIXES = ("article/",)
 DESIGN_ARRAYS = (
     "development_decisions",
     "development_influents",
@@ -172,7 +202,7 @@ DESIGN_ARRAYS = (
 # A reduced-response fork may retain only files that define or audit the
 # mechanistic generation.  In particular, do not copy arbitrary future files
 # merely because they were placed below ``datasets``: fitted-response arrays
-# and other downstream products must be rebuilt under schema 10.
+# and other downstream products must be rebuilt under the current schema.
 REDUCED_FORK_DATASET_FILES = frozenset({
     "datasets/design.npz",
     "datasets/effective_design.npz",
@@ -202,6 +232,14 @@ REDUCED_FORK_DATASET_PREFIXES = tuple(
     for block in ("development", "test")
     for directory in ("rows", "source_rows", "attempts")
 )
+# Frozen mechanistic rows may be reused across reporting/surrogate revisions,
+# but never across a change to the mechanistic equations or numerical
+# environment that produced them; the copied design itself is hash-verified.
+REDUCED_FORK_REQUIRED_UNCHANGED_SOURCE_FILES = frozenset({
+    "closed_loop/model.py",
+    "pyproject.toml",
+    "uv.lock",
+})
 REDUCED_FORK_INPUT_FILES = (
     "inputs/generator_records.json",
     "inputs/partial_generation_fork.json",
@@ -248,6 +286,27 @@ class AssessmentRecoveryMigrationAuthorization:
     required_artifact_digests: Mapping[str, str]
     expected_effective_design_digest: str
     expected_ridge_input_digest: str
+
+
+@dataclass(frozen=True)
+class FailedAssessmentRuntimeMigrationAuthorization:
+    """Pinned recovery for a source-level failure after expensive fitting."""
+
+    migration_id: str
+    run_id: str
+    authorized_date: str
+    reason: str
+    runner_schema: int
+    predecessor_source_digest: str
+    predecessor_contract_file_digest: str
+    required_prior_migration_ids: tuple[str, ...]
+    predecessor_source_snapshot: str
+    allowed_changed_source_files: frozenset[str]
+    required_changed_source_files: frozenset[str]
+    required_artifact_digests: Mapping[str, str]
+    expected_failure_stage: str
+    expected_error_type: str
+    expected_error_message: str
 
 
 @dataclass(frozen=True)
@@ -418,6 +477,55 @@ ASSESSMENT_RECOVERY_MIGRATION = AssessmentRecoveryMigrationAuthorization(
     expected_ridge_input_digest=(
         "6466850f5d4ac2e651e641e2e19b00d9fe9c9e5412621fbe7aefb6d121d5028d"
     ),
+)
+
+
+SHARED_UNIT_MATH_IMPORT_RECOVERY_MIGRATION = (
+    FailedAssessmentRuntimeMigrationAuthorization(
+        migration_id="article-v3-shared-unit-math-import-v1",
+        run_id="article_full_50000_three_route_001",
+        authorized_date="2026-08-25",
+        reason=(
+            "Repair the missing standard-library math import exposed during the "
+            "shared-unit post-selection holdout while retaining only completed, "
+            "hash-verified generation and ridge-fit checkpoints."
+        ),
+        runner_schema=11,
+        predecessor_source_digest=(
+            "955b8d281ef35fde4c7597345dae592f99fc22ca2b6863b04382f6e694cc7520"
+        ),
+        predecessor_contract_file_digest=(
+            "91785da3d0c03b7bcfc744d6a557947e5d1fde8b898ee930be2b5e3e3b61c3b7"
+        ),
+        required_prior_migration_ids=(
+            "article-v3-frozen-accepted-v1",
+            "article-v3-reduced-response-article_full_50000_three_route_001",
+        ),
+        predecessor_source_snapshot=(
+            "inputs/contract_migrations/"
+            "article-v3-shared-unit-math-import-v1-predecessor-source"
+        ),
+        allowed_changed_source_files=frozenset({
+            "scripts/run_article_v3_5000.py",
+        }),
+        required_changed_source_files=frozenset({
+            "scripts/run_article_v3_5000.py",
+        }),
+        required_artifact_digests={
+            "datasets/frozen_accepted_complete.json": (
+                "c1f374c0242d62d78247ddf0746347e4bba51d68ca048b1af5a2fa4c8b99a55c"
+            ),
+            "models/ridge_complete.json": (
+                "606eaff8b631770d3b9023cf3b15dc6ece56747c0fe8cbd17f6ea494ec884986"
+            ),
+            "models/shared_unit_complete.json": (
+                "99af3fa6842b47829b9a56389784556b9e4a82afa90d864938e6ef56b924b7f6"
+            ),
+        },
+        expected_failure_stage="assessment",
+        expected_error_type="NameError",
+        expected_error_message="name 'math' is not defined",
+    )
 )
 
 
@@ -845,6 +953,25 @@ class AnalysisBundle:
     surrogate_assets: Any
     assessment: AssessmentResult | None
     gate: dict[str, Any]
+    shared_unit_fit: Any | None = None
+    shared_unit_assets: Any | None = None
+    shared_unit_assessment: Any | None = None
+    shared_unit_gate: dict[str, Any] | None = None
+
+    @property
+    def all_surrogate_gates_passed(self) -> bool:
+        """Return the scientific three-route admission status.
+
+        The execution policy remains advisory, but the complete three-route
+        comparison is scientifically eligible only when both statistical
+        architectures pass their independently frozen development gates.
+        """
+
+        return bool(
+            self.passed
+            and self.shared_unit_gate is not None
+            and self.shared_unit_gate.get("passed") is True
+        )
 
 
 @dataclass(frozen=True)
@@ -986,11 +1113,21 @@ def file_digest(path: Path) -> str:
 
 
 def source_file_digests() -> dict[str, str]:
+    documentation_files = tuple(
+        relative
+        for relative in SOURCE_FILES
+        if Path(relative).as_posix().startswith(DOCUMENTATION_SOURCE_PREFIXES)
+    )
+    if documentation_files:
+        raise RuntimeError(
+            "computational source manifest must exclude mutable article documentation: "
+            + ", ".join(documentation_files)
+        )
     result: dict[str, str] = {}
     for relative in SOURCE_FILES:
         path = ROOT / relative
         if not path.is_file():
-            raise RuntimeError(f"required article source is missing: {path}")
+            raise RuntimeError(f"required computational source is missing: {path}")
         result[relative] = file_digest(path)
     return result
 
@@ -2262,6 +2399,200 @@ def _migrate_assessment_recovery_contract(
     _validate_migration_history(run, migrated)
 
 
+def _validate_retained_failed_assessment_checkpoints(
+    run: Path,
+    authorization: FailedAssessmentRuntimeMigrationAuthorization,
+) -> dict[str, Any]:
+    """Validate the exact failed state and the completed stages it may retain."""
+
+    pinned = _validate_pinned_artifacts(run, authorization.required_artifact_digests)
+    state = _load_json_object(run / "run_state.json", description="failed run state")
+    if (
+        state.get("stage") != authorization.expected_failure_stage
+        or state.get("status") != "failed"
+        or state.get("error_type") != authorization.expected_error_type
+        or state.get("message") != authorization.expected_error_message
+    ):
+        raise RuntimeError("runtime recovery is not authorized for this failure state")
+
+    contract = _load_json_object(run / "inputs" / "contract.json", description="run contract")
+    history = contract.get("contract_migrations")
+    if not isinstance(history, list) or not history:
+        raise RuntimeError("runtime recovery requires prior migration history")
+    latest_record = _load_json_object(
+        run / str(history[-1].get("record", "")),
+        description="predecessor migration record",
+    )
+    retained_reference = latest_record.get("retained_stage_manifest")
+    if not isinstance(retained_reference, Mapping):
+        raise RuntimeError("predecessor migration omits its retained stages")
+    retained_path = (run / str(retained_reference.get("path", ""))).resolve()
+    migrations_root = (run / "inputs" / "contract_migrations").resolve()
+    if (
+        migrations_root not in retained_path.parents
+        or not retained_path.is_file()
+        or file_digest(retained_path) != retained_reference.get("sha256")
+    ):
+        raise RuntimeError("predecessor retained-stage manifest changed")
+    prior_retention = _load_json_object(
+        retained_path, description="predecessor retained stages",
+    )
+    prior_stages = prior_retention.get("stages")
+    if not isinstance(prior_stages, Mapping):
+        raise RuntimeError("predecessor retained-stage manifest is incomplete")
+
+    stages: dict[str, Any] = {}
+    run_root = run.resolve()
+    for stage, record in prior_stages.items():
+        if not isinstance(record, Mapping):
+            raise RuntimeError(f"retained stage is invalid: {stage}")
+        checkpoint = (run / str(record.get("checkpoint", ""))).resolve()
+        artifacts = record.get("artifacts", {})
+        if (
+            run_root not in checkpoint.parents
+            or not checkpoint.is_file()
+            or file_digest(checkpoint) != record.get("checkpoint_sha256")
+            or not isinstance(artifacts, Mapping)
+            or (bool(artifacts) and not _artifacts_match(run, artifacts))
+        ):
+            raise RuntimeError(f"retained stage changed before recovery: {stage}")
+        stages[str(stage)] = dict(record)
+
+    for stage, relative in (
+        ("ridge", "models/ridge_complete.json"),
+        ("shared_unit_fit", "models/shared_unit_complete.json"),
+    ):
+        checkpoint = run / relative
+        marker = _load_json_object(checkpoint, description=f"{stage} checkpoint")
+        artifacts = marker.get("artifacts")
+        if (
+            marker.get("source_digest") != authorization.predecessor_source_digest
+            or not isinstance(artifacts, Mapping)
+            or not _artifacts_match(run, artifacts)
+        ):
+            raise RuntimeError(f"completed {stage} checkpoint is not reusable")
+        stages[stage] = {
+            "checkpoint": relative,
+            "checkpoint_sha256": file_digest(checkpoint),
+            "artifact_source_digest": authorization.predecessor_source_digest,
+            "artifacts": dict(artifacts),
+        }
+    return {
+        "schema": 3,
+        "predecessor_source_digest": authorization.predecessor_source_digest,
+        "pinned_artifacts": pinned,
+        "stages": stages,
+    }
+
+
+def _migrate_failed_assessment_runtime_contract(
+    run: Path,
+    previous: Mapping[str, Any],
+    successor: Mapping[str, Any],
+    authorization: FailedAssessmentRuntimeMigrationAuthorization,
+) -> None:
+    """Apply one source-only recovery while retaining verified completed fits."""
+
+    contract_path = run / "inputs" / "contract.json"
+    history = previous.get("contract_migrations")
+    if str(previous.get("run_id")) != authorization.run_id:
+        raise RuntimeError("runtime recovery is not authorized for this run id")
+    if not isinstance(history, list):
+        raise RuntimeError("runtime recovery requires migration history")
+    history_ids = tuple(str(item.get("migration_id", "")) for item in history)
+    if history_ids != authorization.required_prior_migration_ids:
+        raise RuntimeError("runtime recovery has unexpected prior history")
+    _validate_migration_history(run, previous)
+    if (
+        int(previous.get("runner_schema", -1)) != authorization.runner_schema
+        or int(successor.get("runner_schema", -1)) != authorization.runner_schema
+        or previous.get("source_digest") != authorization.predecessor_source_digest
+        or file_digest(contract_path) != authorization.predecessor_contract_file_digest
+    ):
+        raise RuntimeError("existing contract is not the pinned runtime predecessor")
+    old_files = previous.get("source_files")
+    new_files = successor.get("source_files")
+    if not isinstance(old_files, Mapping) or not isinstance(new_files, Mapping):
+        raise RuntimeError("runtime recovery requires complete source manifests")
+    changed = {
+        name for name in set(old_files) | set(new_files)
+        if old_files.get(name) != new_files.get(name)
+    }
+    unauthorized = changed - authorization.allowed_changed_source_files
+    missing_required = authorization.required_changed_source_files - changed
+    if unauthorized or missing_required:
+        raise RuntimeError(
+            "runtime recovery refused arbitrary source drift; "
+            f"unauthorized={sorted(unauthorized)}, missing_required={sorted(missing_required)}"
+        )
+    ignored = {"source_digest", "source_files", "contract_migrations"}
+    if (
+        {key: value for key, value in previous.items() if key not in ignored}
+        != {key: value for key, value in successor.items() if key not in ignored}
+    ):
+        raise RuntimeError("runtime recovery cannot alter the run contract")
+
+    source_snapshot = _source_snapshot_manifest(
+        run, authorization.predecessor_source_snapshot, old_files,
+    )
+    if source_snapshot["source_digest"] != authorization.predecessor_source_digest:
+        raise RuntimeError("runtime predecessor source snapshot is inconsistent")
+    retention = _validate_retained_failed_assessment_checkpoints(run, authorization)
+    migrations_directory = run / "inputs" / "contract_migrations"
+    predecessor_archive = (
+        migrations_directory / f"{authorization.migration_id}-predecessor-contract.json"
+    )
+    retention_path = migrations_directory / f"{authorization.migration_id}-retained.json"
+    record_path = migrations_directory / f"{authorization.migration_id}.json"
+    predecessor_bytes = contract_path.read_bytes()
+    atomic_bytes(predecessor_archive, predecessor_bytes)
+    atomic_json(retention_path, retention)
+    record = {
+        "schema": 1,
+        "migration_id": authorization.migration_id,
+        "authorized_date": authorization.authorized_date,
+        "reason": authorization.reason,
+        "predecessor": {
+            "runner_schema": previous["runner_schema"],
+            "source_digest": previous["source_digest"],
+            "source_files": dict(old_files),
+            "contract_file_digest": authorization.predecessor_contract_file_digest,
+            "archived_contract": predecessor_archive.relative_to(run).as_posix(),
+            "archived_contract_digest": file_digest(predecessor_archive),
+        },
+        "predecessor_source_snapshot": source_snapshot,
+        "successor": {
+            "runner_schema": successor["runner_schema"],
+            "source_digest": successor["source_digest"],
+            "source_files": dict(new_files),
+        },
+        "changed_source_files": {
+            name: {"old": old_files.get(name), "new": new_files.get(name)}
+            for name in sorted(changed)
+        },
+        "retained_stage_manifest": {
+            "path": retention_path.relative_to(run).as_posix(),
+            "sha256": file_digest(retention_path),
+            "source_digest": authorization.predecessor_source_digest,
+        },
+        "applied_at_utc": datetime.now(timezone.utc).isoformat(),
+    }
+    atomic_json(record_path, record)
+    history_entry = {
+        "migration_id": authorization.migration_id,
+        "record": record_path.relative_to(run).as_posix(),
+        "record_digest": file_digest(record_path),
+        "predecessor_contract": predecessor_archive.relative_to(run).as_posix(),
+        "predecessor_contract_digest": file_digest(predecessor_archive),
+        "predecessor_source_digest": previous["source_digest"],
+        "successor_source_digest": successor["source_digest"],
+    }
+    migrated = dict(successor)
+    migrated["contract_migrations"] = [*history, history_entry]
+    atomic_json(contract_path, migrated)
+    _validate_migration_history(run, migrated)
+
+
 def _validate_retained_optimization_protocol_checkpoints(
     run: Path,
     previous: Mapping[str, Any],
@@ -2850,6 +3181,7 @@ def establish_contract(
     authorize_casewise_common_reference_migration: bool = False,
     authorize_convergence_poll_refinement_migration: bool = False,
     authorize_casewise_timing_migration: bool = False,
+    authorize_shared_unit_runtime_recovery_migration: bool = False,
 ) -> None:
     if sum(map(bool, (
         authorize_generation_replacement_migration,
@@ -2858,6 +3190,7 @@ def establish_contract(
         authorize_casewise_common_reference_migration,
         authorize_convergence_poll_refinement_migration,
         authorize_casewise_timing_migration,
+        authorize_shared_unit_runtime_recovery_migration,
     ))) > 1:
         raise ValueError("authorize exactly one source-contract migration at a time")
     path = run / "inputs" / "contract.json"
@@ -2905,6 +3238,14 @@ def establish_contract(
                 previous,
                 normalized,
                 CASEWISE_TIMING_AGGREGATION_MIGRATION,
+            )
+            return
+        if authorize_shared_unit_runtime_recovery_migration:
+            _migrate_failed_assessment_runtime_contract(
+                run,
+                previous,
+                normalized,
+                SHARED_UNIT_MATH_IMPORT_RECOVERY_MIGRATION,
             )
             return
         raise RuntimeError(
@@ -3050,6 +3391,22 @@ def _initialize_reduced_response_fork(
     and report artifact is intentionally excluded from this fork.
     """
 
+    source_runner_schema = int(source_contract.get("runner_schema", -1))
+    if source_runner_schema == 10:
+        migration_slug = "shared-unit-route"
+        retention_policy = "generation_only_for_shared_unit_route_v1"
+        migration_reason = (
+            "User-authorized addition of the shared-unit surrogate as a third "
+            "optimization route while preserving full mechanistic checkpoints."
+        )
+    else:
+        migration_slug = "reduced-response"
+        retention_policy = "generation_only_for_clarifier_inventory_response_v1"
+        migration_reason = (
+            "User-authorized replacement of layer-wise surrogate outputs by one "
+            "clarifier-solids inventory while preserving full mechanistic checkpoints."
+        )
+
     source_root = source_run.resolve()
     run.parent.mkdir(parents=True, exist_ok=True)
     temporary_owner = tempfile.TemporaryDirectory(prefix=".r-", dir=run.parent)
@@ -3097,7 +3454,7 @@ def _initialize_reduced_response_fork(
 
     migrations_directory = temporary / "inputs" / "contract_migrations"
     migrations_directory.mkdir(parents=True, exist_ok=True)
-    migration_id = f"article-v3-reduced-response-{run.name}"
+    migration_id = f"article-v3-{migration_slug}-{run.name}"
     predecessor_path = migrations_directory / f"{migration_id}-predecessor-contract.json"
     atomic_bytes(predecessor_path, (source_run / "inputs" / "contract.json").read_bytes())
 
@@ -3150,7 +3507,7 @@ def _initialize_reduced_response_fork(
         }
     retained = {
         "schema": 1,
-        "policy": "generation_only_for_clarifier_inventory_response_v1",
+        "policy": retention_policy,
         "predecessor_source_digest": source_contract["source_digest"],
         "stages": stages,
     }
@@ -3176,10 +3533,7 @@ def _initialize_reduced_response_fork(
         "schema": 1,
         "migration_id": migration_id,
         "authorized_date": "2026-08-25",
-        "reason": (
-            "User-authorized replacement of layer-wise surrogate outputs by one "
-            "clarifier-solids inventory while preserving full mechanistic checkpoints."
-        ),
+        "reason": migration_reason,
         "run_fork": {
             "source_run_id": source_run.name,
             "target_run_id": run.name,
@@ -3305,7 +3659,7 @@ def initialize_reused_run(
         if old_files.get(name) != new_files.get(name)
     }
     is_reduced_response_fork = bool(
-        int(source_contract.get("runner_schema", -1)) == 9
+        int(source_contract.get("runner_schema", -1)) in {9, 10}
         and int(successor_contract.get("runner_schema", -1)) == RUNNER_SCHEMA
         and successor_contract.get("response_schema", {}).get("name")
         == RESPONSE_SCHEMA
@@ -3318,6 +3672,26 @@ def initialize_reused_run(
         == successor_contract.get("dataset_protocol")
     )
     if is_reduced_response_fork:
+        missing_generation_sources = (
+            REDUCED_FORK_REQUIRED_UNCHANGED_SOURCE_FILES
+            - set(old_files)
+        ) | (
+            REDUCED_FORK_REQUIRED_UNCHANGED_SOURCE_FILES
+            - set(new_files)
+        )
+        if missing_generation_sources:
+            raise RuntimeError(
+                "generation-only fork omits generation-defining source hashes: "
+                + ", ".join(sorted(missing_generation_sources))
+            )
+        changed_generation_sources = (
+            changed & REDUCED_FORK_REQUIRED_UNCHANGED_SOURCE_FILES
+        )
+        if changed_generation_sources:
+            raise RuntimeError(
+                "generation-only fork cannot reuse mechanistic rows after changes to: "
+                + ", ".join(sorted(changed_generation_sources))
+            )
         _initialize_reduced_response_fork(
             run,
             source_run=source_run,
@@ -3685,7 +4059,7 @@ def assert_source_unchanged(expected: Mapping[str, str]) -> None:
         changed = sorted(set(current) | set(expected))
         changed = [name for name in changed if current.get(name) != expected.get(name)]
         raise RuntimeError(
-            "article source changed during the run; do not mix artifacts. "
+            "computational source changed during the run; do not mix artifacts. "
             f"Changed files: {', '.join(changed)}"
         )
 
@@ -4648,6 +5022,1064 @@ def fit_or_resume_ridge(
     return result.model, result.out_of_fold_raw, input_id
 
 
+def _shared_unit_input_digest(
+    decisions: np.ndarray,
+    reduced_targets: np.ndarray,
+    plant_fold_membership: np.ndarray,
+) -> str:
+    return array_digest(
+        development_decisions=np.asarray(decisions, dtype="<f8"),
+        development_reduced_targets=np.asarray(reduced_targets, dtype="<f8"),
+        plant_fold_membership=np.asarray(plant_fold_membership, dtype="<i8"),
+    )
+
+
+def _save_shared_unit_fit(
+    run: Path,
+    result: SharedUnitFitResult,
+    training: Any,
+    *,
+    input_id: str,
+    source_id: str,
+) -> None:
+    """Persist both local fits and their leakage-free grouped-CV evidence."""
+
+    arrays = result.models.to_arrays()
+    reactor_path = run / "models" / "shared_unit_reactor_ridge.npz"
+    clarifier_path = run / "models" / "shared_unit_clarifier_ridge.npz"
+    folds_path = run / "models" / "shared_unit_fold_models.npz"
+    score_path = run / "metrics" / "shared_unit_cross_validation.csv"
+    reactor_score_path = run / "metrics" / "shared_unit_reactor_cross_validation.csv"
+    clarifier_score_path = run / "metrics" / "shared_unit_clarifier_cross_validation.csv"
+    membership_path = run / "metrics" / "shared_unit_fold_membership.csv"
+    teacher_path = run / "metrics" / "shared_unit_teacher_forced_metrics.csv"
+    marker_path = run / "models" / "shared_unit_complete.json"
+
+    common = {
+        "input_digest": np.asarray(input_id),
+        "source_digest": np.asarray(source_id),
+    }
+    atomic_npz(
+        reactor_path,
+        **common,
+        **{name: value for name, value in arrays.items() if name.startswith("reactor_")},
+    )
+    atomic_npz(
+        clarifier_path,
+        **common,
+        **{name: value for name, value in arrays.items() if name.startswith("clarifier_")},
+    )
+    fold_arrays: dict[str, np.ndarray] = {
+        **common,
+        "plant_fold_membership": np.asarray(result.plant_fold_membership, dtype=int),
+        "reactor_out_of_fold_raw": np.asarray(result.reactor_out_of_fold_raw, dtype=float),
+        "clarifier_out_of_fold_raw": np.asarray(result.clarifier_out_of_fold_raw, dtype=float),
+        "elapsed_seconds": np.asarray(result.elapsed_seconds),
+    }
+    for fold, models in enumerate(result.fold_models, start=1):
+        for name, value in models.to_arrays().items():
+            fold_arrays[f"fold_{fold}_{name}"] = value
+    atomic_npz(folds_path, **fold_arrays)
+    scores = result.score_frame()
+    atomic_dataframe(score_path, scores)
+    atomic_dataframe(
+        reactor_score_path,
+        scores.loc[scores["family"].eq("reactor")].reset_index(drop=True),
+    )
+    atomic_dataframe(
+        clarifier_score_path,
+        scores.loc[scores["family"].eq("clarifier")].reset_index(drop=True),
+    )
+    atomic_dataframe(membership_path, pd.DataFrame({
+        "plant": np.arange(len(result.plant_fold_membership)),
+        "fold": result.plant_fold_membership,
+    }))
+    teacher_rows: list[dict[str, Any]] = []
+
+    def add_teacher_metric(
+        family: str,
+        block: str,
+        prediction: np.ndarray,
+        target: np.ndarray,
+        scale: np.ndarray,
+    ) -> None:
+        teacher_rows.append({
+            "family": family,
+            "block": block,
+            "row_count": len(prediction),
+            "response_count": prediction.shape[1],
+            "all_finite": bool(np.all(np.isfinite(prediction))),
+            "teacher_forced_raw_nrmse": float(np.sqrt(np.mean(
+                ((prediction - target) / scale) ** 2
+            ))),
+            "final_model_scale_minimum": float(np.min(scale)),
+        })
+
+    add_teacher_metric(
+        "reactor",
+        "all_stages",
+        result.reactor_out_of_fold_raw,
+        training.reactor_targets,
+        result.models.reactor.response_scale,
+    )
+    for stage in range(training.stage_count):
+        selected_rows = training.reactor_stage_index == stage
+        add_teacher_metric(
+            "reactor",
+            f"stage_{stage + 1}",
+            result.reactor_out_of_fold_raw[selected_rows],
+            training.reactor_targets[selected_rows],
+            result.models.reactor.response_scale,
+        )
+    clarifier_blocks = {
+        "complete": np.arange(2 * training.component_count + 1),
+        "overflow_flow": np.arange(training.component_count),
+        "underflow_flow": np.arange(
+            training.component_count, 2 * training.component_count,
+        ),
+        "inventory": np.asarray([2 * training.component_count]),
+    }
+    for block, indices in clarifier_blocks.items():
+        add_teacher_metric(
+            "clarifier",
+            block,
+            result.clarifier_out_of_fold_raw[:, indices],
+            training.clarifier_targets[:, indices],
+            result.models.clarifier.response_scale[indices],
+        )
+    atomic_dataframe(teacher_path, pd.DataFrame(teacher_rows))
+    paths = (
+        reactor_path, clarifier_path, folds_path, score_path,
+        reactor_score_path, clarifier_score_path, membership_path, teacher_path,
+    )
+    atomic_json(marker_path, {
+        "stage": "shared_unit_grouped_cross_validation",
+        "source_digest": source_id,
+        "input_digest": input_id,
+        "fold_count": len(result.fold_models),
+        "reactor_selected_penalty": result.models.reactor.ridge_penalty,
+        "clarifier_selected_penalty": result.models.clarifier.ridge_penalty,
+        "artifacts": _artifact_hashes(run, paths),
+    })
+
+
+def _load_shared_unit_fit(
+    run: Path,
+    *,
+    input_id: str,
+    source_id: str,
+) -> SharedUnitFitResult | None:
+    marker_path = run / "models" / "shared_unit_complete.json"
+    reactor_path = run / "models" / "shared_unit_reactor_ridge.npz"
+    clarifier_path = run / "models" / "shared_unit_clarifier_ridge.npz"
+    folds_path = run / "models" / "shared_unit_fold_models.npz"
+    scores_path = run / "metrics" / "shared_unit_cross_validation.csv"
+    if not all(path.is_file() for path in (
+        marker_path, reactor_path, clarifier_path, folds_path, scores_path,
+    )):
+        return None
+    try:
+        marker = _load_json_object(marker_path, description="shared-unit fit marker")
+        marker_source_id = str(marker.get("source_digest", ""))
+        if (
+            not _checkpoint_source_is_authorized(
+                run,
+                stage="shared_unit_fit",
+                checkpoint=marker_path,
+                observed_source_id=marker_source_id,
+                current_source_id=source_id,
+            )
+            or marker.get("input_digest") != input_id
+            or not _artifacts_match(run, marker.get("artifacts", {}))
+        ):
+            return None
+        combined: dict[str, np.ndarray] = {}
+        for path in (reactor_path, clarifier_path):
+            with np.load(path, allow_pickle=False) as stored:
+                if (
+                    str(stored["input_digest"].item()) != input_id
+                    or str(stored["source_digest"].item()) != marker_source_id
+                ):
+                    return None
+                combined.update({
+                    name: np.asarray(stored[name])
+                    for name in stored.files
+                    if name not in {"input_digest", "source_digest"}
+                })
+        models = SharedUnitModels.from_arrays(combined)
+        with np.load(folds_path, allow_pickle=False) as stored:
+            if (
+                str(stored["input_digest"].item()) != input_id
+                or str(stored["source_digest"].item()) != marker_source_id
+            ):
+                return None
+            membership = np.asarray(stored["plant_fold_membership"], dtype=int)
+            reactor_oof = np.asarray(stored["reactor_out_of_fold_raw"], dtype=float)
+            clarifier_oof = np.asarray(stored["clarifier_out_of_fold_raw"], dtype=float)
+            elapsed = float(stored["elapsed_seconds"])
+            fold_count = int(marker["fold_count"])
+            fold_models = []
+            for fold in range(1, fold_count + 1):
+                prefix = f"fold_{fold}_"
+                fold_values = {
+                    name[len(prefix):]: np.asarray(stored[name])
+                    for name in stored.files if name.startswith(prefix)
+                }
+                fold_models.append(SharedUnitModels.from_arrays(fold_values))
+        score_frame = pd.read_csv(scores_path)
+        required = {"family", "fold", "gamma", "raw_nrmse", "selected"}
+        if required - set(score_frame.columns):
+            return None
+        selected = score_frame["selected"].astype(str).str.lower().map(
+            {"true": True, "false": False}
+        )
+        if selected.isna().any():
+            return None
+        scores = tuple(
+            SharedUnitRidgeScore(
+                str(row.family), int(row.fold), float(row.gamma),
+                float(row.raw_nrmse), bool(selected.iloc[index]),
+            )
+            for index, row in enumerate(score_frame.itertuples(index=False))
+        )
+        return SharedUnitFitResult(
+            models=models,
+            fold_models=tuple(fold_models),
+            scores=scores,
+            plant_fold_membership=membership,
+            reactor_out_of_fold_raw=reactor_oof,
+            clarifier_out_of_fold_raw=clarifier_oof,
+            elapsed_seconds=elapsed,
+        )
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+        return None
+
+
+def fit_or_resume_shared_unit(
+    run: Path,
+    decisions: np.ndarray,
+    reduced_targets: np.ndarray,
+    plant_fold_membership: np.ndarray,
+    *,
+    layout: NetworkLayout,
+    source_files: Mapping[str, str],
+) -> tuple[SharedUnitFitResult, Any, str]:
+    training = extract_shared_unit_training(decisions, reduced_targets, layout=layout)
+    input_id = _shared_unit_input_digest(
+        decisions, reduced_targets, plant_fold_membership,
+    )
+    source_id = source_digest(source_files)
+    restored = _load_shared_unit_fit(
+        run, input_id=input_id, source_id=source_id,
+    )
+    if restored is not None:
+        return restored, training, input_id
+    result = cross_validate_shared_unit_models(
+        training, plant_fold_membership=plant_fold_membership,
+    )
+    assert_source_unchanged(source_files)
+    _save_shared_unit_fit(
+        run, result, training, input_id=input_id, source_id=source_id,
+    )
+    return result, training, input_id
+
+
+def _shared_unit_assessment_digest(
+    shared_fit_input_id: str,
+    development_decisions: np.ndarray,
+    development_influents: np.ndarray,
+    development_targets: np.ndarray,
+    test_decisions: np.ndarray,
+    test_influents: np.ndarray,
+    test_targets: np.ndarray,
+    common_response_scale: np.ndarray,
+    equality_scale: np.ndarray,
+    inequality_scale: np.ndarray,
+) -> str:
+    """Bind route-U free-closure assessment to its common S projection assets."""
+
+    return array_digest(
+        shared_fit_input_id=np.frombuffer(
+            shared_fit_input_id.encode("utf-8"), dtype=np.uint8,
+        ),
+        development_decisions=np.asarray(development_decisions, dtype="<f8"),
+        development_influents=np.asarray(development_influents, dtype="<f8"),
+        development_targets=np.asarray(development_targets, dtype="<f8"),
+        post_selection_decisions=np.asarray(test_decisions, dtype="<f8"),
+        post_selection_influents=np.asarray(test_influents, dtype="<f8"),
+        post_selection_targets=np.asarray(test_targets, dtype="<f8"),
+        common_response_scale=np.asarray(common_response_scale, dtype="<f8"),
+        common_equality_scale=np.asarray(equality_scale, dtype="<f8"),
+        common_inequality_scale=np.asarray(inequality_scale, dtype="<f8"),
+    )
+
+
+def _shared_unit_root_diagnostic_record(
+    case: str,
+    diagnostics: SharedUnitClosureDiagnostics,
+) -> dict[str, Any]:
+    """Flatten both prescribed recycle starts without discarding failure detail."""
+
+    record: dict[str, Any] = {
+        "case": case,
+        "route": "shared_unit",
+        "accepted": bool(diagnostics.accepted),
+        "reason": diagnostics.reason,
+        "mixer_agreement_inf": diagnostics.mixer_agreement_inf,
+        "raw_agreement_inf": diagnostics.raw_agreement_inf,
+    }
+    for start, attempt in enumerate(
+        (diagnostics.attempt_1, diagnostics.attempt_2), start=1,
+    ):
+        values = attempt.as_dict(include_arrays=False)
+        for name, value in values.items():
+            record[f"{name}_start_{start}"] = value
+    return record
+
+
+def _shared_unit_prediction_metrics(
+    raw: np.ndarray,
+    projected: np.ndarray,
+    truth: np.ndarray,
+    available: np.ndarray,
+    response_scale: np.ndarray,
+    layout: NetworkLayout,
+) -> pd.DataFrame:
+    """Summarize route-U accuracy over every documented response block."""
+
+    mask = np.asarray(available, dtype=bool)
+    mask &= np.all(np.isfinite(raw), axis=1)
+    mask &= np.all(np.isfinite(projected), axis=1)
+    rows: list[dict[str, Any]] = []
+    blocks: dict[str, np.ndarray] = {
+        "mixer": np.arange(layout.mixer_slice.start, layout.mixer_slice.stop),
+    }
+    for stage in range(layout.stage_count):
+        block = layout.reactor_slice(stage)
+        blocks[f"reactor_{stage + 1}"] = np.arange(block.start, block.stop)
+    blocks.update({
+        "clarifier_overflow": np.arange(
+            layout.overflow_flow_slice.start, layout.overflow_flow_slice.stop,
+        ),
+        "clarifier_underflow": np.arange(
+            layout.underflow_flow_slice.start, layout.underflow_flow_slice.stop,
+        ),
+        "clarifier_inventory": np.asarray([layout.inventory_index]),
+        "clarifier_complete": np.arange(
+            layout.overflow_flow_slice.start, layout.inventory_slice.stop,
+        ),
+        "complete_response": np.arange(layout.state_size),
+    })
+    names = response_coordinate_names(layout)
+    sample_count = int(np.count_nonzero(mask))
+    requested_count = int(len(mask))
+    coverage = float(sample_count / requested_count) if requested_count else 0.0
+    for method, prediction in (("raw", raw), ("projected", projected)):
+        for block, indices in blocks.items():
+            if sample_count:
+                selected_prediction = prediction[mask][:, indices]
+                selected_truth = truth[mask][:, indices]
+                error = selected_prediction - selected_truth
+                standardized = error / response_scale[indices][None, :]
+                centered = selected_truth - np.mean(selected_truth, axis=0)
+                residual_sum = np.sum(np.square(error), axis=0)
+                total_sum = np.sum(np.square(centered), axis=0)
+                coordinate_r2 = np.full_like(residual_sum, np.nan)
+                positive_variance = total_sum > 0.0
+                coordinate_r2[positive_variance] = (
+                    1.0
+                    - residual_sum[positive_variance] / total_sum[positive_variance]
+                )
+                rmse = float(np.sqrt(np.mean(np.square(error))))
+                mae = float(np.mean(np.abs(error)))
+                bias = float(np.mean(error))
+                nrmse = float(np.sqrt(np.mean(np.square(standardized))))
+                nmae = float(np.mean(np.abs(standardized)))
+                r2_mean = (
+                    float(np.mean(coordinate_r2[np.isfinite(coordinate_r2)]))
+                    if np.any(np.isfinite(coordinate_r2)) else math.nan
+                )
+            else:
+                rmse = mae = bias = nrmse = nmae = r2_mean = math.nan
+            rows.append({
+                "route": "shared_unit",
+                "method": method,
+                "block": block,
+                "coordinate": "ALL",
+                "sample_count": sample_count,
+                "requested_sample_count": requested_count,
+                "coverage_fraction": coverage,
+                "coordinate_count": int(indices.size),
+                "rmse": rmse,
+                "mae": mae,
+                "bias": bias,
+                "nrmse": nrmse,
+                "nmae": nmae,
+                "r2_mean": r2_mean,
+            })
+            for local, coordinate in enumerate(indices):
+                if sample_count:
+                    coordinate_error = error[:, local]
+                    coordinate_standardized = standardized[:, local]
+                    coordinate_rmse = float(
+                        np.sqrt(np.mean(np.square(coordinate_error)))
+                    )
+                    coordinate_mae = float(np.mean(np.abs(coordinate_error)))
+                    coordinate_bias = float(np.mean(coordinate_error))
+                    coordinate_nrmse = float(
+                        np.sqrt(np.mean(np.square(coordinate_standardized)))
+                    )
+                    coordinate_nmae = float(
+                        np.mean(np.abs(coordinate_standardized))
+                    )
+                    coordinate_r2_value = float(coordinate_r2[local])
+                else:
+                    coordinate_rmse = coordinate_mae = coordinate_bias = math.nan
+                    coordinate_nrmse = coordinate_nmae = coordinate_r2_value = math.nan
+                rows.append({
+                    "route": "shared_unit",
+                    "method": method,
+                    "block": block,
+                    "coordinate": names[int(coordinate)],
+                    "sample_count": sample_count,
+                    "requested_sample_count": requested_count,
+                    "coverage_fraction": coverage,
+                    "coordinate_count": 1,
+                    "rmse": coordinate_rmse,
+                    "mae": coordinate_mae,
+                    "bias": coordinate_bias,
+                    "nrmse": coordinate_nrmse,
+                    "nmae": coordinate_nmae,
+                    "r2_mean": coordinate_r2_value,
+                })
+    if sample_count:
+        correction = (
+            projected[mask] - raw[mask]
+        ) / response_scale[None, :]
+        correction_nrmse = float(np.sqrt(np.mean(np.square(correction))))
+        correction_nmae = float(np.mean(np.abs(correction)))
+    else:
+        correction_nrmse = correction_nmae = math.nan
+    rows.append({
+        "route": "shared_unit",
+        "method": "projection_correction",
+        "block": "complete_response",
+        "coordinate": "ALL",
+        "sample_count": sample_count,
+        "requested_sample_count": requested_count,
+        "coverage_fraction": coverage,
+        "coordinate_count": layout.state_size,
+        "rmse": math.nan,
+        "mae": math.nan,
+        "bias": math.nan,
+        "nrmse": correction_nrmse,
+        "nmae": correction_nmae,
+        "r2_mean": math.nan,
+    })
+    return pd.DataFrame(rows)
+
+
+def _save_shared_unit_assessment(
+    run: Path,
+    *,
+    calibration: SharedUnitTrustCalibration,
+    assets: SharedUnitAssets,
+    assessment: Mapping[str, Any],
+    gate: Mapping[str, Any],
+    input_id: str,
+    source_id: str,
+) -> tuple[Path, ...]:
+    """Publish the complete route-U development and holdout evidence."""
+
+    if calibration.limits is None:
+        raise RuntimeError("route-U trust limits cannot be checkpointed before freezing")
+    calibration_path = run / "models" / "shared_unit_trust_calibration.npz"
+    limits_path = run / "metrics" / "shared_unit_trust_limits.json"
+    development_trust_path = (
+        run / "metrics" / "shared_unit_trust_development_oof.csv"
+    )
+    development_root_path = (
+        run / "metrics" / "shared_unit_development_oof_root_diagnostics.csv"
+    )
+    prediction_path = run / "predictions" / "shared_unit_post_selection_holdout.npz"
+    metric_path = run / "metrics" / "shared_unit_post_selection_prediction_metrics.csv"
+    holdout_root_path = (
+        run / "metrics" / "shared_unit_post_selection_root_diagnostics.csv"
+    )
+    holdout_trust_path = (
+        run / "metrics" / "shared_unit_trust_post_selection_holdout.csv"
+    )
+    physical_path = (
+        run / "metrics" / "shared_unit_physical_violations_assessment.csv"
+    )
+    projection_path = run / "metrics" / "shared_unit_projection_qp_diagnostics.csv"
+    feasibility_path = (
+        run / "metrics" / "shared_unit_projection_feasibility_bound.csv"
+    )
+    gate_path = run / "metrics" / "shared_unit_admission_gate.json"
+    marker_path = run / "metrics" / "shared_unit_assessment_complete.json"
+
+    development_trust = pd.DataFrame(
+        calibration.development_values,
+        columns=calibration.development_columns,
+    )
+    development_trust.insert(0, "row", np.arange(len(development_trust)))
+    development_trust.insert(1, "closure_accepted", calibration.closure_accepted)
+    development_trust.insert(2, "projection_qp_accepted", calibration.projection_accepted)
+    development_roots = pd.DataFrame([
+        _shared_unit_root_diagnostic_record(f"development_{row:06d}", diagnostic)
+        for row, diagnostic in enumerate(calibration.closure_diagnostics)
+    ])
+    atomic_dataframe(development_trust_path, development_trust)
+    atomic_dataframe(development_root_path, development_roots)
+    atomic_json(limits_path, calibration.limits.as_dict())
+    atomic_npz(
+        calibration_path,
+        input_digest=np.asarray(input_id),
+        source_digest=np.asarray(source_id),
+        **calibration.leverage.to_arrays(),
+        development_values=calibration.development_values,
+        development_columns=np.asarray(calibration.development_columns),
+        out_of_fold_raw=calibration.out_of_fold_raw,
+        out_of_fold_projected=calibration.out_of_fold_projected,
+        closure_accepted=calibration.closure_accepted,
+        projection_accepted=calibration.projection_accepted,
+        full_raw_nrmse=np.asarray(
+            np.nan if calibration.full_raw_nrmse is None else calibration.full_raw_nrmse
+        ),
+        inventory_raw_nrmse=np.asarray(
+            np.nan
+            if calibration.inventory_raw_nrmse is None
+            else calibration.inventory_raw_nrmse
+        ),
+    )
+    atomic_npz(
+        prediction_path,
+        raw_predictions=np.asarray(assessment["raw"], dtype=float),
+        projected_predictions=np.asarray(assessment["projected"], dtype=float),
+        projected_targets=np.asarray(assessment["projected_targets"], dtype=float),
+        raw=np.asarray(assessment["raw"], dtype=float),
+        projected=np.asarray(assessment["projected"], dtype=float),
+        available=np.asarray(assessment["available"], dtype=bool),
+        controls_normalized=np.asarray(assessment["controls_normalized"], dtype=float),
+        decisions=np.asarray(assessment["decisions"], dtype=float),
+        influent=np.asarray(assessment["influents"], dtype=float),
+        mechanistic=np.asarray(assessment["mechanistic"], dtype=float),
+        truth=np.asarray(assessment["mechanistic"], dtype=float),
+    )
+    atomic_dataframe(metric_path, assessment["metrics"])
+    atomic_dataframe(holdout_root_path, assessment["root_diagnostics"])
+    atomic_dataframe(holdout_trust_path, assessment["trust"])
+    atomic_dataframe(physical_path, assessment["violations"])
+    atomic_dataframe(projection_path, assessment["qp_diagnostics"])
+    atomic_dataframe(feasibility_path, assessment["feasibility"])
+    atomic_json(gate_path, gate, nonfinite_to_none=True)
+    paths = (
+        calibration_path,
+        limits_path,
+        development_trust_path,
+        development_root_path,
+        prediction_path,
+        metric_path,
+        holdout_root_path,
+        holdout_trust_path,
+        physical_path,
+        projection_path,
+        feasibility_path,
+        gate_path,
+    )
+    atomic_json(marker_path, {
+        "stage": "shared_unit_development_and_post_selection_assessment",
+        "source_digest": source_id,
+        "input_digest": input_id,
+        "passed": bool(calibration.passed),
+        "assets": assets.as_dict(),
+        "artifacts": _artifact_hashes(run, paths),
+    })
+    return (*paths, marker_path)
+
+
+def _load_shared_unit_assessment(
+    run: Path,
+    *,
+    models: SharedUnitModels,
+    input_id: str,
+    source_id: str,
+    common_response_scale: np.ndarray,
+    surrogate_assets: Any,
+) -> tuple[SharedUnitTrustCalibration, SharedUnitAssets, dict[str, Any], dict[str, Any]] | None:
+    """Restore route-U assets without repeating thousands of recycle solves."""
+
+    marker_path = run / "metrics" / "shared_unit_assessment_complete.json"
+    calibration_path = run / "models" / "shared_unit_trust_calibration.npz"
+    limits_path = run / "metrics" / "shared_unit_trust_limits.json"
+    prediction_path = run / "predictions" / "shared_unit_post_selection_holdout.npz"
+    metric_path = run / "metrics" / "shared_unit_post_selection_prediction_metrics.csv"
+    root_path = run / "metrics" / "shared_unit_post_selection_root_diagnostics.csv"
+    trust_path = run / "metrics" / "shared_unit_trust_post_selection_holdout.csv"
+    physical_path = (
+        run / "metrics" / "shared_unit_physical_violations_assessment.csv"
+    )
+    projection_path = run / "metrics" / "shared_unit_projection_qp_diagnostics.csv"
+    feasibility_path = (
+        run / "metrics" / "shared_unit_projection_feasibility_bound.csv"
+    )
+    gate_path = run / "metrics" / "shared_unit_admission_gate.json"
+    if not all(path.is_file() for path in (
+        marker_path, calibration_path, limits_path, prediction_path,
+        metric_path, root_path, trust_path, physical_path, projection_path,
+        feasibility_path, gate_path,
+    )):
+        return None
+    try:
+        marker = _load_json_object(marker_path, description="shared-unit assessment marker")
+        if (
+            marker.get("source_digest") != source_id
+            or marker.get("input_digest") != input_id
+            or not _artifacts_match(run, marker.get("artifacts", {}))
+        ):
+            return None
+        limits_value = _load_json_object(limits_path, description="shared-unit trust limits")
+        limits = SharedUnitTrustLimits(**limits_value)
+        with np.load(calibration_path, allow_pickle=False) as stored:
+            if (
+                str(stored["input_digest"].item()) != input_id
+                or str(stored["source_digest"].item()) != source_id
+            ):
+                return None
+            leverage = SharedUnitLeverageContract(
+                reactor_precision=np.asarray(stored["reactor_leverage_precision"]),
+                clarifier_precision=np.asarray(stored["clarifier_leverage_precision"]),
+                reactor_limit=float(stored["reactor_leverage_limit"]),
+                clarifier_limit=float(stored["clarifier_leverage_limit"]),
+            )
+            full_nrmse = float(stored["full_raw_nrmse"])
+            inventory_nrmse = float(stored["inventory_raw_nrmse"])
+            calibration = SharedUnitTrustCalibration(
+                passed=bool(marker["passed"]),
+                reason="passed" if bool(marker["passed"]) else "restored_advisory_failure",
+                limits=limits,
+                leverage=leverage,
+                development_values=np.asarray(stored["development_values"], dtype=float),
+                development_columns=tuple(
+                    str(value) for value in stored["development_columns"].tolist()
+                ),
+                out_of_fold_raw=np.asarray(stored["out_of_fold_raw"], dtype=float),
+                out_of_fold_projected=np.asarray(
+                    stored["out_of_fold_projected"], dtype=float,
+                ),
+                closure_accepted=np.asarray(stored["closure_accepted"], dtype=bool),
+                projection_accepted=np.asarray(stored["projection_accepted"], dtype=bool),
+                closure_diagnostics=tuple(),
+                full_raw_nrmse=None if np.isnan(full_nrmse) else full_nrmse,
+                inventory_raw_nrmse=(
+                    None if np.isnan(inventory_nrmse) else inventory_nrmse
+                ),
+            )
+        callbacks = surrogate_assets.trust_callbacks
+        assets = build_shared_unit_assets(
+            models,
+            common_response_scale,
+            surrogate_assets.row_scales,
+            calibration,
+            layout=surrogate_assets.layout,
+            quality_scale=surrogate_assets.quality_scale,
+            split_rows=callbacks.split_rows,
+            reactor_rows=callbacks.reactor_rows,
+            engineering=surrogate_assets.engineering,
+        )
+        with np.load(prediction_path, allow_pickle=False) as stored:
+            assessment = {
+                "raw": np.asarray(stored["raw_predictions"], dtype=float),
+                "projected": np.asarray(stored["projected_predictions"], dtype=float),
+                "projected_targets": np.asarray(stored["projected_targets"], dtype=float),
+                "available": np.asarray(stored["available"], dtype=bool),
+                "metrics": pd.read_csv(metric_path),
+                "root_diagnostics": pd.read_csv(root_path),
+                "trust": pd.read_csv(trust_path),
+                "violations": pd.read_csv(physical_path),
+                "qp_diagnostics": pd.read_csv(projection_path),
+                "feasibility": pd.read_csv(feasibility_path),
+            }
+        gate = _load_json_object(gate_path, description="shared-unit admission gate")
+        return calibration, assets, assessment, gate
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+        return None
+
+
+def _evaluate_shared_unit_holdout(
+    assets: SharedUnitAssets,
+    decisions: np.ndarray,
+    influents: np.ndarray,
+    mechanistic: np.ndarray,
+) -> dict[str, Any]:
+    """Cold-evaluate U on every holdout row while retaining root failures."""
+
+    theta = np.asarray(decisions, dtype=float)
+    feed = np.asarray(influents, dtype=float)
+    truth = np.asarray(mechanistic, dtype=float)
+    count = len(theta)
+    raw = np.full_like(truth, np.nan)
+    projected = np.full_like(truth, np.nan)
+    projected_targets = np.full_like(truth, np.nan)
+    available = np.zeros(count, dtype=bool)
+    normalized = (theta - assets.theta_lower) / assets.theta_span
+    root_records: list[dict[str, Any]] = []
+    trust_records: list[dict[str, Any]] = []
+    violation_records: list[dict[str, Any]] = []
+    projection_records: list[dict[str, Any]] = []
+    feasibility_records: list[dict[str, Any]] = []
+    for row in range(count):
+        evaluation = evaluate_shared_unit(
+            assets,
+            SharedUnitCase(influent=feed[row], case_id=f"test_{row:06d}"),
+            normalized[row],
+        )
+        root_records.append(_shared_unit_root_diagnostic_record(
+            f"test_{row:06d}", evaluation.closure.diagnostics,
+        ))
+        valid = bool(
+            evaluation.available
+            and evaluation.raw is not None
+            and evaluation.projected is not None
+            and np.all(np.isfinite(evaluation.raw))
+            and np.all(np.isfinite(evaluation.projected))
+        )
+        available[row] = valid
+        if valid:
+            raw[row] = np.asarray(evaluation.raw, dtype=float)
+            projected[row] = np.asarray(evaluation.projected, dtype=float)
+        if evaluation.projection is None:
+            projection_records.append({
+                "row": row,
+                "projection_input": "raw_prediction",
+                "accepted": False,
+                "elapsed_ns": int(round(evaluation.projection_seconds * 1.0e9)),
+                "unavailable_reason": evaluation.reason,
+            })
+        else:
+            projection_records.append({
+                "row": row,
+                "projection_input": "raw_prediction",
+                "accepted": bool(evaluation.projection.accepted),
+                "elapsed_ns": int(round(evaluation.projection_seconds * 1.0e9)),
+                "unavailable_reason": None,
+                **evaluation.projection.diagnostics.as_dict(),
+            })
+        target_started = perf_counter_ns()
+        target_projection = project_shared_unit_raw(
+            truth[row],
+            theta[row],
+            feed[row],
+            assets.common_response_scale,
+            assets.row_scales,
+            layout=assets.layout,
+            invariant_operator=assets.invariant_operator,
+            tss_weights=assets.tss_weights,
+            clarifier_volume_m3=assets.engineering.clarifier_volume_m3,
+            raise_on_failure=False,
+        )
+        target_elapsed = perf_counter_ns() - target_started
+        target_valid = bool(
+            target_projection.accepted
+            and np.all(np.isfinite(target_projection.state))
+        )
+        if target_valid:
+            projected_targets[row] = target_projection.state
+        projection_records.append({
+            "row": row,
+            "projection_input": "mechanistic_target",
+            "accepted": bool(target_projection.accepted),
+            "elapsed_ns": target_elapsed,
+            "unavailable_reason": None if target_valid else "target_projection_failed",
+            **target_projection.diagnostics.as_dict(),
+        })
+        if valid and target_valid:
+            raw_distance = float(np.linalg.norm(
+                (raw[row] - truth[row]) / assets.common_response_scale
+            ))
+            projected_distance = float(np.linalg.norm(
+                (projected[row] - truth[row]) / assets.common_response_scale
+            ))
+            target_feasibility = float(np.linalg.norm(
+                (projected_targets[row] - truth[row]) / assets.common_response_scale
+            ))
+            upper_bound = raw_distance + target_feasibility
+            bound_slack = upper_bound - projected_distance
+            bound_passed = bool(projected_distance <= upper_bound + 1.0e-10)
+        else:
+            raw_distance = projected_distance = target_feasibility = math.nan
+            upper_bound = bound_slack = math.nan
+            bound_passed = False
+        feasibility_records.append({
+            "row": row,
+            "route_available": valid,
+            "target_feasibility_distance": target_feasibility,
+            "raw_distance": raw_distance,
+            "projected_distance": projected_distance,
+            "finite_feasibility_bound": upper_bound,
+            "bound_slack": bound_slack,
+            "bound_passed": bound_passed,
+            "raw_projection_qp_passed": bool(
+                evaluation.projection is not None and evaluation.projection.accepted
+            ),
+            "target_projection_qp_passed": bool(target_projection.accepted),
+        })
+        trust_record: dict[str, Any] = {
+            "row": row,
+            "available": valid,
+            **{name: math.nan for name in assets.trust_row_names},
+        }
+        if evaluation.trust is not None:
+            trust_record.update({
+                "correction": evaluation.trust.correction_rms,
+                **{
+                    f"reactor_leverage_{stage}": value
+                    for stage, value in enumerate(
+                        evaluation.trust.reactor_leverage, start=1,
+                    )
+                },
+                "clarifier_leverage": evaluation.trust.clarifier_leverage,
+                "particulate_split": evaluation.trust.particulate_split_rms,
+                "reactor_residual": evaluation.trust.reactor_residual_rms,
+            })
+        trust_records.append(trust_record)
+        for method, response in (
+            ("raw", raw[row]),
+            ("projected", projected[row]),
+            ("mechanistic", truth[row]),
+        ):
+            if np.all(np.isfinite(response)):
+                record = violation_record(
+                    method,
+                    f"test_{row:06d}",
+                    response,
+                    theta[row],
+                    feed[row],
+                    assets.layout,
+                    assets.row_scales.equality,
+                    assets.row_scales.inequality,
+                    assets.common_response_scale,
+                )
+                record["audit_available"] = True
+                record["audit_unavailable_reason"] = None
+            else:
+                record = {
+                    "case": f"test_{row:06d}",
+                    "method": method,
+                    "audit_available": False,
+                    "audit_unavailable_reason": evaluation.reason,
+                    "mass_conservation_violation_max": math.nan,
+                    "mass_conservation_violation_count": 0,
+                    "nonnegativity_violation_max": math.nan,
+                    "nonnegativity_violation_count": 0,
+                }
+            record["decision_route"] = "shared_unit"
+            violation_records.append(record)
+    metrics = _shared_unit_prediction_metrics(
+        raw,
+        projected,
+        truth,
+        available,
+        assets.common_response_scale,
+        assets.layout,
+    )
+    return {
+        "raw": raw,
+        "projected": projected,
+        "projected_targets": projected_targets,
+        "available": available,
+        "controls_normalized": normalized,
+        "decisions": theta,
+        "influents": feed,
+        "mechanistic": truth,
+        "metrics": metrics,
+        "root_diagnostics": pd.DataFrame(root_records),
+        "trust": pd.DataFrame(trust_records),
+        "violations": pd.DataFrame(violation_records),
+        "qp_diagnostics": pd.DataFrame(projection_records),
+        "feasibility": pd.DataFrame(feasibility_records),
+    }
+
+
+def _run_or_resume_shared_unit_assessment(
+    run: Path,
+    *,
+    development_decisions: np.ndarray,
+    development_influents: np.ndarray,
+    development_reduced: np.ndarray,
+    test_decisions: np.ndarray,
+    test_influents: np.ndarray,
+    test_reduced: np.ndarray,
+    whole_system_model: QuadraticSurrogate,
+    surrogate_assets: Any,
+    source_files: Mapping[str, str],
+) -> tuple[SharedUnitFitResult, SharedUnitAssets, dict[str, Any], dict[str, Any], tuple[Path, ...]]:
+    """Fit, assess, and checkpoint the independent shared-unit architecture."""
+
+    membership_path = run / "metrics" / "ridge_fold_membership.csv"
+    membership_frame = pd.read_csv(membership_path)
+    if (
+        set(("row", "fold")) - set(membership_frame.columns)
+        or not np.array_equal(
+            membership_frame["row"].to_numpy(dtype=int),
+            np.arange(len(development_decisions)),
+        )
+    ):
+        raise RuntimeError("whole-system plant fold membership is unavailable to route U")
+    plant_membership = membership_frame["fold"].to_numpy(dtype=int)
+    layout = surrogate_assets.layout
+    fit, training, fit_input_id = fit_or_resume_shared_unit(
+        run,
+        development_decisions,
+        development_reduced,
+        plant_membership,
+        layout=layout,
+        source_files=source_files,
+    )
+    assessment_input_id = _shared_unit_assessment_digest(
+        fit_input_id,
+        development_decisions,
+        development_influents,
+        development_reduced,
+        test_decisions,
+        test_influents,
+        test_reduced,
+        whole_system_model.response_scale,
+        surrogate_assets.row_scales.equality,
+        surrogate_assets.row_scales.inequality,
+    )
+    source_id = source_digest(source_files)
+    restored = _load_shared_unit_assessment(
+        run,
+        models=fit.models,
+        input_id=assessment_input_id,
+        source_id=source_id,
+        common_response_scale=whole_system_model.response_scale,
+        surrogate_assets=surrogate_assets,
+    )
+    marker_path = run / "metrics" / "shared_unit_assessment_complete.json"
+    if restored is not None:
+        _calibration, assets, assessment, gate = restored
+        marker = _load_json_object(
+            marker_path, description="shared-unit assessment marker",
+        )
+        artifact_paths = tuple(run / relative for relative in marker["artifacts"])
+        return fit, assets, assessment, gate, (*artifact_paths, marker_path)
+
+    callbacks = surrogate_assets.trust_callbacks
+    calibration = calibrate_shared_unit_trust(
+        fit,
+        training,
+        development_decisions,
+        development_influents,
+        development_reduced,
+        whole_system_model.response_scale,
+        surrogate_assets.row_scales,
+        layout=layout,
+        engineering=surrogate_assets.engineering,
+        split_rows=callbacks.split_rows,
+        reactor_rows=callbacks.reactor_rows,
+    )
+    if calibration.limits is None:
+        raise RuntimeError(
+            "route-U development closure produced no finite population from which "
+            "to freeze trust limits"
+        )
+    assets = build_shared_unit_assets(
+        fit.models,
+        whole_system_model.response_scale,
+        surrogate_assets.row_scales,
+        calibration,
+        layout=layout,
+        quality_scale=surrogate_assets.quality_scale,
+        split_rows=callbacks.split_rows,
+        reactor_rows=callbacks.reactor_rows,
+        engineering=surrogate_assets.engineering,
+    )
+    assessment = _evaluate_shared_unit_holdout(
+        assets,
+        test_decisions,
+        test_influents,
+        test_reduced,
+    )
+    available = np.asarray(assessment["available"], dtype=bool)
+    holdout_qp = assessment["qp_diagnostics"]
+    raw_qp = holdout_qp.loc[
+        holdout_qp["projection_input"].eq("raw_prediction")
+    ]
+    target_qp = holdout_qp.loc[
+        holdout_qp["projection_input"].eq("mechanistic_target")
+    ]
+    feasibility = assessment["feasibility"]
+    gate = {
+        "passed": bool(calibration.passed),
+        "reason": calibration.reason,
+        "execution_policy": ASSESSMENT_GATE_EXECUTION_POLICY,
+        "optimization_permitted": assessment_gate_allows_optimization(
+            bool(calibration.passed)
+        ),
+        "admission_gate_scope": "development_only",
+        "post_selection_holdout_checks_are_admission_gates": False,
+        "post_selection_holdout_is_confirmatory": False,
+        "all_development_oof_closures_accepted": bool(
+            calibration.closure_accepted.all()
+        ),
+        "all_development_oof_projection_qp_audits_passed": bool(
+            calibration.projection_accepted.all()
+        ),
+        "development_oof_complete_response_nrmse": calibration.full_raw_nrmse,
+        "development_oof_clarifier_inventory_nrmse": calibration.inventory_raw_nrmse,
+        "development_oof_complete_response_nrmse_below_one": bool(
+            calibration.full_raw_nrmse is not None
+            and calibration.full_raw_nrmse < 1.0
+        ),
+        "development_oof_clarifier_inventory_nrmse_below_one": bool(
+            calibration.inventory_raw_nrmse is not None
+            and calibration.inventory_raw_nrmse < 1.0
+        ),
+        "correction_limit_at_most_0_50": bool(
+            calibration.limits.correction_rms <= 0.50
+        ),
+        "trust_limits": calibration.limits.as_dict(),
+        "development_count": int(len(calibration.closure_accepted)),
+        "development_closure_accepted_count": int(
+            np.count_nonzero(calibration.closure_accepted)
+        ),
+        "post_selection_holdout_count": int(len(available)),
+        "post_selection_holdout_available_count": int(np.count_nonzero(available)),
+        "post_selection_holdout_coverage_fraction": float(np.mean(available)),
+        "post_selection_raw_projection_qp_accepted_count": int(
+            raw_qp["accepted"].fillna(False).astype(bool).sum()
+        ),
+        "post_selection_target_projection_qp_accepted_count": int(
+            target_qp["accepted"].fillna(False).astype(bool).sum()
+        ),
+        "post_selection_projection_bound_audited_count": int(
+            feasibility["route_available"].fillna(False).astype(bool).sum()
+        ),
+        "post_selection_projection_bound_passed_count": int(
+            feasibility["bound_passed"].fillna(False).astype(bool).sum()
+        ),
+        "failure_action": (
+            None
+            if calibration.passed
+            else "record advisory failure and continue without refitting"
+        ),
+    }
+    assert_source_unchanged(source_files)
+    paths = _save_shared_unit_assessment(
+        run,
+        calibration=calibration,
+        assets=assets,
+        assessment=assessment,
+        gate=gate,
+        input_id=assessment_input_id,
+        source_id=source_id,
+    )
+    return fit, assets, assessment, gate, paths
+
+
 def _validate_assessment(
     assessment: AssessmentResult, *, test_count: int, response_count: int,
 ) -> None:
@@ -5070,11 +6502,50 @@ def run_assessment(
         "particulate_split": float(trust.split_limit),
         "reactor_residual": float(trust.reactor_limit),
     }
+    shared_unit_fit: SharedUnitFitResult | None = None
+    shared_unit_assets: SharedUnitAssets | None = None
+    shared_unit_assessment: dict[str, Any] | None = None
+    shared_unit_gate: dict[str, Any] | None = None
+    shared_unit_paths: tuple[Path, ...] = tuple()
+    shared_unit_fit_paths: tuple[Path, ...] = tuple()
+    # Tiny diagnostic profiles retain the historical light-weight unit-test
+    # path. Every article-eligible run is obligatorily a three-route study.
+    if profile.article_eligible:
+        (
+            shared_unit_fit,
+            shared_unit_assets,
+            shared_unit_assessment,
+            shared_unit_gate,
+            shared_unit_paths,
+        ) = _run_or_resume_shared_unit_assessment(
+            run,
+            development_decisions=development_decisions,
+            development_influents=development_influents,
+            development_reduced=development_reduced,
+            test_decisions=np.asarray(design["test_decisions"]),
+            test_influents=np.asarray(design["test_influents"]),
+            test_reduced=test_reduced,
+            whole_system_model=model,
+            surrogate_assets=surrogate_assets,
+            source_files=source_files,
+        )
+        shared_fit_marker_path = run / "models" / "shared_unit_complete.json"
+        shared_fit_marker = _load_json_object(
+            shared_fit_marker_path, description="shared-unit fit marker",
+        )
+        shared_unit_fit_paths = (
+            shared_fit_marker_path,
+            *(run / relative for relative in shared_fit_marker["artifacts"]),
+        )
     if existing_gate is not None:
         return AnalysisBundle(
             passed=bool(existing_gate["passed"]), model=model,
             direct_assets=direct_assets, surrogate_assets=surrogate_assets,
             assessment=None, gate=existing_gate,
+            shared_unit_fit=shared_unit_fit,
+            shared_unit_assets=shared_unit_assets,
+            shared_unit_assessment=shared_unit_assessment,
+            shared_unit_gate=shared_unit_gate,
         )
     trust_frame = pd.DataFrame(trust_values, columns=[
         "correction", "regularized_leverage", "particulate_split",
@@ -5125,6 +6596,8 @@ def run_assessment(
         run / "datasets" / "development" / "surrogate_responses_inventory_v1.npz",
         run / "datasets" / "test" / "surrogate_responses_inventory_v1.npz",
         holdout_trust_path,
+        *shared_unit_fit_paths,
+        *shared_unit_paths,
     )
     atomic_dataframe(paths[0], assessment.metrics)
     atomic_dataframe(paths[1], assessment.violations)
@@ -5151,6 +6624,15 @@ def run_assessment(
         development_oof_inventory_nrmse=development_oof_inventory_nrmse,
         test_count=profile.test_count,
     )
+    if profile.article_eligible:
+        gate["whole_system_surrogate_gate_passed"] = bool(gate["passed"])
+        gate["shared_unit_surrogate_gate_passed"] = bool(
+            shared_unit_gate is not None and shared_unit_gate.get("passed") is True
+        )
+        gate["all_surrogate_gates_passed"] = bool(
+            gate["whole_system_surrogate_gate_passed"]
+            and gate["shared_unit_surrogate_gate_passed"]
+        )
     holdout_trust = _post_selection_holdout_trust_diagnostics(
         model,
         surrogate_assets,
@@ -5173,6 +6655,10 @@ def run_assessment(
         passed=bool(gate["passed"]), model=model,
         direct_assets=direct_assets, surrogate_assets=surrogate_assets,
         assessment=assessment, gate=gate,
+        shared_unit_fit=shared_unit_fit,
+        shared_unit_assets=shared_unit_assets,
+        shared_unit_assessment=shared_unit_assessment,
+        shared_unit_gate=shared_unit_gate,
     )
 
 
@@ -5608,7 +7094,7 @@ def _run_robustness_case_timing_aggregation(
         ):
             raise RuntimeError(f"completed casewise result changed: {case_id}")
         input_paths.append(comparison_marker)
-        for route in ("surrogate", "direct"):
+        for route in ("surrogate", "shared_unit", "direct"):
             route_path = case_directory / f"{route}.json"
             reference_path = case_directory / f"{route}_casewise_reference.json"
             route_payload = _load_json_object(
@@ -5634,7 +7120,7 @@ def _run_robustness_case_timing_aggregation(
                 if not isinstance(certificate, Mapping):
                     raise RuntimeError(f"{case_id} omits its certification timing")
                 certification_seconds = float(certificate["elapsed_seconds"])
-            else:
+            elif route == "direct":
                 recovery = reference_payload.get("recovery")
                 if isinstance(recovery, Mapping) and recovery.get("attempted") is True:
                     recovery_seconds = float(recovery["elapsed_seconds"])
@@ -5660,6 +7146,38 @@ def _run_robustness_case_timing_aggregation(
                     certification_seconds if route == "surrogate" else None
                 ),
                 "recovery_seconds": recovery_seconds if recovery_seconds else None,
+                "root_attempts": (
+                    route_payload.get("root_attempts")
+                    if route == "shared_unit" else None
+                ),
+                "failed_roots": (
+                    route_payload.get("failed_roots")
+                    if route == "shared_unit" else None
+                ),
+                "failed_closures": (
+                    route_payload.get("failed_closures")
+                    if route == "shared_unit" else None
+                ),
+                "projection_solves": (
+                    route_payload.get("projection_solves")
+                    if route == "shared_unit" else None
+                ),
+                "root_seconds": (
+                    route_payload.get("root_seconds")
+                    if route == "shared_unit" else None
+                ),
+                "projection_seconds": (
+                    route_payload.get("projection_seconds")
+                    if route == "shared_unit" else None
+                ),
+                "evaluation_seconds": (
+                    route_payload.get("evaluation_seconds")
+                    if route == "shared_unit" else None
+                ),
+                "poll_evaluations": (
+                    route_payload.get("poll_evaluations")
+                    if route == "shared_unit" else None
+                ),
                 "complete_optimization_seconds": complete_seconds,
                 "exact_reference_seconds": (
                     None if reference_seconds is None else float(reference_seconds)
@@ -5724,6 +7242,7 @@ def _run_robustness_case_timing_aggregation(
         "source": "completed robustness/sensitivity cases only",
         "nominal_case_included": False,
         "robustness_case_count": len(cases),
+        "route_count": 3,
         "warmup_count": 0,
         "repeated_test_batch_count": 0,
         "categories": categories,
@@ -6135,6 +7654,103 @@ def _run_surrogate_route(
         route_protocol=EXACT_QP_SINGLE_START_PROTOCOL,
         result=result, elapsed_seconds=elapsed,
     )
+    return result, payload
+
+
+def _run_shared_unit_route(
+    case_directory: Path,
+    *,
+    case_id: str,
+    influent: np.ndarray,
+    assets: SharedUnitAssets,
+    source_id: str,
+    analysis_id: str,
+) -> tuple[SharedUnitOptimizationResult, dict[str, Any]]:
+    """Run the independent route-U root--projection value-only optimizer."""
+
+    settings = SharedUnitOptimizationSettings()
+    starts = np.full((1, 7), 0.5, dtype=float)
+    contract = _route_contract_id(
+        source_id=source_id,
+        analysis_id=analysis_id,
+        case_id=case_id,
+        influent=influent,
+        route="shared_unit",
+        protocol=SHARED_UNIT_SINGLE_CENTER_PROTOCOL,
+        settings=settings,
+        starts=starts,
+    )
+    payload_path = case_directory / "shared_unit.json"
+    marker_path = case_directory / "shared_unit_complete.json"
+    if payload_path.is_file() and marker_path.is_file():
+        try:
+            marker = _load_json_object(
+                marker_path, description="shared-unit route marker",
+            )
+            payload = _load_json_object(
+                payload_path, description="shared-unit route result",
+            )
+            if (
+                marker.get("route_contract") == contract
+                and marker.get("protocol") == SHARED_UNIT_SINGLE_CENTER_PROTOCOL
+                and payload.get("route_contract") == contract
+                and payload.get("protocol") == SHARED_UNIT_SINGLE_CENTER_PROTOCOL
+                and _artifacts_match(case_directory, marker.get("artifacts", {}))
+            ):
+                return SharedUnitOptimizationResult.from_dict(payload), payload
+        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+            pass
+
+    started = perf_counter()
+    try:
+        result = optimize_shared_unit_case(
+            assets,
+            SharedUnitCase(influent=np.asarray(influent, dtype=float), case_id=case_id),
+            settings=settings,
+            normalized_start=starts[0],
+        )
+    except Exception as exc:
+        # A numerical route-U failure is a casewise unavailable result; it must
+        # not suppress the independent S/M routes or later robustness cases.
+        result = SharedUnitOptimizationResult(
+            route="shared_unit",
+            case_id=case_id,
+            status="route_execution_failed",
+            classification=f"{type(exc).__name__}: {exc}",
+            locally_converged=False,
+            stationarity_resolved=False,
+            selected=None,
+            cobyqa_success=False,
+            cobyqa_status=f"{type(exc).__name__}: {exc}",
+            cobyqa_iterations=0,
+            cobyqa_evaluations=0,
+            distinct_evaluations=0,
+            failed_evaluations=0,
+            root_attempts=0,
+            failed_roots=0,
+            projection_solves=0,
+            poll_evaluations=0,
+            poll_levels=tuple(),
+            elapsed_seconds=perf_counter() - started,
+        )
+    payload = result.as_dict()
+    payload.update({
+        "route": "shared_unit",
+        "route_contract": contract,
+        "protocol": SHARED_UNIT_SINGLE_CENTER_PROTOCOL,
+        "optimization_attempt_count": 1,
+        "article_start_count": 1,
+    })
+    atomic_json(payload_path, payload, nonfinite_to_none=True)
+    atomic_json(marker_path, {
+        "stage": "shared_unit_single_local_attempt",
+        "route_contract": contract,
+        "protocol": SHARED_UNIT_SINGLE_CENTER_PROTOCOL,
+        "start_count": 1,
+        "selected": result.selected is not None,
+        "status": result.status,
+        "artifacts": _artifact_hashes(case_directory, (payload_path,)),
+    })
     return result, payload
 
 
@@ -7405,8 +9021,12 @@ def _run_casewise_route_reference_evaluation(
     candidate_source = case_directory / (
         "surrogate_local_convergence.json" if route == "surrogate"
         else "direct_recovery.json"
-        if recovery_payload is not None and recovery_payload.get("attempted")
+        if route == "direct"
+        and recovery_payload is not None
+        and recovery_payload.get("attempted")
         else "direct.json"
+        if route == "direct"
+        else f"{route}.json"
     )
     if not candidate_source.is_file():
         candidate_source = case_directory / f"{route}.json"
@@ -7464,45 +9084,90 @@ def _run_casewise_route_reference_evaluation(
     if theta is None or theta.shape != (7,) or not np.all(np.isfinite(theta)):
         raise RuntimeError(f"{route} selected candidate has invalid controls")
     normalized = (theta - DECISION_LOWER) / (DECISION_UPPER - DECISION_LOWER)
-    surrogate_case = SurrogateCase(influent=influent, case_id=case_id)
-    raw = np.asarray(analysis.model.predict(theta, influent), dtype=np.float64)
-    projection = cold_reproject(
-        analysis.surrogate_assets,
-        surrogate_case,
-        normalized,
-        raise_on_failure=False,
-    )
-    projected = np.asarray(projection.state, dtype=np.float64)
-    native_full_response = (
-        np.asarray(final.projected, dtype=np.float64)
-        if route == "surrogate"
-        else np.asarray(final.response, dtype=np.float64)
-    )
-    native_response = (
-        native_full_response
-        if route == "surrogate"
-        else reduce_mechanistic_responses(
-            native_full_response, analysis.surrogate_assets.layout.layer_count,
-        )
-    )
-    native_objective = float(final.objective)
     expected_response_shape = (analysis.surrogate_assets.layout.state_size,)
-    for label, values in (
-        ("raw", raw), ("projected", projected),
-        ("optimizer-native", native_response),
-    ):
-        if values.shape != expected_response_shape or not np.all(np.isfinite(values)):
-            raise RuntimeError(
-                f"{route} {label} response is non-finite or has the wrong shape"
+    shared_evaluation: SharedUnitEvaluation | None = None
+    native_replay_available = True
+    native_replay_reason: str | None = None
+    if route == "shared_unit":
+        if analysis.shared_unit_assets is None:
+            raise RuntimeError("shared-unit route has no fitted evaluation assets")
+        shared_evaluation = evaluate_shared_unit(
+            analysis.shared_unit_assets,
+            SharedUnitCase(influent=influent, case_id=case_id),
+            normalized,
+        )
+        native_replay_available = bool(
+            shared_evaluation.available
+            and shared_evaluation.raw is not None
+            and shared_evaluation.projected is not None
+            and shared_evaluation.projection is not None
+            and np.all(np.isfinite(shared_evaluation.raw))
+            and np.all(np.isfinite(shared_evaluation.projected))
+        )
+        native_replay_reason = (
+            None if native_replay_available else shared_evaluation.reason
+        )
+        if native_replay_available:
+            raw = np.asarray(shared_evaluation.raw, dtype=np.float64)
+            projection = shared_evaluation.projection
+            projected = np.asarray(shared_evaluation.projected, dtype=np.float64)
+            native_response = projected.copy()
+            native_full_response = native_response
+            native_objective = (
+                None
+                if shared_evaluation.objective is None
+                else float(shared_evaluation.objective)
             )
-    if not np.isfinite(native_objective):
-        raise RuntimeError(f"{route} selected candidate has a non-finite objective")
-    native_feasible = bool(
-        final.feasibility.feasible
-        if route == "surrogate" else final.feasible
-    )
-    if not native_feasible:
-        raise RuntimeError(f"{route} selected candidate failed its native feasibility audit")
+            native_feasible = bool(shared_evaluation.feasible)
+        else:
+            raw = np.full(expected_response_shape, np.nan)
+            projected = np.full(expected_response_shape, np.nan)
+            native_response = np.full(expected_response_shape, np.nan)
+            native_full_response = native_response
+            projection = None
+            native_objective = None
+            native_feasible = False
+    else:
+        surrogate_case = SurrogateCase(influent=influent, case_id=case_id)
+        raw = np.asarray(analysis.model.predict(theta, influent), dtype=np.float64)
+        projection = cold_reproject(
+            analysis.surrogate_assets,
+            surrogate_case,
+            normalized,
+            raise_on_failure=False,
+        )
+        projected = np.asarray(projection.state, dtype=np.float64)
+        native_full_response = (
+            np.asarray(final.projected, dtype=np.float64)
+            if route == "surrogate"
+            else np.asarray(final.response, dtype=np.float64)
+        )
+        native_response = (
+            native_full_response
+            if route == "surrogate"
+            else reduce_mechanistic_responses(
+                native_full_response, analysis.surrogate_assets.layout.layer_count,
+            )
+        )
+        native_objective = float(final.objective)
+        for label, values in (
+            ("raw", raw), ("projected", projected),
+            ("optimizer-native", native_response),
+        ):
+            if values.shape != expected_response_shape or not np.all(np.isfinite(values)):
+                raise RuntimeError(
+                    f"{route} {label} response is non-finite or has the wrong shape"
+                )
+        if not np.isfinite(native_objective):
+            raise RuntimeError(f"{route} selected candidate has a non-finite objective")
+        native_feasible = bool(
+            final.feasibility.feasible
+            if route == "surrogate" else final.feasible
+        )
+        if not native_feasible:
+            raise RuntimeError(
+                f"{route} selected candidate failed its native feasibility audit"
+            )
     retained_reference = case_directory / f"{route}_reference.npz"
     reference_full, state_1, state_2, reference_payload = _casewise_exact_reference(
         theta,
@@ -7525,6 +9190,9 @@ def _run_casewise_route_reference_evaluation(
         exact_replay_valid
         and reference_payload.get("engineering_feasible") is True
     )
+    comparison_valid = bool(
+        reference_valid and native_replay_available and native_feasible
+    )
     reference_objective = (
         float(reference_payload["objective"]) if exact_replay_valid else None
     )
@@ -7536,12 +9204,22 @@ def _run_casewise_route_reference_evaluation(
     local_converged = (
         bool(certification_payload.get("locally_converged"))
         if route == "surrogate" and certification_payload is not None
+        else bool(route_payload.get("locally_converged"))
+        if route == "shared_unit"
         else bool(getattr(final, "stationary", False))
+    )
+    local_converged = bool(
+        local_converged and native_replay_available and native_feasible
     )
     first_order_certified = (
         bool(certification_payload.get("first_order_certified"))
         if route == "surrogate" and certification_payload is not None
+        else bool(route_payload.get("stationarity_resolved"))
+        if route == "shared_unit"
         else bool(getattr(final, "stationary", False))
+    )
+    first_order_certified = bool(
+        first_order_certified and native_replay_available and native_feasible
     )
     primary_optimization_seconds = float(
         route_payload.get("elapsed_seconds", np.nan)
@@ -7567,15 +9245,22 @@ def _run_casewise_route_reference_evaluation(
         "case": case_id,
         "route": route,
         "candidate_available": True,
+        "selected_candidate_returned": True,
+        "native_replay_available": native_replay_available,
+        "native_replay_reason": native_replay_reason,
         "native_feasible": native_feasible,
         "exact_replay_valid": exact_replay_valid,
-        "comparison_valid": reference_valid,
+        "comparison_valid": comparison_valid,
         "status": (
-            str(reference_payload.get("status")) if reference_valid
+            "shared_unit_cold_replay_unavailable"
+            if not native_replay_available
+            else "shared_unit_native_infeasible"
+            if not native_feasible
+            else str(reference_payload.get("status")) if reference_valid
             else "exact_valid_engineering_infeasible" if exact_replay_valid
             else f"reference_{reference_payload.get('status', 'failed')}"
         ),
-        "selected_start": int(selected.start_index) if selected is not None else 0,
+        "selected_start": int(getattr(selected, "start_index", 0)),
         "normalized_controls": normalized.tolist(),
         "theta": theta.tolist(),
         "native_status": getattr(final, "status", route_payload.get("status")),
@@ -7583,7 +9268,9 @@ def _run_casewise_route_reference_evaluation(
         "exact_reference_objective": reference_objective,
         "exact_reference_objective_components": reference_components,
         "native_minus_reference_objective": (
-            None if reference_objective is None else native_objective - reference_objective
+            None
+            if reference_objective is None or native_objective is None
+            else native_objective - reference_objective
         ),
         "reference": reference_payload,
         "local_convergence_certified": local_converged,
@@ -7591,10 +9278,14 @@ def _run_casewise_route_reference_evaluation(
         "local_convergence_classification": (
             certification_payload.get("status")
             if route == "surrogate" and certification_payload is not None
+            else route_payload.get("classification")
+            if route == "shared_unit"
             else getattr(final, "status", None)
         ),
         "branch_ambiguity_is_qualifier_not_rejection": True,
-        "projection_accepted": bool(projection.accepted),
+        "projection_accepted": bool(
+            projection is not None and projection.accepted
+        ),
         "prediction_error_raw": _scaled_response_errors(raw, reference, response_scale),
         "prediction_error_projected": _scaled_response_errors(
             projected, reference, response_scale,
@@ -7613,6 +9304,10 @@ def _run_casewise_route_reference_evaluation(
         ),
         "reference_elapsed_seconds": reference_payload.get("elapsed_seconds"),
         "recovery": recovery_payload,
+        "shared_unit_closure": (
+            shared_evaluation.closure.as_dict()
+            if shared_evaluation is not None else None
+        ),
     }
     atomic_json(payload_path, payload, nonfinite_to_none=True)
     atomic_npz(
@@ -7674,7 +9369,7 @@ def _run_casewise_route_reference_evaluation(
         "stage": "casewise_exact_common_reference",
         "reference_contract": contract,
         "candidate_available": True,
-        "comparison_valid": reference_valid,
+        "comparison_valid": comparison_valid,
         "artifacts": _artifact_hashes(
             case_directory,
             (payload_path, arrays_path, physical_path, candidate_source),
@@ -7687,117 +9382,242 @@ def _casewise_comparison_row(
     case_id: str,
     surrogate: Mapping[str, Any],
     direct: Mapping[str, Any],
+    shared_unit: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    reasons: list[str] = []
-    if not surrogate.get("candidate_available"):
-        reasons.append("surrogate_no_candidate")
-    if not direct.get("candidate_available"):
-        reasons.append("direct_no_candidate")
-    if surrogate.get("candidate_available"):
-        if not surrogate.get("exact_replay_valid"):
-            reasons.append("surrogate_reference_invalid")
-        elif not surrogate.get("comparison_valid"):
-            reasons.append("surrogate_exact_engineering_infeasible")
-    if direct.get("candidate_available"):
-        if not direct.get("exact_replay_valid"):
-            reasons.append("direct_reference_invalid")
-        elif not direct.get("comparison_valid"):
-            reasons.append("direct_exact_engineering_infeasible")
-    if surrogate.get("candidate_available") and not surrogate.get("native_feasible"):
-        reasons.append("surrogate_native_infeasible")
-    if direct.get("candidate_available") and not direct.get("native_feasible"):
-        reasons.append("direct_native_infeasible")
-    eligible = not reasons
-    s_objective = surrogate.get("exact_reference_objective")
-    d_objective = direct.get("exact_reference_objective")
-    delta = (
-        float(s_objective) - float(d_objective)
-        if eligible and s_objective is not None and d_objective is not None else None
-    )
-    symmetric = (
-        delta / max(1.0, abs(float(s_objective)), abs(float(d_objective)))
-        if delta is not None else None
-    )
-    direct_relative = (
-        100.0 * delta / max(abs(float(d_objective)), 1.0e-12)
-        if delta is not None else None
-    )
-    s_controls = surrogate.get("normalized_controls")
-    d_controls = direct.get("normalized_controls")
-    control_difference = None
-    if eligible and isinstance(s_controls, list) and isinstance(d_controls, list):
-        difference = np.asarray(s_controls, dtype=float) - np.asarray(d_controls, dtype=float)
-        control_difference = {
-            "rms": float(np.sqrt(np.mean(difference**2))),
-            "maximum": float(np.max(np.abs(difference))),
+    routes: dict[str, Mapping[str, Any]] = {
+        "S": surrogate,
+        "M": direct,
+    }
+    if shared_unit is not None:
+        routes["U"] = shared_unit
+
+    def route_reasons(label: str, value: Mapping[str, Any]) -> list[str]:
+        prefix = {"S": "surrogate", "U": "shared_unit", "M": "direct"}[label]
+        reasons: list[str] = []
+        if not value.get("candidate_available"):
+            return [f"{prefix}_no_candidate"]
+        if not value.get("native_feasible"):
+            reasons.append(f"{prefix}_native_infeasible")
+        if not value.get("exact_replay_valid"):
+            reasons.append(f"{prefix}_reference_invalid")
+        elif value.get("reference", {}).get("engineering_feasible") is not True:
+            reasons.append(f"{prefix}_exact_engineering_infeasible")
+        return reasons
+
+    route_failures = {label: route_reasons(label, value) for label, value in routes.items()}
+
+    def pair(left: str, right: str) -> dict[str, Any]:
+        left_value, right_value = routes[left], routes[right]
+        reasons = [*route_failures[left], *route_failures[right]]
+        eligible = not reasons
+        left_objective = left_value.get("exact_reference_objective")
+        right_objective = right_value.get("exact_reference_objective")
+        delta = (
+            float(left_objective) - float(right_objective)
+            if eligible and left_objective is not None and right_objective is not None
+            else None
+        )
+        symmetric = (
+            delta / max(1.0, abs(float(left_objective)), abs(float(right_objective)))
+            if delta is not None else None
+        )
+        controls = None
+        left_controls = left_value.get("normalized_controls")
+        right_controls = right_value.get("normalized_controls")
+        if eligible and isinstance(left_controls, list) and isinstance(right_controls, list):
+            difference = np.asarray(left_controls, dtype=float) - np.asarray(
+                right_controls, dtype=float
+            )
+            controls = (
+                float(np.sqrt(np.mean(difference**2))),
+                float(np.max(np.abs(difference))),
+            )
+        left_components = left_value.get("exact_reference_objective_components")
+        right_components = right_value.get("exact_reference_objective_components")
+        components = None
+        if eligible and isinstance(left_components, list) and isinstance(
+            right_components, list
+        ):
+            components = (
+                np.asarray(left_components, dtype=float)
+                - np.asarray(right_components, dtype=float)
+            ).tolist()
+        return {
+            "eligible": eligible,
+            "reasons": reasons,
+            "delta": delta,
+            "symmetric": symmetric,
+            "controls": controls,
+            "components": components,
         }
-    component_differences = None
-    s_components = surrogate.get("exact_reference_objective_components")
-    d_components = direct.get("exact_reference_objective_components")
-    if eligible and isinstance(s_components, list) and isinstance(d_components, list):
-        component_differences = (
-            np.asarray(s_components, dtype=float) - np.asarray(d_components, dtype=float)
-        ).tolist()
-    surrogate_seconds = surrogate.get("optimization_elapsed_seconds")
-    direct_seconds = direct.get("optimization_elapsed_seconds")
-    timing_ratio = (
-        float(direct_seconds) / float(surrogate_seconds)
-        if surrogate_seconds is not None
-        and direct_seconds is not None
-        and np.isfinite(float(surrogate_seconds))
-        and np.isfinite(float(direct_seconds))
-        and float(surrogate_seconds) > 0.0
-        else None
+
+    pair_sm = pair("S", "M")
+    pair_su = pair("S", "U") if "U" in routes else None
+    pair_um = pair("U", "M") if "U" in routes else None
+    all_reasons = list(dict.fromkeys(
+        reason for reasons in route_failures.values() for reason in reasons
+    ))
+    all_three = bool("U" in routes and not all_reasons)
+    s_objective = surrogate.get("exact_reference_objective")
+    u_objective = (
+        None if shared_unit is None else shared_unit.get("exact_reference_objective")
     )
-    row = {
+    m_objective = direct.get("exact_reference_objective")
+    s_seconds = surrogate.get("optimization_elapsed_seconds")
+    u_seconds = (
+        None if shared_unit is None else shared_unit.get("optimization_elapsed_seconds")
+    )
+    m_seconds = direct.get("optimization_elapsed_seconds")
+
+    def ratio(numerator: Any, denominator: Any) -> float | None:
+        if numerator is None or denominator is None:
+            return None
+        left, right = float(numerator), float(denominator)
+        return left / right if np.isfinite(left) and np.isfinite(right) and right > 0.0 else None
+
+    row: dict[str, Any] = {
         "case": case_id,
-        "comparison_eligible": eligible,
-        "ineligibility_reasons": ";".join(reasons) if reasons else None,
+        # Preserve the legacy field for old two-route readers.  In a three-route
+        # result it means that all three exact-reference comparisons are valid.
+        "comparison_eligible": all_three if shared_unit is not None else pair_sm["eligible"],
+        "all_three_comparison_eligible": all_three if shared_unit is not None else None,
+        "ineligibility_reasons": ";".join(all_reasons) if all_reasons else None,
+        "S_U_eligible": None if pair_su is None else pair_su["eligible"],
+        "S_M_eligible": pair_sm["eligible"],
+        "U_M_eligible": None if pair_um is None else pair_um["eligible"],
+        "S_U_ineligibility_reasons": (
+            None if pair_su is None or not pair_su["reasons"]
+            else ";".join(pair_su["reasons"])
+        ),
+        "S_M_ineligibility_reasons": (
+            None if not pair_sm["reasons"] else ";".join(pair_sm["reasons"])
+        ),
+        "U_M_ineligibility_reasons": (
+            None if pair_um is None or not pair_um["reasons"]
+            else ";".join(pair_um["reasons"])
+        ),
         "surrogate_candidate_available": bool(surrogate.get("candidate_available")),
+        "shared_unit_candidate_available": (
+            None if shared_unit is None else bool(shared_unit.get("candidate_available"))
+        ),
         "direct_candidate_available": bool(direct.get("candidate_available")),
         "surrogate_local_convergence_certified": bool(
             surrogate.get("local_convergence_certified")
         ),
+        "shared_unit_local_convergence_certified": (
+            None if shared_unit is None
+            else bool(shared_unit.get("local_convergence_certified"))
+        ),
         "direct_first_order_stationarity_certified": bool(
             direct.get("first_order_stationarity_certified")
         ),
+        "all_local_convergence_qualified": bool(
+            all_three
+            and surrogate.get("local_convergence_certified")
+            and shared_unit is not None
+            and shared_unit.get("local_convergence_certified")
+            and direct.get("first_order_stationarity_certified")
+        ) if shared_unit is not None else None,
         "both_local_convergence_qualified": bool(
-            eligible
+            pair_sm["eligible"]
             and surrogate.get("local_convergence_certified")
             and direct.get("first_order_stationarity_certified")
         ),
         "surrogate_reference_status": surrogate.get("status"),
+        "shared_unit_reference_status": (
+            None if shared_unit is None else shared_unit.get("status")
+        ),
         "direct_reference_status": direct.get("status"),
-        "surrogate_branch_ambiguous": (
-            surrogate.get("reference", {}).get("branch_ambiguous")
+        "surrogate_branch_ambiguous": surrogate.get("reference", {}).get(
+            "branch_ambiguous"
+        ),
+        "shared_unit_branch_ambiguous": (
+            None if shared_unit is None
+            else shared_unit.get("reference", {}).get("branch_ambiguous")
         ),
         "direct_branch_ambiguous": direct.get("reference", {}).get("branch_ambiguous"),
         "J_S_reference": s_objective,
-        "J_M_reference": d_objective,
-        "delta_J_S_minus_M": delta,
-        "symmetric_relative_difference": symmetric,
-        "surrogate_penalty_percent_relative_to_direct": direct_relative,
+        "J_U_reference": u_objective,
+        "J_M_reference": m_objective,
+        "delta_J_S_minus_U": None if pair_su is None else pair_su["delta"],
+        "delta_J_S_minus_M": pair_sm["delta"],
+        "delta_J_U_minus_M": None if pair_um is None else pair_um["delta"],
+        "symmetric_relative_difference": pair_sm["symmetric"],
+        "symmetric_relative_difference_S_U": (
+            None if pair_su is None else pair_su["symmetric"]
+        ),
+        "symmetric_relative_difference_S_M": pair_sm["symmetric"],
+        "symmetric_relative_difference_U_M": (
+            None if pair_um is None else pair_um["symmetric"]
+        ),
+        "surrogate_penalty_percent_relative_to_direct": (
+            None if pair_sm["delta"] is None
+            else 100.0 * float(pair_sm["delta"]) / max(abs(float(m_objective)), 1.0e-12)
+        ),
         "control_rms_difference": (
-            None if control_difference is None else control_difference["rms"]
+            None if pair_sm["controls"] is None else pair_sm["controls"][0]
         ),
         "control_maximum_difference": (
-            None if control_difference is None else control_difference["maximum"]
+            None if pair_sm["controls"] is None else pair_sm["controls"][1]
         ),
-        "objective_component_differences": component_differences,
-        "surrogate_optimization_seconds": surrogate_seconds,
-        "direct_optimization_seconds": direct_seconds,
-        "mechanistic_surrogate_time_ratio": timing_ratio,
+        "control_rms_difference_S_U": (
+            None
+            if pair_su is None or pair_su["controls"] is None
+            else pair_su["controls"][0]
+        ),
+        "control_maximum_difference_S_U": (
+            None
+            if pair_su is None or pair_su["controls"] is None
+            else pair_su["controls"][1]
+        ),
+        "control_rms_difference_S_M": (
+            None if pair_sm["controls"] is None else pair_sm["controls"][0]
+        ),
+        "control_maximum_difference_S_M": (
+            None if pair_sm["controls"] is None else pair_sm["controls"][1]
+        ),
+        "control_rms_difference_U_M": (
+            None
+            if pair_um is None or pair_um["controls"] is None
+            else pair_um["controls"][0]
+        ),
+        "control_maximum_difference_U_M": (
+            None
+            if pair_um is None or pair_um["controls"] is None
+            else pair_um["controls"][1]
+        ),
+        "objective_component_differences": pair_sm["components"],
+        "surrogate_optimization_seconds": s_seconds,
+        "shared_unit_optimization_seconds": u_seconds,
+        "direct_optimization_seconds": m_seconds,
+        "mechanistic_surrogate_time_ratio": ratio(m_seconds, s_seconds),
+        "mechanistic_shared_unit_time_ratio": ratio(m_seconds, u_seconds),
+        "shared_unit_whole_system_time_ratio": ratio(u_seconds, s_seconds),
         "surrogate_certification_seconds": surrogate.get("certification_elapsed_seconds"),
+        "shared_unit_certification_seconds": (
+            None if shared_unit is None else shared_unit.get("certification_elapsed_seconds")
+        ),
         "surrogate_reference_seconds": surrogate.get("reference_elapsed_seconds"),
+        "shared_unit_reference_seconds": (
+            None if shared_unit is None else shared_unit.get("reference_elapsed_seconds")
+        ),
         "direct_reference_seconds": direct.get("reference_elapsed_seconds"),
     }
-    if component_differences is not None:
+    if pair_sm["components"] is not None:
         row.update({
             f"delta_component_{name}": value
             for name, value in zip(
-                OBJECTIVE_COMPONENT_NAMES, component_differences, strict=True,
+                OBJECTIVE_COMPONENT_NAMES, pair_sm["components"], strict=True,
             )
         })
+    for label, item in (("S_minus_U", pair_su), ("U_minus_M", pair_um)):
+        if item is not None and item["components"] is not None:
+            row.update({
+                f"delta_{label}_component_{name}": value
+                for name, value in zip(
+                    OBJECTIVE_COMPONENT_NAMES, item["components"], strict=True,
+                )
+            })
     return row
 
 
@@ -8055,6 +9875,8 @@ def run_optimization_stage(
         )
     if not assessment_gate_allows_optimization(analysis.passed):
         raise RuntimeError("optimization cannot bypass the enforced admission gate")
+    if analysis.shared_unit_assets is None:
+        raise RuntimeError("three-route optimization requires fitted shared-unit assets")
     source_id = source_digest(source_files)
     casewise_source_id = _casewise_artifact_source_id(run, source_id)
     analysis_id = _assessment_binding(design, development_targets, test_targets)
@@ -8093,6 +9915,14 @@ def run_optimization_stage(
             case_directory, case_id=case_id, influent=influent,
             assets=analysis.surrogate_assets, source_id=casewise_source_id,
             analysis_id=analysis_id, problem=shared_surrogate_problem,
+        )
+        shared_unit, shared_unit_payload = _run_shared_unit_route(
+            case_directory,
+            case_id=case_id,
+            influent=influent,
+            assets=analysis.shared_unit_assets,
+            source_id=casewise_source_id,
+            analysis_id=analysis_id,
         )
         direct, direct_payload = _run_direct_route(
             case_directory, case_id=case_id, influent=influent,
@@ -8144,6 +9974,22 @@ def run_optimization_stage(
                 analysis_id=analysis_id,
             )
         )
+        shared_unit_evaluation, shared_unit_physical = (
+            _run_casewise_route_reference_evaluation(
+                case_directory,
+                case_id=case_id,
+                route="shared_unit",
+                influent=influent,
+                selected=shared_unit.selected,
+                surrogate_candidate=None,
+                route_payload=shared_unit_payload,
+                certification_payload=None,
+                recovery_payload=None,
+                analysis=analysis,
+                source_id=casewise_source_id,
+                analysis_id=analysis_id,
+            )
+        )
         direct_evaluation, direct_physical = _run_casewise_route_reference_evaluation(
             case_directory,
             case_id=case_id,
@@ -8158,7 +10004,9 @@ def run_optimization_stage(
             source_id=casewise_source_id,
             analysis_id=analysis_id,
         )
-        for evaluation in (surrogate_evaluation, direct_evaluation):
+        for evaluation in (
+            surrogate_evaluation, shared_unit_evaluation, direct_evaluation,
+        ):
             reference = evaluation.get("reference", {})
             raw_error = evaluation.get("prediction_error_raw", {})
             projected_error = evaluation.get("prediction_error_projected", {})
@@ -8253,12 +10101,15 @@ def run_optimization_stage(
             reference_rows.append(row)
         comparison = _casewise_comparison_row(
             case_id, surrogate_evaluation, direct_evaluation,
+            shared_unit=shared_unit_evaluation,
         )
         comparison_rows.append(comparison)
         case_comparison_path = case_directory / "common_reference_comparison.json"
         atomic_json(case_comparison_path, comparison, nonfinite_to_none=True)
         case_frames = [
-            frame for frame in (surrogate_physical, direct_physical) if not frame.empty
+            frame for frame in (
+                surrogate_physical, shared_unit_physical, direct_physical,
+            ) if not frame.empty
         ]
         case_violations = (
             pd.concat(case_frames, ignore_index=True, sort=False)
@@ -8269,6 +10120,7 @@ def run_optimization_stage(
         new_artifacts = (
             case_directory / "surrogate_local_convergence_complete.json",
             case_directory / "surrogate_casewise_reference_complete.json",
+            case_directory / "shared_unit_casewise_reference_complete.json",
             case_directory / "direct_casewise_reference_complete.json",
             case_comparison_path,
         )
@@ -8288,6 +10140,33 @@ def run_optimization_stage(
                 ),
                 "primary_attempts": 1,
                 "recovery_attempts": 0,
+            },
+            {
+                "case": case_id,
+                "route": "shared_unit",
+                "primary_status": shared_unit.status,
+                "selected": shared_unit_evaluation.get("candidate_available"),
+                "comparison_valid": shared_unit_evaluation.get("comparison_valid"),
+                "locally_converged": shared_unit_evaluation.get(
+                    "local_convergence_certified"
+                ),
+                "first_order_stationary": shared_unit_evaluation.get(
+                    "first_order_stationarity_certified"
+                ),
+                "primary_attempts": 1,
+                "recovery_attempts": 0,
+                "root_attempts": shared_unit.root_attempts,
+                "failed_roots": shared_unit.failed_roots,
+                "failed_closures": getattr(shared_unit, "failed_closures", 0),
+                "projection_solves": shared_unit.projection_solves,
+                "root_seconds": getattr(shared_unit, "root_seconds", 0.0),
+                "projection_seconds": getattr(
+                    shared_unit, "projection_seconds", 0.0,
+                ),
+                "evaluation_seconds": getattr(
+                    shared_unit, "evaluation_seconds", 0.0,
+                ),
+                "poll_evaluations": getattr(shared_unit, "poll_evaluations", 0),
             },
             {
                 "case": case_id,
@@ -8313,6 +10192,11 @@ def run_optimization_stage(
             "case_contract": case_contract,
             "routes": route_rows,
             "comparison_eligible": comparison["comparison_eligible"],
+            "pairwise_eligibility": {
+                "S_U": comparison.get("S_U_eligible"),
+                "S_M": comparison.get("S_M_eligible"),
+                "U_M": comparison.get("U_M_eligible"),
+            },
             "artifacts": _artifact_hashes(run, new_artifacts),
         })
 
@@ -8324,6 +10208,46 @@ def run_optimization_stage(
     atomic_dataframe(
         run / "metrics" / "selected_candidate_reference_evaluation.csv",
         reference_frame,
+    )
+    pairwise_rows: list[dict[str, Any]] = []
+    for item in comparison_rows:
+        for pair, left, right in (
+            ("S_U", "S", "U"), ("S_M", "S", "M"), ("U_M", "U", "M"),
+        ):
+            pairwise_rows.append({
+                "case": item["case"],
+                "pair": pair,
+                "left_route": left,
+                "right_route": right,
+                "eligible": item.get(f"{pair}_eligible"),
+                "ineligibility_reasons": item.get(
+                    f"{pair}_ineligibility_reasons"
+                ),
+                "objective_difference": item.get(
+                    {
+                        "S_U": "delta_J_S_minus_U",
+                        "S_M": "delta_J_S_minus_M",
+                        "U_M": "delta_J_U_minus_M",
+                    }[pair]
+                ),
+                "symmetric_relative_difference": item.get(
+                    f"symmetric_relative_difference_{pair}"
+                ),
+                "control_rms_difference": item.get(
+                    f"control_rms_difference_{pair}"
+                ),
+                "control_maximum_difference": item.get(
+                    f"control_maximum_difference_{pair}"
+                ),
+            })
+    pairwise_path = run / "metrics" / "pairwise_common_reference_eligibility.csv"
+    atomic_dataframe(pairwise_path, pd.DataFrame(pairwise_rows))
+    shared_root_work_path = run / "metrics" / "shared_unit_root_work.csv"
+    atomic_dataframe(
+        shared_root_work_path,
+        pd.DataFrame([
+            row for row in route_statuses if row.get("route") == "shared_unit"
+        ]),
     )
     legacy_rows = run / "validation" / "untouched_test_equivalence" / "rows"
     retired_count = len(tuple(legacy_rows.glob("row_*.json"))) if legacy_rows.is_dir() else 0
@@ -8425,10 +10349,19 @@ def run_optimization_stage(
         run / "metrics" / "physical_violations_assessment.csv"
     )
     combined_frames = []
-    for scope, frame in (
+    scoped_frames: list[tuple[str, pd.DataFrame]] = [
         ("post_selection_holdout", assessment_physical),
-        ("selected_decision_common_reference", selected_physical),
-    ):
+    ]
+    shared_assessment_path = (
+        run / "metrics" / "shared_unit_physical_violations_assessment.csv"
+    )
+    if shared_assessment_path.is_file():
+        scoped_frames.append((
+            "post_selection_holdout_shared_unit",
+            pd.read_csv(shared_assessment_path),
+        ))
+    scoped_frames.append(("selected_decision_common_reference", selected_physical))
+    for scope, frame in scoped_frames:
         item = frame.copy()
         item.insert(0, "analysis_scope", scope)
         combined_frames.append(item)
@@ -8447,19 +10380,40 @@ def run_optimization_stage(
     exact_replay_valid = reference_frame.loc[
         available_reference, "exact_replay_valid"
     ].fillna(False)
-    reference_valid = reference_frame.loc[
+    comparison_valid = reference_frame.loc[
         available_reference, "comparison_valid"
+    ].fillna(False)
+    exact_engineering_feasible = reference_frame.loc[
+        available_reference, "reference_engineering_feasible"
     ].fillna(False)
     surrogate_certified = reference_frame.loc[
         reference_frame["route"].eq("surrogate") & available_reference,
         "local_convergence_certified",
     ].fillna(False)
+    shared_unit_converged = reference_frame.loc[
+        reference_frame["route"].eq("shared_unit") & available_reference,
+        "local_convergence_certified",
+    ].fillna(False)
+    direct_stationary = reference_frame.loc[
+        reference_frame["route"].eq("direct") & available_reference,
+        "first_order_stationarity_certified",
+    ].fillna(False)
+    pairwise_counts = {
+        pair: int(comparison_frame[f"{pair}_eligible"].fillna(False).sum())
+        for pair in ("S_U", "S_M", "U_M")
+    }
     scientific_passed = bool(
-        len(reference_frame) == 2 * len(case_inputs)
-        and int(available_reference.sum()) == 2 * len(case_inputs)
-        and bool(reference_valid.all())
+        analysis.all_surrogate_gates_passed
+        and len(reference_frame) == 3 * len(case_inputs)
+        and int(available_reference.sum()) == 3 * len(case_inputs)
+        and bool(comparison_valid.all())
         and len(surrogate_certified) == len(case_inputs)
         and bool(surrogate_certified.all())
+        and len(shared_unit_converged) == len(case_inputs)
+        and bool(shared_unit_converged.all())
+        and len(direct_stationary) == len(case_inputs)
+        and bool(direct_stationary.all())
+        and all(count == len(case_inputs) for count in pairwise_counts.values())
         and int(comparison_frame["comparison_eligible"].sum()) == len(case_inputs)
     )
     selected_count = int(available_reference.sum())
@@ -8480,16 +10434,26 @@ def run_optimization_stage(
         "selected_decision_count": selected_count,
         "exact_reference_valid_selected_decision_count": int(exact_replay_valid.sum()),
         "exact_reference_engineering_feasible_selected_decision_count": int(
-            reference_valid.sum()
+            exact_engineering_feasible.sum()
         ),
         "paired_common_reference_case_count": paired_count,
+        "pairwise_common_reference_case_counts": pairwise_counts,
         "surrogate_locally_converged_count": int(surrogate_certified.sum()),
+        "shared_unit_locally_converged_count": int(shared_unit_converged.sum()),
+        "direct_stationary_count": int(direct_stationary.sum()),
+        "whole_system_surrogate_gate_passed": bool(analysis.passed),
+        "shared_unit_surrogate_gate_passed": bool(
+            analysis.shared_unit_gate is not None
+            and analysis.shared_unit_gate.get("passed") is True
+        ),
         "casewise_reference_validation_passed": bool(
-            selected_count == 2 * len(case_inputs)
-            and len(exact_replay_valid) == 2 * len(case_inputs)
+            selected_count == 3 * len(case_inputs)
+            and len(exact_replay_valid) == 3 * len(case_inputs)
             and exact_replay_valid.all()
         ),
-        "all_pairs_comparison_eligible": paired_count == len(case_inputs),
+        "all_pairs_comparison_eligible": all(
+            count == len(case_inputs) for count in pairwise_counts.values()
+        ),
         "scientific_validation_passed": scientific_passed,
         "report_warning_count": len(report.warnings),
         "routes": route_statuses,
@@ -8499,6 +10463,8 @@ def run_optimization_stage(
         run / "metrics" / "selected_response_physical_audit.csv",
         run / "metrics" / "physical_violations_all_analysis.csv",
         run / "metrics" / "case_common_reference_comparison.csv",
+        pairwise_path,
+        shared_root_work_path,
         run / "metrics" / "selected_candidate_reference_evaluation.csv",
         retired_path,
         refinement_record_path,
@@ -8517,11 +10483,12 @@ def run_optimization_stage(
         "source_digest": source_id,
         "input_digest": analysis_id,
         "case_count": 11,
-        "route_count": 22,
+        "route_count": 33,
         "optimization_protocol": OPTIMIZATION_PROTOCOL,
         "required_attempts_per_route": 1,
         "selected_decision_count": selected_count,
         "paired_common_reference_case_count": paired_count,
+        "pairwise_common_reference_case_counts": pairwise_counts,
         "untouched_test_equivalence_executed": False,
         "scientific_validation_passed": scientific_passed,
         "artifacts": _artifact_hashes(run, final_paths),
@@ -8556,6 +10523,7 @@ def main(
     authorize_casewise_common_reference_migration: bool = False,
     authorize_convergence_poll_refinement_migration: bool = False,
     authorize_casewise_timing_migration: bool = False,
+    authorize_shared_unit_runtime_recovery_migration: bool = False,
 ) -> None:
     if through not in {"generation", "assessment", "complete"}:
         raise ValueError("through must be generation, assessment, or complete")
@@ -8597,6 +10565,9 @@ def main(
             authorize_convergence_poll_refinement_migration
         ),
         authorize_casewise_timing_migration=authorize_casewise_timing_migration,
+        authorize_shared_unit_runtime_recovery_migration=(
+            authorize_shared_unit_runtime_recovery_migration
+        ),
     )
     try:
         if use_frozen_accepted_checkpoints:
@@ -8631,11 +10602,17 @@ def main(
                 f"{run / 'metrics/admission_gate.json'}"
             )
         if through == "assessment" and existing_gate is not None:
-            gate_passed = bool(existing_gate["passed"])
+            gate_passed = bool(
+                existing_gate.get("all_surrogate_gates_passed", existing_gate["passed"])
+            )
             _write_state(
                 run, "assessment",
                 "complete" if gate_passed else "complete_with_advisory_failures",
                 admission_gate_passed=gate_passed,
+                whole_system_surrogate_gate_passed=bool(existing_gate["passed"]),
+                shared_unit_surrogate_gate_passed=existing_gate.get(
+                    "shared_unit_surrogate_gate_passed"
+                ),
                 assessment_gate_execution_policy=ASSESSMENT_GATE_EXECUTION_POLICY,
             )
             return
@@ -8651,10 +10628,20 @@ def main(
                 f"{run / 'metrics/admission_gate.json'}"
             )
         if through == "assessment":
+            gate_passed = (
+                analysis.all_surrogate_gates_passed
+                if profile.article_eligible else bool(analysis.passed)
+            )
             _write_state(
                 run, "assessment",
-                "complete" if analysis.passed else "complete_with_advisory_failures",
-                admission_gate_passed=bool(analysis.passed),
+                "complete" if gate_passed else "complete_with_advisory_failures",
+                admission_gate_passed=gate_passed,
+                whole_system_surrogate_gate_passed=bool(analysis.passed),
+                shared_unit_surrogate_gate_passed=(
+                    None
+                    if analysis.shared_unit_gate is None
+                    else bool(analysis.shared_unit_gate.get("passed"))
+                ),
                 assessment_gate_execution_policy=ASSESSMENT_GATE_EXECUTION_POLICY,
             )
             return
@@ -8668,14 +10655,32 @@ def main(
         _write_state(
             run, "complete",
             (
-                "complete" if scientific_passed and analysis.passed
+                "complete"
+                if scientific_passed
+                and (
+                    analysis.all_surrogate_gates_passed
+                    if profile.article_eligible else analysis.passed
+                )
                 else "complete_with_validation_failures"
             ),
-            admission_gate_passed=bool(analysis.passed),
+            admission_gate_passed=bool(
+                analysis.all_surrogate_gates_passed
+                if profile.article_eligible else analysis.passed
+            ),
+            whole_system_surrogate_gate_passed=bool(analysis.passed),
+            shared_unit_surrogate_gate_passed=(
+                None
+                if analysis.shared_unit_gate is None
+                else bool(analysis.shared_unit_gate.get("passed"))
+            ),
             assessment_gate_execution_policy=ASSESSMENT_GATE_EXECUTION_POLICY,
             optimization_validation_passed=scientific_passed,
             scientific_validation_passed=bool(
-                analysis.passed and scientific_passed
+                scientific_passed
+                and (
+                    analysis.all_surrogate_gates_passed
+                    if profile.article_eligible else analysis.passed
+                )
             ),
         )
     except Exception as exc:
@@ -8772,6 +10777,14 @@ if __name__ == "__main__":
             "resume from the completed robustness-case timing records"
         ),
     )
+    parser.add_argument(
+        "--authorize-shared-unit-runtime-recovery-migration",
+        action="store_true",
+        help=(
+            "apply the pinned missing-math-import recovery while retaining "
+            "completed generation and ridge-fit checkpoints"
+        ),
+    )
     arguments = parser.parse_args()
     selected_profile = (
         frozen_accepted_profile()
@@ -8786,6 +10799,7 @@ if __name__ == "__main__":
         arguments.authorize_casewise_common_reference_migration,
         arguments.authorize_convergence_poll_refinement_migration,
         arguments.authorize_casewise_timing_migration,
+        arguments.authorize_shared_unit_runtime_recovery_migration,
     ))
     if (
         reuse_from_run_id is None
@@ -8816,5 +10830,8 @@ if __name__ == "__main__":
         ),
         authorize_casewise_timing_migration=(
             arguments.authorize_casewise_timing_migration
+        ),
+        authorize_shared_unit_runtime_recovery_migration=(
+            arguments.authorize_shared_unit_runtime_recovery_migration
         ),
     )

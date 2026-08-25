@@ -585,9 +585,13 @@ class ArticleV3FiveThousandContractTests(unittest.TestCase):
             "scripts/run_article_v3_5000.py",
             "scripts/build_main_closed_loop_v3.py",
             "main_closed_loop.ipynb",
+            "closed_loop/__init__.py",
+            "closed_loop/design.py",
             "closed_loop/model.py",
             "closed_loop/manuscript_v3.py",
             "closed_loop/projection.py",
+            "closed_loop/surrogate.py",
+            "closed_loop/workflow.py",
             "closed_loop/v3_smooth.py",
             "closed_loop/v3_surrogate_nlp.py",
             "closed_loop/v3_active_set.py",
@@ -595,8 +599,6 @@ class ArticleV3FiveThousandContractTests(unittest.TestCase):
             "closed_loop/v3_reporting.py",
             "closed_loop/v3_replacement_generation.py",
             "config/params_manuscript_v3.json",
-            "article/wip_v3/manuscript.tex",
-            "article/wip_v3/supplementary_material.tex",
             "pyproject.toml",
             "uv.lock",
         }
@@ -604,6 +606,52 @@ class ArticleV3FiveThousandContractTests(unittest.TestCase):
         manifest = runner.source_file_digests()
         self.assertTrue(required.issubset(manifest))
         self.assertTrue(all(len(manifest[name]) == 64 for name in required))
+
+    def test_mutable_article_documentation_is_outside_source_contract(self) -> None:
+        self.assertFalse(
+            any(
+                Path(relative).as_posix().startswith("article/")
+                for relative in runner.SOURCE_FILES
+            )
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "code.py").write_text("VALUE = 1\n", encoding="utf-8")
+            article = root / "article" / "wip_v3" / "manuscript.tex"
+            article.parent.mkdir(parents=True)
+            article.write_text("first draft\n", encoding="utf-8")
+            with patch.object(runner, "ROOT", root), patch.object(
+                runner, "SOURCE_FILES", ("code.py",),
+            ):
+                before = runner.source_file_digests()
+                contract = runner._build_contract(
+                    "article_full_5000_doc_edit_test", tiny_profile(), before,
+                )
+                runner.establish_contract(root / "run", contract)
+                article.write_text("continuously revised draft\n", encoding="utf-8")
+                runner.assert_source_unchanged(before)
+                self.assertEqual(before, runner.source_file_digests())
+                resumed_contract = runner._build_contract(
+                    "article_full_5000_doc_edit_test",
+                    tiny_profile(),
+                    runner.source_file_digests(),
+                )
+                runner.establish_contract(root / "run", resumed_contract)
+
+                (root / "code.py").write_text("VALUE = 2\n", encoding="utf-8")
+                with self.assertRaisesRegex(
+                    RuntimeError, "computational source changed",
+                ):
+                    runner.assert_source_unchanged(before)
+
+    def test_source_contract_rejects_reintroducing_article_documentation(self) -> None:
+        with patch.object(
+            runner, "SOURCE_FILES", ("article/wip_v3/manuscript.tex",),
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError, "must exclude mutable article documentation",
+            ):
+                runner.source_file_digests()
 
     def test_run_directory_cannot_alias_preflight_or_escape_root(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -26,10 +26,20 @@ OUT.mkdir(parents=True, exist_ok=True)
 RAW = "#D97904"
 PROJECTED = "#147D92"
 SURROGATE = "#147D92"
+SHARED_UNIT = "#2E8B57"
 DIRECT = "#7A5195"
 REFERENCE = "#343A40"
 BAD = "#F6D7D7"
 GRID = "#D8DEE4"
+ROUTE_ORDER = ("surrogate", "shared_unit", "direct")
+ROUTE_COLOR = {
+    "surrogate": SURROGATE, "shared_unit": SHARED_UNIT, "direct": DIRECT,
+}
+ROUTE_LABEL = {
+    "surrogate": "System surrogate", "shared_unit": "Shared-unit surrogate",
+    "direct": "Smooth NLP",
+}
+ROUTE_MARKER = {"surrogate": "o", "shared_unit": "^", "direct": "s"}
 
 plt.rcParams.update({
     "figure.dpi": 120,
@@ -88,7 +98,7 @@ def route_parity_chart(route: str, prediction_method: str, stem: str, title: str
         pad = max(1.0e-9, 0.06 * (limits[1] - limits[0]))
         limits = [limits[0] - pad, limits[1] + pad]
         ax.plot(limits, limits, color=REFERENCE, lw=1.2, ls="--", label="perfect match")
-        ax.scatter(x, y, s=42, color=SURROGATE if route == "surrogate" else DIRECT,
+        ax.scatter(x, y, s=42, color=ROUTE_COLOR[route],
                    edgecolor="white", linewidth=0.6, zorder=3)
         for label, xx, yy in zip([case_label[c] for c in pivot.index], x, y, strict=True):
             ax.annotate(label, (xx, yy), xytext=(3, 2), textcoords="offset points", fontsize=6)
@@ -119,6 +129,17 @@ quality = pd.read_csv(TABLES / "selected_quality.csv")
 controls = pd.read_csv(TABLES / "scenario_controls.csv")
 comparison = pd.read_csv(TABLES / "scenario_comparison.csv")
 timing = pd.read_csv(RUN / "metrics" / "robustness_case_timing.csv")
+
+present_routes = set(quality.get("decision_route", pd.Series(dtype=str)).astype(str))
+present_routes.update(controls.get("route", pd.Series(dtype=str)).astype(str))
+routes = tuple(
+    route for route in ROUTE_ORDER
+    if route in present_routes or any(
+        (RUN / "optimization").glob(f"*/{route}_selected.npz")
+    )
+)
+if "shared_unit" not in routes:
+    routes = ("surrogate", "direct")
 
 robust_cases = [f"robustness_{index:02d}" for index in range(1, 11)]
 all_cases = ["nominal", *robust_cases]
@@ -251,6 +272,20 @@ q6 = route_parity_chart(
 )
 for key, value in q5.items(): summary_rows.append({"question": 5, "metric": key, "value": value})
 for key, value in q6.items(): summary_rows.append({"question": 6, "metric": key, "value": value})
+if (
+    "shared_unit" in routes
+    and not quality[
+        quality["decision_route"].eq("shared_unit")
+        & quality["response_method"].eq("projected")
+    ].empty
+):
+    shared_parity = route_parity_chart(
+        "shared_unit", "projected",
+        "shared_unit_effluent_prediction_vs_mechanistic",
+        "Shared-unit optimization: projected response vs exact mechanistic replay",
+    )
+    for key, value in shared_parity.items():
+        summary_rows.append({"question": "6U", "metric": key, "value": value})
 
 # Exact-reference components for questions 7--10.
 with np.load(RUN / "datasets" / "effective_design.npz", allow_pickle=False) as design_npz:
@@ -263,108 +298,181 @@ quality_scale = np.std(development_effluent @ COMPOSITE_MATRIX.T, axis=0, ddof=0
 weights = np.asarray([0.50, 0.15, 0.20, 0.05, 0.05, 0.05])
 records: list[dict[str, object]] = []
 for case in all_cases:
-    for route in ("surrogate", "direct"):
-        path = RUN / "optimization" / case / f"{route}_casewise_reference.npz"
+    for route in routes:
+        case_directory = RUN / "optimization" / case
+        path = case_directory / f"{route}_casewise_reference.npz"
+        if not path.is_file():
+            path = case_directory / f"{route}_selected.npz"
+        if not path.is_file():
+            continue
         with np.load(path, allow_pickle=False) as stored:
-            theta = np.asarray(stored["theta"], dtype=float)
-            response = np.asarray(stored["exact_reference"], dtype=float)
+            theta_key = "controls" if "controls" in stored.files else "theta"
+            response_key = next((key for key in (
+                "reference_response", "exact_reference", "reference",
+            ) if key in stored.files), None)
+            if theta_key not in stored.files or response_key is None:
+                continue
+            theta = np.asarray(stored[theta_key], dtype=float)
+            response = np.asarray(stored[response_key], dtype=float)
+        if theta.shape != (7,) or response.shape[0] < 160 or not (
+            np.all(np.isfinite(theta)) and np.all(np.isfinite(response))
+        ):
+            continue
         effluent = response[120:140] / (1.0 - theta[6])
         comp = COMPOSITE_MATRIX @ effluent
         underflow = response[140:160] / (theta[5] + theta[6])
         underflow_tss = float(TSS_VECTOR @ underflow)
         objective_parts = np.asarray([
-            np.mean(comp / quality_scale),
-            (theta[0] - 6.0) / 30.0,
-            theta[0] * np.sum(theta[1:4]) / (36.0 * 3.0),
-            theta[4] / 4.0,
-            (theta[5] - 0.25) / 1.0,
-            theta[6] * underflow_tss / (0.05 * 15_000.0),
+            np.mean(comp / quality_scale), (theta[0] - 6.0) / 30.0,
+            theta[0] * np.sum(theta[1:4]) / (36.0 * 3.0), theta[4] / 4.0,
+            (theta[5] - 0.25), theta[6] * underflow_tss / (0.05 * 15_000.0),
         ])
         records.append({
             "case": case, "route": route,
             **dict(zip(composites, comp, strict=True)),
-            "quality_component": objective_parts[0],
-            "hrt_component": objective_parts[1],
-            "aeration_component": objective_parts[2],
-            "internal_recycle_component": objective_parts[3],
-            "return_sludge_component": objective_parts[4],
-            "wasting_component": objective_parts[5],
+            **dict(zip(
+                ("quality_component", "hrt_component", "aeration_component",
+                 "internal_recycle_component", "return_sludge_component", "wasting_component"),
+                objective_parts, strict=True,
+            )),
             "economic_contribution": float(weights[1:] @ objective_parts[1:]),
             "exact_objective": float(weights @ objective_parts),
         })
 exact = pd.DataFrame(records)
-eligible_map = comparison.set_index("case")["comparison_eligible"].astype(bool)
-eligible = np.asarray([eligible_map.loc[case] for case in robust_cases], dtype=bool)
 labels = [case_label[case] for case in robust_cases]
-x = np.arange(10)
-width = 0.37
+x = np.arange(len(robust_cases))
+route_width = 0.78 / len(routes)
+offsets = {
+    route: (index - (len(routes) - 1) / 2) * route_width
+    for index, route in enumerate(routes)
+}
+pair_specs = [
+    ("surrogate", "shared_unit", "S_U"),
+    ("surrogate", "direct", "S_M"),
+    ("shared_unit", "direct", "U_M"),
+]
+pair_specs = [item for item in pair_specs if item[0] in routes and item[1] in routes]
+comparison_index = comparison.set_index("case")
 
-def paired_exact_bars(column: str, stem: str, title: str, ylabel: str, question: int) -> None:
-    pivot = exact[exact.case.isin(robust_cases)].pivot(index="case", columns="route", values=column).loc[robust_cases]
+
+def pair_eligible(left: str, right: str, symbol: str) -> pd.Series:
+    column = f"comparison_eligible_{symbol}"
+    if column not in comparison_index and symbol == "S_M":
+        column = "comparison_eligible"
+    if column in comparison_index:
+        return comparison_index[column].reindex(robust_cases).fillna(False).astype(bool)
+    available = exact.pivot_table(index="case", columns="route", values="exact_objective", aggfunc="first")
+    return available.get(left, pd.Series(dtype=float)).reindex(robust_cases).notna() & available.get(right, pd.Series(dtype=float)).reindex(robust_cases).notna()
+
+
+pair_masks = {
+    symbol: pair_eligible(left, right, symbol)
+    for left, right, symbol in pair_specs
+}
+eligible_any = np.logical_or.reduce(
+    [mask.to_numpy(bool) for mask in pair_masks.values()]
+) if pair_masks else np.zeros(len(robust_cases), dtype=bool)
+
+
+def route_pivot(column: str) -> pd.DataFrame:
+    return exact[exact.case.isin(robust_cases)].pivot(
+        index="case", columns="route", values=column,
+    ).reindex(index=robust_cases, columns=routes)
+
+
+def grouped_exact_bars(column: str, stem: str, title: str, ylabel: str, question: int) -> None:
+    pivot = route_pivot(column)
     fig, ax = plt.subplots(figsize=(12, 5.4))
-    shade_ineligible(ax, eligible)
-    b1 = ax.bar(x - width / 2, pivot["surrogate"], width, color=SURROGATE, label="Surrogate decision")
-    b2 = ax.bar(x + width / 2, pivot["direct"], width, color=DIRECT, label="Smooth-NLP decision")
+    shade_ineligible(ax, eligible_any)
+    handles = []
+    for route in routes:
+        bars = ax.bar(
+            x + offsets[route], pivot[route], route_width,
+            color=ROUTE_COLOR[route], label=ROUTE_LABEL[route],
+        )
+        handles.append(bars)
     ax.set_xticks(x, labels); ax.set_ylabel(ylabel); ax.set_title(title)
-    ax.legend(handles=[b1, b2, Patch(facecolor=BAD, alpha=0.55, label="Paired comparison ineligible")], ncol=3)
-    fig.text(0.5, 0.01, "Both bars use exact nonsmooth mechanistic replay; lower is better.", ha="center")
-    fig.tight_layout(rect=(0, 0.04, 1, 1))
-    save(fig, stem)
-    valid = pivot.loc[np.asarray(robust_cases)[eligible]]
-    summary_rows.extend([
-        {"question": question, "metric": "eligible_cases", "value": int(eligible.sum())},
-        {"question": question, "metric": "surrogate_lower_count", "value": int((valid.surrogate < valid.direct).sum())},
-        {"question": question, "metric": "direct_lower_count", "value": int((valid.direct < valid.surrogate).sum())},
-    ])
+    ax.legend(handles=[*handles, Patch(facecolor=BAD, alpha=0.55, label="No eligible pair")], ncol=len(routes) + 1)
+    fig.text(0.5, 0.01, "All available bars use exact nonsmooth mechanistic replay; lower is better.", ha="center")
+    fig.tight_layout(rect=(0, 0.04, 1, 1)); save(fig, stem)
+    for left, right, symbol in pair_specs:
+        valid = pair_masks[symbol] & pivot[left].notna() & pivot[right].notna()
+        summary_rows.extend([
+            {"question": question, "metric": f"eligible_cases_{symbol}", "value": int(valid.sum())},
+            {"question": question, "metric": f"{left}_lower_count_vs_{right}", "value": int((pivot.loc[valid, left] < pivot.loc[valid, right]).sum())},
+            {"question": question, "metric": f"{right}_lower_count_vs_{left}", "value": int((pivot.loc[valid, right] < pivot.loc[valid, left]).sum())},
+        ])
+        if symbol == "S_M":
+            summary_rows.extend([
+                {"question": question, "metric": "eligible_cases", "value": int(valid.sum())},
+                {"question": question, "metric": "surrogate_lower_count", "value": int((pivot.loc[valid, left] < pivot.loc[valid, right]).sum())},
+                {"question": question, "metric": "direct_lower_count", "value": int((pivot.loc[valid, right] < pivot.loc[valid, left]).sum())},
+            ])
 
-paired_exact_bars("exact_objective", "q07_exact_optimal_objective", "Q7. Exact objective at selected decisions across robustness cases", "Exact total objective", 7)
-paired_exact_bars("quality_component", "q08_exact_water_quality_component", "Q8. Exact normalized water-quality component across robustness cases", "Normalized water-quality component", 8)
 
-# 9. Exact effluent quality from both selected decisions.
+grouped_exact_bars("exact_objective", "q07_exact_optimal_objective", "Q7. Exact objective at selected decisions across robustness cases", "Exact total objective", 7)
+grouped_exact_bars("quality_component", "q08_exact_water_quality_component", "Q8. Exact normalized water-quality component across robustness cases", "Normalized water-quality component", 8)
+
+# 9. Exact effluent quality from every selected decision.
 fig, axes = plt.subplots(2, 2, figsize=(12, 8))
 for ax, component in zip(axes.flat, composites, strict=True):
-    pivot = exact[exact.case.isin(robust_cases)].pivot(index="case", columns="route", values=component).loc[robust_cases]
-    shade_ineligible(ax, eligible)
-    ax.plot(x, pivot["surrogate"], marker="o", color=SURROGATE, label="Surrogate decision")
-    ax.plot(x, pivot["direct"], marker="s", color=DIRECT, label="Smooth-NLP decision")
+    pivot = route_pivot(component)
+    shade_ineligible(ax, eligible_any)
+    for route in routes:
+        ax.plot(x, pivot[route], marker=ROUTE_MARKER[route], color=ROUTE_COLOR[route], label=ROUTE_LABEL[route])
     ax.set_xticks(x, labels); ax.set_title(component); ax.set_ylabel("Effluent composite")
 handles, legend_labels = axes.flat[0].get_legend_handles_labels()
-handles.append(Patch(facecolor=BAD, alpha=0.55)); legend_labels.append("Paired comparison ineligible")
-fig.legend(handles, legend_labels, loc="upper center", ncol=3, bbox_to_anchor=(0.5, 0.95))
-fig.suptitle("Q9. Exact effluent quality yielded by the two selected decisions", fontsize=14)
-fig.tight_layout(rect=(0, 0, 1, 0.91))
-save(fig, "q09_exact_effluent_composites")
-eligible_exact = exact[exact.case.isin(np.asarray(robust_cases)[eligible])]
-pair = eligible_exact.pivot(index="case", columns="route", values=composites)
-relative = np.abs(pair.xs("surrogate", axis=1, level="route") - pair.xs("direct", axis=1, level="route")) / np.maximum(np.abs(pair.xs("direct", axis=1, level="route")), 1.0e-12)
-summary_rows.append({"question": 9, "metric": "median_absolute_route_difference_percent", "value": float(100 * np.median(relative.to_numpy()))})
+handles.append(Patch(facecolor=BAD, alpha=0.55)); legend_labels.append("No eligible pair")
+fig.legend(handles, legend_labels, loc="upper center", ncol=len(routes) + 1, bbox_to_anchor=(0.5, 0.95))
+fig.suptitle("Q9. Exact effluent quality yielded by selected decisions", fontsize=14)
+fig.tight_layout(rect=(0, 0, 1, 0.91)); save(fig, "q09_exact_effluent_composites")
+for left, right, symbol in pair_specs:
+    component_pivots = [route_pivot(component) for component in composites]
+    mask = pair_masks[symbol].to_numpy(bool)
+    relative = np.column_stack([
+        np.abs(pivot[left] - pivot[right]) / np.maximum(np.abs(pivot[right]), 1.0e-12)
+        for pivot in component_pivots
+    ])
+    summary_rows.append({
+        "question": 9, "metric": f"median_absolute_route_difference_percent_{symbol}",
+        "value": float(100 * np.nanmedian(relative[mask])) if np.any(mask) else np.nan,
+    })
+    if symbol == "S_M":
+        summary_rows.append({
+            "question": 9, "metric": "median_absolute_route_difference_percent",
+            "value": float(100 * np.nanmedian(relative[mask])) if np.any(mask) else np.nan,
+        })
 
 # 10. Weighted economic contribution and its composition.
 economic_columns = ["hrt_component", "aeration_component", "internal_recycle_component", "return_sludge_component", "wasting_component"]
 economic_names = ["HRT", "Aeration", "Internal recycle", "Return sludge", "Wasting"]
 economic_colors = ["#4C78A8", "#F58518", "#54A24B", "#E45756", "#72B7B2"]
-fig, ax = plt.subplots(figsize=(13, 6.2))
-shade_ineligible(ax, eligible)
-for route, offset, hatch in (("surrogate", -width / 2, ""), ("direct", width / 2, "///")):
-    route_data = exact[(exact.route == route) & exact.case.isin(robust_cases)].set_index("case").loc[robust_cases]
-    bottom = np.zeros(10)
+hatches = {"surrogate": "", "shared_unit": "..", "direct": "///"}
+fig, ax = plt.subplots(figsize=(13, 6.2)); shade_ineligible(ax, eligible_any)
+for route in routes:
+    route_data = exact[exact.route.eq(route) & exact.case.isin(robust_cases)].set_index("case").reindex(robust_cases)
+    bottom = np.zeros(len(robust_cases))
     for column, name, color, weight in zip(economic_columns, economic_names, economic_colors, weights[1:], strict=True):
         values = weight * route_data[column].to_numpy(float)
-        ax.bar(x + offset, values, width, bottom=bottom, color=color, edgecolor="white", linewidth=0.3,
-               hatch=hatch, label=name if route == "surrogate" else None)
+        ax.bar(x + offsets[route], values, route_width, bottom=bottom, color=color,
+               edgecolor="white", linewidth=0.3, hatch=hatches[route],
+               label=name if route == routes[0] else None)
         bottom += values
 ax.set_xticks(x, labels); ax.set_ylabel("Weighted economic/resource contribution")
 ax.set_title("Q10. Exact economic/resource objective contribution across robustness cases")
 component_handles = [Patch(facecolor=color, label=name) for color, name in zip(economic_colors, economic_names, strict=True)]
-route_handles = [Patch(facecolor="white", edgecolor="black", label="Surrogate: left/solid"), Patch(facecolor="white", edgecolor="black", hatch="///", label="Smooth NLP: right/hatched"), Patch(facecolor=BAD, alpha=0.55, label="Ineligible")]
-ax.legend(handles=[*component_handles, *route_handles], ncol=4, loc="upper center", bbox_to_anchor=(0.5, -0.12))
-fig.tight_layout(rect=(0, 0.12, 1, 1))
-save(fig, "q10_exact_economic_component")
-valid_economic = exact[exact.case.isin(np.asarray(robust_cases)[eligible])].pivot(index="case", columns="route", values="economic_contribution")
-summary_rows.extend([
-    {"question": 10, "metric": "surrogate_lower_count", "value": int((valid_economic.surrogate < valid_economic.direct).sum())},
-    {"question": 10, "metric": "direct_lower_count", "value": int((valid_economic.direct < valid_economic.surrogate).sum())},
-])
+route_handles = [Patch(facecolor="white", edgecolor="black", hatch=hatches[route], label=ROUTE_LABEL[route]) for route in routes]
+ax.legend(handles=[*component_handles, *route_handles, Patch(facecolor=BAD, alpha=0.55, label="No eligible pair")], ncol=4, loc="upper center", bbox_to_anchor=(0.5, -0.12))
+fig.tight_layout(rect=(0, 0.12, 1, 1)); save(fig, "q10_exact_economic_component")
+economic = route_pivot("economic_contribution")
+for left, right, symbol in pair_specs:
+    valid = pair_masks[symbol] & economic[left].notna() & economic[right].notna()
+    summary_rows.append({"question": 10, "metric": f"{left}_lower_count_vs_{right}", "value": int((economic.loc[valid, left] < economic.loc[valid, right]).sum())})
+    if symbol == "S_M":
+        summary_rows.extend([
+            {"question": 10, "metric": "surrogate_lower_count", "value": int((economic.loc[valid, left] < economic.loc[valid, right]).sum())},
+            {"question": 10, "metric": "direct_lower_count", "value": int((economic.loc[valid, right] < economic.loc[valid, left]).sum())},
+        ])
 
 # 11. Optimal controls.
 control_columns = ["H", "a_3", "a_4", "a_5", "r_I", "r_R", "w"]
@@ -372,47 +480,53 @@ control_titles = ["HRT H", "Aeration a3", "Aeration a4", "Aeration a5", "Interna
 fig, axes = plt.subplots(4, 2, figsize=(12, 12), sharex=True)
 robust_controls = controls.set_index(["case", "route"])
 for ax, column, title in zip(axes.flat, control_columns, control_titles, strict=False):
-    shade_ineligible(ax, eligible)
-    s = np.asarray([robust_controls.loc[(case, "surrogate"), column] for case in robust_cases], float)
-    d = np.asarray([robust_controls.loc[(case, "direct"), column] for case in robust_cases], float)
-    ax.plot(x, s, marker="o", color=SURROGATE, label="Surrogate")
-    ax.plot(x, d, marker="s", color=DIRECT, label="Smooth NLP")
+    shade_ineligible(ax, eligible_any)
+    for route in routes:
+        values = np.asarray([
+            robust_controls.loc[(case, route), column]
+            if (case, route) in robust_controls.index else np.nan
+            for case in robust_cases
+        ], float)
+        ax.plot(x, values, marker=ROUTE_MARKER[route], color=ROUTE_COLOR[route], label=ROUTE_LABEL[route])
     ax.set_title(title); ax.set_xticks(x, labels)
 axes.flat[-1].axis("off")
 handles, legend_labels = axes.flat[0].get_legend_handles_labels()
-handles.append(Patch(facecolor=BAD, alpha=0.55)); legend_labels.append("Paired comparison ineligible")
+handles.append(Patch(facecolor=BAD, alpha=0.55)); legend_labels.append("No eligible pair")
 fig.legend(handles, legend_labels, loc="lower right", bbox_to_anchor=(0.93, 0.08))
 fig.suptitle("Q11. Selected operating decisions across robustness cases", fontsize=14)
-fig.tight_layout(rect=(0, 0, 1, 0.96))
-save(fig, "q11_optimal_operating_values")
+fig.tight_layout(rect=(0, 0, 1, 0.96)); save(fig, "q11_optimal_operating_values")
 bounds_low = np.asarray([6, 0, 0, 0, 0, 0.25, 0.005])
 bounds_high = np.asarray([36, 1, 1, 1, 4, 1.25, 0.05])
-control_pivot_s = np.vstack([[robust_controls.loc[(case, "surrogate"), col] for col in control_columns] for case in robust_cases])
-control_pivot_d = np.vstack([[robust_controls.loc[(case, "direct"), col] for col in control_columns] for case in robust_cases])
-normalized_rms = np.sqrt(np.mean(((control_pivot_s - control_pivot_d) / (bounds_high - bounds_low)) ** 2, axis=1))
-summary_rows.append({"question": 11, "metric": "median_normalized_control_rms_difference", "value": float(np.median(normalized_rms[eligible]))})
+for left, right, symbol in pair_specs:
+    left_values = np.vstack([[robust_controls.loc[(case, left), col] if (case, left) in robust_controls.index else np.nan for col in control_columns] for case in robust_cases])
+    right_values = np.vstack([[robust_controls.loc[(case, right), col] if (case, right) in robust_controls.index else np.nan for col in control_columns] for case in robust_cases])
+    normalized_rms = np.sqrt(np.mean(((left_values - right_values) / (bounds_high - bounds_low)) ** 2, axis=1))
+    valid = pair_masks[symbol].to_numpy(bool) & np.isfinite(normalized_rms)
+    summary_rows.append({"question": 11, "metric": f"median_normalized_control_rms_difference_{symbol}", "value": float(np.median(normalized_rms[valid])) if np.any(valid) else np.nan})
+    if symbol == "S_M":
+        summary_rows.append({"question": 11, "metric": "median_normalized_control_rms_difference", "value": float(np.median(normalized_rms[valid])) if np.any(valid) else np.nan})
 
 # 12. Primary optimization time only.
-time_pivot = timing.pivot(index="case", columns="route", values="primary_optimization_seconds").loc[robust_cases]
-fig, ax = plt.subplots(figsize=(12, 5.7))
-b1 = ax.bar(x - width / 2, time_pivot["surrogate"], width, color=SURROGATE, label="Surrogate primary")
-b2 = ax.bar(x + width / 2, time_pivot["direct"], width, color=DIRECT, label="Smooth-NLP primary")
-ax.set_yscale("log")
-ax.set_xticks(x, labels); ax.set_ylabel("Primary optimization time (s, log scale)")
-ax.set_title("Q12. Primary optimization time across robustness cases")
-ax.legend(ncol=2)
-for bars in (b1, b2):
+time_pivot = timing.pivot(index="case", columns="route", values="primary_optimization_seconds").reindex(index=robust_cases, columns=routes)
+fig, ax = plt.subplots(figsize=(12, 5.7)); bar_groups = []
+for route in routes:
+    bars = ax.bar(x + offsets[route], time_pivot[route], route_width, color=ROUTE_COLOR[route], label=f"{ROUTE_LABEL[route]} primary")
+    bar_groups.append(bars)
+ax.set_yscale("log"); ax.set_xticks(x, labels); ax.set_ylabel("Primary optimization time (s, log scale)")
+ax.set_title("Q12. Primary optimization time across robustness cases"); ax.legend(ncol=len(routes))
+for bars in bar_groups:
     for bar in bars:
-        ax.annotate(f"{bar.get_height():.1f}", (bar.get_x()+bar.get_width()/2, bar.get_height()),
-                    xytext=(0, 3), textcoords="offset points", ha="center", fontsize=6)
+        if np.isfinite(bar.get_height()):
+            ax.annotate(f"{bar.get_height():.1f}", (bar.get_x()+bar.get_width()/2, bar.get_height()), xytext=(0, 3), textcoords="offset points", ha="center", fontsize=6)
 fig.text(0.5, 0.01, "Certification, recovery, and exact-replay times are excluded.", ha="center")
-fig.tight_layout(rect=(0, 0.04, 1, 1))
-save(fig, "q12_primary_optimization_time")
-summary_rows.extend([
-    {"question": 12, "metric": "surrogate_mean_seconds", "value": float(time_pivot.surrogate.mean())},
-    {"question": 12, "metric": "direct_mean_seconds", "value": float(time_pivot.direct.mean())},
-    {"question": 12, "metric": "surrogate_faster_case_count", "value": int((time_pivot.surrogate < time_pivot.direct).sum())},
-])
+fig.tight_layout(rect=(0, 0.04, 1, 1)); save(fig, "q12_primary_optimization_time")
+for route in routes:
+    summary_rows.append({"question": 12, "metric": f"{route}_mean_seconds", "value": float(time_pivot[route].mean())})
+for left, right, symbol in pair_specs:
+    valid = time_pivot[left].notna() & time_pivot[right].notna()
+    summary_rows.append({"question": 12, "metric": f"{left}_faster_case_count_vs_{right}", "value": int((time_pivot.loc[valid, left] < time_pivot.loc[valid, right]).sum())})
+    if symbol == "S_M":
+        summary_rows.append({"question": 12, "metric": "surrogate_faster_case_count", "value": int((time_pivot.loc[valid, left] < time_pivot.loc[valid, right]).sum())})
 
 pd.DataFrame(summary_rows).to_csv(OUT / "chart_summary.csv", index=False)
 with (OUT / "chart_index.csv").open("w", newline="", encoding="utf-8") as stream:

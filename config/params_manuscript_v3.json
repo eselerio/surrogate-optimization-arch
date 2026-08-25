@@ -1,10 +1,11 @@
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "sources": {
     "manuscript": "article/wip_v3/manuscript.tex",
     "supplement": "article/wip_v3/supplementary_material.tex"
   },
   "execution": {
+    "runner_schema": 11,
     "default_profile": "article_frozen_16714",
     "profile_environment_variable": "ARTICLE_V3_PROFILE",
     "run_id_environment_variable": "ARTICLE_V3_RUN_ID",
@@ -137,7 +138,14 @@
     "retained_mechanistic_coordinates": "five reactor states and all ten Clarifier layers remain in generation, direct optimization, stability analysis, and exact replay",
     "surrogate_response_coordinates": "mixer, five reactor concentrations, Clarifier overflow and underflow component-flow vectors, and one Clarifier-solids inventory",
     "superseded_artifacts": "the 170-output surrogate fit, scales, projections, trust calibration, surrogate optimization, replay at old decisions, timing, and reports",
-    "retained_artifacts": "accepted full mechanistic checkpoints, accepted-row membership and provenance, fixed partition, nominal influent, and ten scenario influents"
+    "retained_artifacts": "accepted full mechanistic checkpoints, accepted-row membership and provenance, fixed partition, nominal influent, and ten scenario influents",
+    "shared_unit_revision_date": "2026-08-25",
+    "shared_unit_revision_authority": "explicit user instruction",
+    "shared_unit_revision_scope": "add route U as a third optimization method while preserving the existing whole-system surrogate route S and smooth mechanistic route M",
+    "shared_unit_revision_is_outcome_aware": true,
+    "shared_unit_generation_reused": true,
+    "shared_unit_fit_assessment_optimization_and_reporting_are_new": true,
+    "three_route_run_requires_fresh_lineage": true
   },
   "design": {
     "generator": "SplitMix64",
@@ -199,6 +207,9 @@
     }
   },
   "surrogate": {
+    "route_id": "surrogate",
+    "route_symbol": "S",
+    "architecture": "whole_system",
     "response_schema": "clarifier_inventory_v1",
     "mechanistic_target_dimension": 170,
     "response_dimension": 161,
@@ -218,6 +229,78 @@
       "clarifier_inventory_raw_nrmse_maximum": 1.0,
       "all_projection_qp_audits_must_pass": true
     }
+  },
+  "shared_unit_surrogate": {
+    "route_id": "shared_unit",
+    "route_symbol": "U",
+    "architecture": "one shared CSTR map reused in all five reactors plus one Clarifier map",
+    "response_schema": "clarifier_inventory_v1",
+    "response_dimension": 161,
+    "reactor_count": 5,
+    "component_count": 20,
+    "reactor_input_dimension": 22,
+    "reactor_input_order": "local dilution rate d_i, local aeration a_i, upstream state[20]",
+    "reactor_output_dimension": 20,
+    "clarifier_input_dimension": 22,
+    "clarifier_input_order": "return recycle r_R, waste fraction w, final reactor state[20]",
+    "clarifier_output_dimension": 41,
+    "clarifier_output_order": "overflow component flow[20], underflow component flow[20], Clarifier solids inventory M_cl",
+    "quadratic_feature_count_per_local_model": 276,
+    "reactor_coefficient_shape": [20, 276],
+    "clarifier_coefficient_shape": [41, 276],
+    "shared_reactor_coefficients_across_all_stages": true,
+    "reactor_stage_indicator_included": false,
+    "internal_recycle_in_clarifier_input": false,
+    "material_addition_assumption": "xi_i is fixed to zero; a variable addition must be added explicitly to the reactor input before reuse is valid",
+    "fold_count": 5,
+    "fold_membership": "reuse the route-S plant folds",
+    "reactor_fold_grouping": "all five reactor transitions from one plant remain in the same fold",
+    "development_plant_count": 13371,
+    "post_selection_holdout_plant_count": 3343,
+    "development_reactor_transition_count": 66855,
+    "post_selection_holdout_reactor_transition_count": 16715,
+    "ridge_grid": [1e-8, 1e-7, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 1.0, 10.0, 100.0],
+    "ridge_selection": "separate one-standard-error selections for gamma_rxn and gamma_cl using teacher-forced fold scores",
+    "teacher_forced_reporting": [
+      "pooled reactor metrics",
+      "reactor-position metrics",
+      "Clarifier complete-output metrics",
+      "Clarifier overflow-flow metrics",
+      "Clarifier underflow-flow metrics",
+      "Clarifier inventory metrics"
+    ],
+    "recycle_closure": {
+      "solver": "scipy.optimize.least_squares",
+      "method": "trf",
+      "bounds": "unbounded",
+      "jacobian": "exact quadratic-map Jacobian",
+      "ftol": 1e-10,
+      "xtol": 1e-10,
+      "gtol": 1e-10,
+      "max_nfev": 1000,
+      "start_1": "influent x",
+      "start_2": "soluble coordinates from x plus 3.5 times particulate coordinates from x",
+      "target_independent_starts": true,
+      "cold_solve_both_starts_at_every_distinct_control": true,
+      "cross_control_warm_start_permitted": false,
+      "both_starts_must_succeed": true,
+      "normalized_residual_infinity_maximum": 1e-8,
+      "mixer_scaled_agreement_infinity_maximum": 1e-6,
+      "assembled_response_scaled_agreement_infinity_maximum": 1e-6,
+      "required_jacobian_rank": 20,
+      "condition_number_times_machine_epsilon_maximum": 1e-8,
+      "agreed_root_selection": "use the start-1 root after all two-start checks pass; never average or select only by residual",
+      "uniqueness_claimed": false
+    },
+    "free_running_oof_pipeline": "fold-specific reactor and Clarifier fits, two-start recycle closure, 161-coordinate assembly, then the common projection QP",
+    "development_oof_gates": {
+      "all_recycle_root_audits_must_pass": true,
+      "all_projection_qp_audits_must_pass": true,
+      "complete_reduced_response_raw_nrmse_maximum": 1.0,
+      "clarifier_inventory_raw_nrmse_maximum": 1.0,
+      "all_route_specific_trust_limits_must_freeze": true
+    },
+    "scientific_gate_failure_scope": "route U only; preserve and continue independent routes S and M when required numerical objects remain finite"
   },
   "projection": {
     "response_dimension": 161,
@@ -252,6 +335,27 @@
       "particulate_split",
       "reactor_residual"
     ],
+    "route_specific_diagnostics": {
+      "surrogate": [
+        "correction",
+        "whole_system_regularized_leverage",
+        "particulate_split",
+        "reactor_residual"
+      ],
+      "shared_unit": [
+        "correction",
+        "reactor_regularized_leverage_stage_1",
+        "reactor_regularized_leverage_stage_2",
+        "reactor_regularized_leverage_stage_3",
+        "reactor_regularized_leverage_stage_4",
+        "reactor_regularized_leverage_stage_5",
+        "clarifier_regularized_leverage",
+        "particulate_split",
+        "reactor_residual"
+      ]
+    },
+    "shared_unit_root_acceptance_is_trust_inequality": false,
+    "shared_unit_root_acceptance_role": "numerical prerequisite for defining a route-U value; it supplies no upper-level KKT multiplier",
     "clarifier_flux_diagnostic_retired": true,
     "clarifier_flux_retirement_reason": "no scalar function of outlet flows and aggregate Clarifier inventory reproduces the discarded layer-flux equations",
     "clarifier_layer_flux_audit_scope": "smooth-direct and exact mechanistic states only"
@@ -271,9 +375,13 @@
     ]
   },
   "optimization": {
-    "protocol": "single_start_exact_qp_active_set",
-    "runner_protocol": "single_center_local_exact_qp_v1",
+    "protocol": "three_route_single_start_mixed_surrogate_v1",
+    "runner_protocol": "three_route_single_center_v2",
+    "route_ids": ["surrogate", "shared_unit", "direct"],
+    "route_symbols": {"surrogate": "S", "shared_unit": "U", "direct": "M"},
+    "route_count": 3,
     "surrogate_protocol": "seven_variable_exact_qp_single_start_v1",
+    "shared_unit_protocol": "shared_unit_value_only_single_center_v1",
     "direct_protocol": "smooth_direct_single_center_v1",
     "start_count": 1,
     "start_definition": "componentwise center of the normalized seven-control box",
@@ -281,6 +389,10 @@
     "local_solution_label_requires_convergence_and_kkt_support": true,
     "global_optimality_claimed": false,
     "surrogate_primary_solver": "seven-variable constrained local optimization with exact cold projection-QP evaluation and active-set KKT sensitivities",
+    "shared_unit_primary_solver": "independent deterministic value-only seven-variable optimization; each distinct control cold-solves and audits both recycle roots before cold-solving the common projection QP",
+    "shared_unit_analytical_derivatives_enabled": false,
+    "shared_unit_strong_first_order_certificate_available": false,
+    "shared_unit_convergence_tier": "the same two-scale finite-direction, finite-resolution feasible no-descent poll used by route S when its strong derivative tier is unavailable",
     "surrogate_outer_method": "SLSQP with analytical total derivatives through the active lower-QP KKT system",
     "surrogate_outer_maximum_iterations": 250,
     "surrogate_outer_function_tolerance": 1e-10,
@@ -329,6 +441,15 @@
       "finite_poll_claims_classical_stationarity": false,
       "failure_action": "retain the best feasible incumbent, label certification unresolved, and continue"
     },
+    "shared_unit_value_evaluation_order": [
+      "cold recycle closure from start 1",
+      "cold recycle closure from start 2",
+      "root acceptance audit",
+      "assemble the 161-coordinate raw response",
+      "cold common physical projection QP",
+      "upper objective, engineering, and route-specific trust evaluation"
+    ],
+    "shared_unit_exact_duplicate_cache_only": true,
     "surrogate_embedded_kkt_ipopt_enabled": false,
     "surrogate_gap_sequence": [],
     "surrogate_stage_warm_start": "not applicable; the embedded-KKT IPOPT continuation is retired",
@@ -342,7 +463,7 @@
     "direct_smoothing_continuation_retained": true,
     "direct_failure_recovery": {
       "maximum_attempts_after_primary_failure": 1,
-      "start": "the independently projected surrogate endpoint for the same case",
+      "start": "the independently projected route-S whole-system surrogate endpoint for the same case; route U does not seed direct recovery",
       "smoothing_sequence": "unchanged three-stage direct sequence",
       "failure_action": "record an unpaired direct failure and continue"
     },
@@ -377,12 +498,19 @@
   },
   "reporting": {
     "nearest_rank_probability": 0.95,
-    "timing_protocol": "robustness_casewise_aggregate_v1",
-    "timing_source": "recorded route, certification, recovery, and exact-replay durations from robustness_01 through robustness_10",
+    "timing_protocol": "robustness_casewise_three_route_v2",
+    "timing_source": "recorded S, U, and M route, certification, recovery, recycle-root, projection, and exact-replay durations from robustness_01 through robustness_10",
     "timing_case_count": 10,
     "timing_aggregation": "arithmetic mean across available robustness-case records, with count, total, median, interquartile range, nearest-rank 95th percentile, and maximum also reported",
     "untouched_test_repeated_inference_benchmark_executed": false,
-    "validation_protocol": "casewise_exact_common_reference_v3",
+    "validation_protocol": "casewise_exact_common_reference_v4",
+    "required_routes": ["surrogate", "shared_unit", "direct"],
+    "route_symbols": {"surrogate": "S", "shared_unit": "U", "direct": "M"},
+    "selected_candidate_maximum": 33,
+    "exact_reference_start_maximum": 66,
+    "pairwise_comparisons": ["S-U", "S-M", "U-M"],
+    "pairwise_eligibility_is_independent": true,
+    "all_three_route_eligibility_requires_all_three_candidates": true,
     "untouched_test_smooth_reference_equivalence_executed": false,
     "common_reference_scope": "every available selected decision in the nominal and ten robustness cases",
     "common_reference_model": "exact nonsmooth mechanistic steady-state model",

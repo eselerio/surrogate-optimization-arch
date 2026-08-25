@@ -56,6 +56,44 @@ def _direct_payload(*, with_selection: bool = True) -> dict[str, object]:
     }
 
 
+def _shared_unit_payload() -> dict[str, object]:
+    response = np.linspace(1.0, 10.0, 161)
+    return {
+        "route": "shared_unit",
+        "status": "selected_feasible_poll_converged",
+        "classification": "validated result",
+        "locally_converged": True,
+        "stationarity_resolved": False,
+        "elapsed_seconds": 4.5,
+        "selected": {
+            "available": True,
+            "theta": THETA.tolist(),
+            "raw": response.tolist(),
+            "projected": response.tolist(),
+            "objective": 0.8,
+            "objective_components": [0.4, 0.1, 0.1, 0.1, 0.05, 0.05],
+            "engineering_rows": [-0.1, -0.2],
+            "engineering_quantities": [1.0, 2.0],
+            "trust": {
+                "correction_rms": 0.10,
+                "reactor_leverage": [1.0, 1.1, 1.2, 1.3, 1.4],
+                "clarifier_leverage": 1.5,
+                "particulate_split_rms": 0.02,
+                "reactor_residual_rms": 0.03,
+            },
+            "trust_rows": [-0.4] * 9,
+            "feasible": True,
+            "maximum_upper_residual": -0.1,
+            "closure": {
+                "accepted": True,
+                "reason": "accepted",
+                "residual_inf_start_1": 1.0e-9,
+                "residual_inf_start_2": 2.0e-9,
+                "attempt_1": {"success": True, "nfev": 7},
+            },
+            "projection": {"accepted": True},
+        },
+    }
 def _make_run(root: Path, robustness_count: int = 2) -> None:
     rng = np.random.default_rng(4)
     development_count = 12
@@ -601,6 +639,100 @@ class ReportingSnapshotTests(unittest.TestCase):
                 workload.loc["direct", "reference_validation_time_seconds"],
                 8.0,
             )
+
+    def test_shared_unit_artifacts_add_third_route_and_pairwise_reporting(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            run = Path(temporary) / "run"
+            _make_run(run, robustness_count=0)
+            case = run / "optimization" / "nominal"
+            _write_json(case / "shared_unit.json", _shared_unit_payload())
+
+            reference = np.linspace(1.0, 10.0, 161)
+            np.savez_compressed(
+                case / "surrogate_selected.npz",
+                theta=THETA,
+                raw=reference * 1.01,
+                projected=reference,
+                reference=reference,
+            )
+            np.savez_compressed(
+                case / "shared_unit_selected.npz",
+                theta=THETA + np.asarray([0.1, 0, 0, 0, 0, 0, 0]),
+                raw=reference * 1.02,
+                projected=reference * 1.001,
+                reference=reference,
+            )
+            np.savez_compressed(
+                case / "direct_selected.npz",
+                theta=THETA + np.asarray([0.2, 0, 0, 0, 0, 0, 0]),
+                smooth=reference * 0.999,
+                reference=reference,
+            )
+            _write_json(run / "metrics" / "shared_unit_trust_limits.json", {
+                "correction_rms": 0.2,
+                "reactor_leverage": 2.0,
+                "clarifier_leverage": 2.5,
+                "particulate_split_rms": 0.1,
+                "reactor_residual_rms": 0.1,
+            })
+            shared_trust = pd.DataFrame([{
+                "correction_rms": 0.1,
+                "particulate_split_rms": 0.02,
+                "reactor_residual_rms": 0.03,
+                **{f"reactor_leverage_{stage}": 1.0 + stage / 10 for stage in range(1, 6)},
+                "clarifier_leverage": 1.5,
+            }])
+            shared_trust.to_csv(
+                run / "metrics" / "shared_unit_trust_development_oof.csv",
+                index=False,
+            )
+            shared_trust.to_csv(
+                run / "metrics" / "shared_unit_trust_post_selection_holdout.csv",
+                index=False,
+            )
+            pd.DataFrame([{
+                "case": "development_0001", "accepted": True,
+                "residual_inf_start_1": 1.0e-9,
+            }]).to_csv(
+                run / "metrics" / "shared_unit_development_oof_root_diagnostics.csv",
+                index=False,
+            )
+            pd.DataFrame([{
+                "case": "test_0001", "accepted": True,
+                "residual_inf_start_1": 2.0e-9,
+            }]).to_csv(
+                run / "metrics" / "shared_unit_post_selection_root_diagnostics.csv",
+                index=False,
+            )
+
+            bundle = build_reporting_tables(run)
+            routes = bundle["route_status"].set_index("route")
+            self.assertEqual(set(routes.index), {"surrogate", "shared_unit", "direct"})
+            self.assertTrue(routes.loc["shared_unit", "local_convergence_certified"])
+            self.assertFalse(routes.loc["shared_unit", "first_order_stationarity_certified"])
+            self.assertEqual(len(bundle["nominal_controls"]), 3)
+
+            shared_rows = bundle["trust_diagnostics"].query(
+                "route == 'shared_unit'"
+            ).set_index("diagnostic")
+            self.assertEqual(set(shared_rows.index), set(reporting.SHARED_UNIT_TRUST_DIAGNOSTICS))
+            self.assertEqual(shared_rows.loc["reactor_leverage_5", "test_count"], 1)
+            self.assertAlmostEqual(
+                shared_rows.loc["clarifier_leverage", "largest_selected_value"],
+                1.5,
+            )
+
+            roots = bundle["shared_unit_root_diagnostics"]
+            self.assertEqual(
+                set(roots["source_scope"]),
+                {"development_oof", "post_selection_holdout", "selected_optimization"},
+            )
+            nominal = bundle["nominal_comparison"].iloc[0]
+            self.assertTrue(nominal["comparison_eligible_S_U"])
+            self.assertTrue(nominal["comparison_eligible_S_M"])
+            self.assertTrue(nominal["comparison_eligible_U_M"])
+            self.assertTrue(np.isfinite(nominal["delta_J_S_minus_U"]))
+            self.assertTrue(np.isfinite(nominal["delta_J_U_minus_M"]))
 
     def test_incomplete_cases_and_zero_count_failure_classes_are_retained(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
