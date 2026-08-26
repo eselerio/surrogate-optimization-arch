@@ -644,7 +644,8 @@ class ArticleV3OptimizationHookTests(unittest.TestCase):
 
     def test_full_hook_runs_11_cases_and_cross_evaluates_both_routes(self) -> None:
         self.assertEqual(
-            runner.COMPARISON_PROTOCOL, "casewise_exact_common_reference_v3"
+            runner.COMPARISON_PROTOCOL,
+            "casewise_exact_common_reference_no_minimum_srt_v4",
         )
         design, development_targets, test_targets, analysis = _fixture()
         surrogate_completed_on_entry: list[set[int]] = []

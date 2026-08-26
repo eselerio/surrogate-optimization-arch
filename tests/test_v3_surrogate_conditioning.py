@@ -107,7 +107,6 @@ class SurrogateConditioningTests(unittest.TestCase):
             fresh_flow_m3_d=100.0,
             clarifier_area_m2=10.0,
             clarifier_volume_m3=30.0,
-            srt_lower_d=2.0,
             srt_upper_d=5.0,
             external_loss_min_g_m3=2.0,
             slr_upper_kg_m2_d=100.0,
@@ -135,7 +134,6 @@ class SurrogateConditioningTests(unittest.TestCase):
         inventory = 100.0 * 100.0 + 10.0 * 300.0
         expected = np.asarray(
             [
-                (2.0 * 100.0 * external_loss - inventory) / 100_000.0,
                 (inventory - 5.0 * 100.0 * external_loss) / 100_000.0,
                 (2.0 - external_loss) / 2.0,
                 (1.5 - 100.0) / 100.0,
@@ -147,7 +145,6 @@ class SurrogateConditioningTests(unittest.TestCase):
         self.assertEqual(
             names,
             (
-                "srt_lower",
                 "srt_upper",
                 "external_solids_loss_guard",
                 "slr_upper",

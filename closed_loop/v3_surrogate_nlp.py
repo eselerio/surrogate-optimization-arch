@@ -136,14 +136,13 @@ def _safe_name(value: str) -> str:
 class EngineeringLimits:
     """Physical constants and case-study engineering limits.
 
-    SRT rows are evaluated in cross-multiplied form.  ``inventory_scale`` is
+    The maximum-SRT row is evaluated in cross-multiplied form. ``inventory_scale`` is
     only a positive numerical row scale and cannot change feasibility.
     """
 
     fresh_flow_m3_d: float = 10_000.0
     clarifier_area_m2: float = 1_500.0
     clarifier_volume_m3: float = 6_000.0
-    srt_lower_d: float = 8.0
     srt_upper_d: float = 30.0
     external_loss_min_g_m3: float = 1.0
     slr_upper_kg_m2_d: float = 100.0
@@ -157,7 +156,6 @@ class EngineeringLimits:
             self.fresh_flow_m3_d,
             self.clarifier_area_m2,
             self.clarifier_volume_m3,
-            self.srt_lower_d,
             self.srt_upper_d,
             self.external_loss_min_g_m3,
             self.slr_upper_kg_m2_d,
@@ -166,8 +164,6 @@ class EngineeringLimits:
         )
         if not all(np.isfinite(value) and value > 0.0 for value in positive):
             raise ValueError("engineering constants and finite limits must be positive.")
-        if self.srt_lower_d >= self.srt_upper_d:
-            raise ValueError("the SRT lower limit must be below its upper limit.")
         if self.sor_upper_m_d is not None and (
             not np.isfinite(self.sor_upper_m_d) or self.sor_upper_m_d <= 0.0
         ):
@@ -740,10 +736,6 @@ def _engineering_expressions(
     scale = limits.resolved_inventory_scale
     rows: list[Any] = [
         _scaled_upper_residual(
-            limits.srt_lower_d * limits.fresh_flow_m3_d * external_loss - inventory,
-            scale,
-        ),
-        _scaled_upper_residual(
             inventory - limits.srt_upper_d * limits.fresh_flow_m3_d * external_loss,
             scale,
         ),
@@ -765,7 +757,6 @@ def _engineering_expressions(
         ),
     ]
     names = [
-        "srt_lower",
         "srt_upper",
         "external_solids_loss_guard",
         "slr_upper",

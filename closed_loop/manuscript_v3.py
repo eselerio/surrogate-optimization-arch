@@ -1335,7 +1335,6 @@ def optimize_surrogate_case(
         raw = model.predict(theta, influent)
         correction = float(np.linalg.norm((state - raw) / model.response_scale) / math.sqrt(layout.state_size))
         return np.asarray([
-            eng["srt_d"] - 8.0,
             30.0 - eng["srt_d"],
             100.0 - eng["slr_kg_m2_d"],
             15_000.0 - eng["underflow_tss_g_m3"],

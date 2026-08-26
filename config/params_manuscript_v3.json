@@ -291,7 +291,7 @@
   },
   "optimization": {
     "protocol": "single_start_exact_qp_active_set",
-    "runner_protocol": "single_center_local_exact_qp_v1",
+    "runner_protocol": "single_center_local_exact_qp_no_minimum_srt_v2",
     "surrogate_protocol": "seven_variable_exact_qp_single_start_v1",
     "direct_protocol": "smooth_direct_single_center_v1",
     "start_count": 1,
@@ -381,7 +381,7 @@
     "objective_tie_relative_tolerance": 1e-10
   },
   "engineering": {
-    "srt_d": [8.0, 30.0],
+    "srt_max_d": 30.0,
     "slr_max_kg_m2_d": 100.0,
     "underflow_tss_max_g_m3": 15000.0,
     "feed_tss_min_g_m3": 1.0,
@@ -401,7 +401,7 @@
     "timing_case_count": 10,
     "timing_aggregation": "arithmetic mean across available robustness-case records, with count, total, median, interquartile range, nearest-rank 95th percentile, and maximum also reported",
     "untouched_test_repeated_inference_benchmark_executed": false,
-    "validation_protocol": "casewise_exact_common_reference_v3",
+    "validation_protocol": "casewise_exact_common_reference_no_minimum_srt_v4",
     "untouched_test_smooth_reference_equivalence_executed": false,
     "common_reference_scope": "every available selected decision in the nominal and ten robustness cases",
     "common_reference_model": "exact nonsmooth mechanistic steady-state model",

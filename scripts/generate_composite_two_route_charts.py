@@ -225,6 +225,11 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("run", type=Path)
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--eligibility-file",
+        type=Path,
+        help="Optional re-adjudicated comparison CSV; the scientific run is not edited.",
+    )
     args = parser.parse_args()
     run = args.run.resolve()
     tables = run / "report" / "tables"
@@ -485,9 +490,11 @@ def main() -> None:
             ))
             exact_rows.append({"case": case, "route": route, **dict(zip(COMPOSITES, composites, strict=True)), "quality": parts[0], "hrt": parts[1], "aeration": parts[2], "internal_recycle": parts[3], "return_sludge": parts[4], "wasting": parts[5], "economic": float(weights[1:] @ parts[1:]), "objective": float(weights @ parts)})
     exact = pd.DataFrame(exact_rows)
-    comparison_path = tables / "scenario_comparison.csv"
-    if not comparison_path.is_file():
-        comparison_path = run / "metrics/case_common_reference_comparison.csv"
+    comparison_path = args.eligibility_file
+    if comparison_path is None:
+        comparison_path = tables / "scenario_comparison.csv"
+        if not comparison_path.is_file():
+            comparison_path = run / "metrics/case_common_reference_comparison.csv"
     comparison = pd.read_csv(comparison_path).set_index("case")
     eligibility = comparison["comparison_eligible"].astype(str).str.lower().eq("true").reindex(robust_cases).fillna(False)
     eligible = eligibility.to_numpy(bool)

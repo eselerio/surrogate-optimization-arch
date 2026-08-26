@@ -146,7 +146,6 @@ def _toy_assets(*, weak_active_set: bool = False) -> tuple[SurrogateNLPAssets, S
             fresh_flow_m3_d=1.0,
             clarifier_area_m2=1.0,
             clarifier_volume_m3=1.0,
-            srt_lower_d=0.1,
             srt_upper_d=10.0,
             external_loss_min_g_m3=0.1,
             slr_upper_kg_m2_d=100.0,

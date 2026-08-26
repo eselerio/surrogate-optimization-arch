@@ -826,7 +826,7 @@ def _active_constraint_table(snapshots: Sequence[RouteSnapshot]) -> pd.DataFrame
     """Retain every named upper row plus lower/direct active-set counts."""
 
     engineering_names = (
-        "srt_lower", "srt_upper", "external_solids_loss_guard", "slr_upper",
+        "srt_upper", "external_solids_loss_guard", "slr_upper",
         "underflow_tss_upper", "feed_tss_lower", "sor_upper",
     )
     trust_names = (

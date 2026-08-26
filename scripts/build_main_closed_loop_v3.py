@@ -242,7 +242,7 @@ optimization = contract_config["optimization"]
 article_config = contract_config["profiles"][profile["name"]]
 required_optimization = {
     "protocol": "single_start_exact_qp_active_set",
-    "runner_protocol": "single_center_local_exact_qp_v1",
+    "runner_protocol": "single_center_local_exact_qp_no_minimum_srt_v2",
     "surrogate_protocol": "seven_variable_exact_qp_single_start_v1",
     "direct_protocol": "smooth_direct_single_center_v1",
     "start_count": 1,
@@ -304,7 +304,7 @@ for field, expected in required_certification.items():
             f"{certification.get(field)!r} != {expected!r}"
         )
 reporting_contract = contract_config["reporting"]
-if reporting_contract.get("validation_protocol") != "casewise_exact_common_reference_v3":
+if reporting_contract.get("validation_protocol") != "casewise_exact_common_reference_no_minimum_srt_v4":
     raise RuntimeError("The casewise exact common-reference protocol is required.")
 if reporting_contract.get("untouched_test_smooth_reference_equivalence_executed") is not False:
     raise RuntimeError("Test-set-wide smooth/reference equivalence must remain retired.")

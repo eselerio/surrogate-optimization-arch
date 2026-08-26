@@ -63,7 +63,7 @@ def _assets(layer_count: int) -> DirectAssets:
         balance_scale=np.ones(state_count),
         quality_scale=np.ones(4),
         envelope_scale=np.ones(2 * (layer_count - 2)),
-        engineering_scale=np.ones(5),
+        engineering_scale=np.ones(4),
         decision_center=(DECISION_LOWER + DECISION_UPPER) / 2.0,
         decision_scale=(DECISION_UPPER - DECISION_LOWER) / np.sqrt(12.0),
         influent_center=(INFLUENT_LOWER + INFLUENT_UPPER) / 2.0,
@@ -121,7 +121,7 @@ class VariableLayerModelTests(unittest.TestCase):
                 )
                 self.assertEqual(problem.variable_count, 108 + layer_count)
                 self.assertEqual(problem.equality_count, 101 + layer_count)
-                self.assertEqual(problem.inequality_count, 2 * (layer_count - 2) + 5)
+                self.assertEqual(problem.inequality_count, 2 * (layer_count - 2) + 4)
                 normalized = (theta - DECISION_LOWER) / (DECISION_UPPER - DECISION_LOWER)
                 primal = np.concatenate((
                     normalized,
@@ -176,7 +176,7 @@ class DevelopmentScalingAndStartTests(unittest.TestCase):
         np.testing.assert_allclose(assets.state_scale, expected_scale)
         self.assertEqual(assets.balance_scale.shape, (105,))
         self.assertEqual(assets.envelope_scale.shape, (6,))
-        self.assertEqual(assets.engineering_scale.shape, (5,))
+        self.assertEqual(assets.engineering_scale.shape, (4,))
         self.assertTrue(np.all(assets.quality_scale > 0.0))
 
     def test_nine_starts_are_reproducible_open_lhs_and_initialize_by_nearest_row(self) -> None:

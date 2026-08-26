@@ -227,7 +227,7 @@ class DirectAssets:
             (self.balance_scale, self.state_count, "balance_scale", True),
             (self.quality_scale, 4, "quality_scale", True),
             (self.envelope_scale, 2 * (self.layer_count - 2), "envelope_scale", True),
-            (self.engineering_scale, 5, "engineering_scale", True),
+            (self.engineering_scale, 4, "engineering_scale", True),
             (self.decision_center, 7, "decision_center", False),
             (self.decision_scale, 7, "decision_scale", True),
             (self.influent_center, N_COMPONENTS, "influent_center", False),
@@ -671,7 +671,6 @@ def _engineering_values(theta: Any, response: Any, assets: DirectAssets) -> tupl
     if isinstance(response, (ca.MX, ca.SX, ca.DM)):
         reported = ca.vertcat(inventory, boundary, inventory / (assets.clarifier.fresh_flow * boundary), sor, slr, underflow, feed, composites)
         raw_constraints = ca.vertcat(
-            8.0 * assets.clarifier.fresh_flow * boundary - inventory,
             inventory - 30.0 * assets.clarifier.fresh_flow * boundary,
             slr - 100.0,
             underflow - 15_000.0,
@@ -680,7 +679,6 @@ def _engineering_values(theta: Any, response: Any, assets: DirectAssets) -> tupl
     else:
         reported = np.concatenate(([inventory, boundary, inventory / (assets.clarifier.fresh_flow * boundary), sor, slr, underflow, feed], np.asarray(composites)))
         raw_constraints = np.asarray([
-            8.0 * assets.clarifier.fresh_flow * boundary - inventory,
             inventory - 30.0 * assets.clarifier.fresh_flow * boundary,
             slr - 100.0,
             underflow - 15_000.0,
@@ -817,7 +815,7 @@ def fit_direct_assets(
         balance_scale=np.ones(states.shape[1]),
         quality_scale=np.ones(4),
         envelope_scale=np.ones(2 * (clarifier.layer_count - 2)),
-        engineering_scale=np.ones(5),
+        engineering_scale=np.ones(4),
         decision_center=decision_center,
         decision_scale=decision_scale,
         influent_center=influent_center,
@@ -827,7 +825,7 @@ def fit_direct_assets(
     balance_square = np.zeros((rows, shell.state_count))
     balance_terms = np.zeros(shell.state_count)
     envelope_square = np.zeros((rows, 2 * (clarifier.layer_count - 2)))
-    engineering_square = np.zeros((rows, 5))
+    engineering_square = np.zeros((rows, 4))
     for row in range(rows):
         theta = decisions[row]
         response, _ = evaluate_smooth_response(
@@ -872,7 +870,6 @@ def fit_direct_assets(
         inventory, boundary, _, _, slr, underflow = np.asarray(reported)[:6]
         q0 = clarifier.fresh_flow
         engineering_square[row] = (
-            ((8.0 * q0 * boundary) ** 2 + inventory**2) / 2.0,
             (inventory**2 + (30.0 * q0 * boundary) ** 2) / 2.0,
             (slr**2 + 100.0**2) / 2.0,
             (underflow**2 + 15_000.0**2) / 2.0,
@@ -1064,7 +1061,7 @@ def build_direct_nlp(
     reported, raw_engineering, _ = _engineering_values(theta, response, assets)
     # The underflow limit is case-configurable; the fitted scale remains tied
     # to the declared 15,000 case value.
-    raw_engineering[3] = reported[5] - underflow_limit
+    raw_engineering[2] = reported[5] - underflow_limit
     engineering = raw_engineering / ca.DM(assets.engineering_scale)
     inequality = ca.vertcat(envelope, engineering)
     objective, components = _objective_symbolic(theta, response, weights, assets)
@@ -2128,7 +2125,7 @@ def engineering_feasible(
     tolerance: float = 1.0e-6,
     nonnegativity_tolerance: float = 1.0e-10,
 ) -> bool:
-    """Evaluate the declared engineering constraints on any complete response."""
+    """Evaluate retained engineering gates; SRT has no lower acceptance bound."""
 
     controls = _finite_vector(theta, 7, "theta")
     complete = _finite_vector(response, assets.response_count, "response")

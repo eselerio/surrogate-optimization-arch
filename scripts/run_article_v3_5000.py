@@ -128,13 +128,13 @@ ROOT = Path(__file__).resolve().parents[1]
 RESULTS_ROOT = ROOT / "results" / "article_v3"
 LEGACY_RUN_ID = "article_full_5000_001"
 DEFAULT_RUN_ID = "article_full_5000_002"
-RUNNER_SCHEMA = 11
+RUNNER_SCHEMA = 12
 RESPONSE_SCHEMA = "clarifier_inventory_v1"
 PROJECTION_SCHEMA = "system_wide_log_overflow_closure_v1"
 ASSESSMENT_GATE_EXECUTION_POLICY = "advisory_continue"
 DIRECT_SINGLE_CENTER_PROTOCOL = "smooth_direct_single_center_v1"
-OPTIMIZATION_PROTOCOL = "single_center_local_exact_qp_v1"
-COMPARISON_PROTOCOL = "casewise_exact_common_reference_v3"
+OPTIMIZATION_PROTOCOL = "single_center_local_exact_qp_no_minimum_srt_v2"
+COMPARISON_PROTOCOL = "casewise_exact_common_reference_no_minimum_srt_v4"
 TIMING_PROTOCOL = "robustness_casewise_aggregate_v1"
 RUN_ID_PATTERN = re.compile(
     r"^article_full_(?:5000|10000|50000)_[A-Za-z0-9][A-Za-z0-9_-]*$"
@@ -8515,6 +8515,7 @@ def _run_casewise_route_reference_evaluation(
             else getattr(final, "status", None)
         ),
         "branch_ambiguity_is_qualifier_not_rejection": True,
+        "minimum_srt_is_descriptive_not_eligibility_gate": True,
         "projection_accepted": bool(projection.accepted),
         "prediction_error_raw": _scaled_response_errors(raw, reference, response_scale),
         "prediction_error_projected": _scaled_response_errors(
@@ -8673,6 +8674,7 @@ def _casewise_comparison_row(
     row = {
         "case": case_id,
         "comparison_eligible": eligible,
+        "minimum_srt_is_descriptive_not_eligibility_gate": True,
         "ineligibility_reasons": ";".join(reasons) if reasons else None,
         "surrogate_candidate_available": bool(surrogate.get("candidate_available")),
         "direct_candidate_available": bool(direct.get("candidate_available")),
