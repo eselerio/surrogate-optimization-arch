@@ -1,5 +1,5 @@
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "sources": {
     "manuscript": "article/wip_v3/manuscript.tex",
     "supplement": "article/wip_v3/supplementary_material.tex"
@@ -217,14 +217,33 @@
       "complete_reduced_response_raw_nrmse_maximum": 1.0,
       "clarifier_inventory_raw_nrmse_maximum": 1.0,
       "all_projection_qp_audits_must_pass": true
+    },
+    "overflow_tss_closure": {
+      "purpose": "represent the positive nonlinear Clarifier-overflow TSS dependence that the system response regression does not reliably preserve at low concentrations",
+      "target": "log(X_E / X_ref)",
+      "reference_concentration_mg_L": 1.0,
+      "inputs_and_basis": "the same seven controls, twenty influent components, and standardized complete second-order basis used by the Extended ICSOR response regression",
+      "fold_count": 5,
+      "ridge_grid": [1e-8, 1e-7, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 1.0, 10.0, 100.0],
+      "selection": "largest ridge within one descriptive standard error of minimum out-of-fold log-scale RMSE",
+      "reported_strata": {
+        "low_tss": "X_E at or below the development 25th percentile",
+        "upper_tail": "X_E at or above the development 90th percentile"
+      },
+      "projection_use": "enforce the predicted positive overflow TSS as one system-wide linear equality after multiplication by effluent flow",
+      "fixed_feed_fraction_floor_used": false,
+      "post_prediction_clipping_used": false
     }
   },
   "projection": {
     "response_dimension": 161,
-    "equality_count": 75,
+    "equality_count": 76,
     "physical_inequality_count": 12,
     "inequality_count_including_nonnegativity": 173,
     "outlet_tss_coordinates": "derived from Clarifier outlet component-flow vectors and their positive flow factors",
+    "overflow_tss_closure_equality": "t_X^T g_E = q_E X_ref exp(g_log(theta, c_N))",
+    "overflow_tss_closure_calibration": "out-of-fold predictions for development projection scales and trust calibration; final frozen closure for post-selection holdout and optimization",
+    "overflow_tss_closure_preserves_convex_projection": true,
     "clarifier_inventory_bounds": "tight endpoint-envelope bounds implemented as two division-free linear rows",
     "predicts_or_reconstructs_layer_profile": false,
     "solver": "OSQP",
@@ -291,7 +310,7 @@
       "value_only": true,
       "trigger": "exact active-set derivative construction is unavailable",
       "finite_difference_derivatives_used": false,
-      "projection_qp_at_each_distinct_trial": "new cold solve and independent audit of the unchanged exact projection QP",
+      "projection_qp_at_each_distinct_trial": "new cold solve and independent audit of the same exact projection QP, including the frozen log-overflow-TSS closure equality",
       "cache_scope": "exactly identical normalized control vectors only",
       "maximum_iterations": 250,
       "maximum_function_evaluations": 250,

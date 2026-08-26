@@ -52,7 +52,11 @@ from .model import (
     mechanistic_balance_audit,
     stability_audit,
 )
-from .projection import NetworkLayout, fit_network_row_scales
+from .projection import (
+    LogOverflowTSSClosure,
+    NetworkLayout,
+    fit_network_row_scales,
+)
 
 
 CONTROL_NAMES: tuple[str, ...] = (
@@ -1338,6 +1342,23 @@ def _reconstruct_selected_violations(
     targets = development.get("targets")
     model = _safe_npz(run_directory / "models" / "ridge_surrogate.npz", warnings)
     state_scale = model.get("response_scale")
+    closure: LogOverflowTSSClosure | None = None
+    development_overflow_tss: np.ndarray | None = None
+    closure_path = run_directory / "models" / "log_overflow_closure.npz"
+    if closure_path.is_file():
+        closure_bundle = _safe_npz(closure_path, warnings)
+        try:
+            closure = LogOverflowTSSClosure.from_serialized_arrays(closure_bundle)
+            development_overflow_tss = np.asarray(
+                closure_bundle["out_of_fold_tss"], dtype=float,
+            )
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            warnings.append(
+                "Log-overflow closure could not be reconstructed for selected-response "
+                f"audits: {type(exc).__name__}: {exc}"
+            )
+            closure = None
+            development_overflow_tss = None
     if (
         decisions is None or influents is None or targets is None or state_scale is None
         or decisions.ndim != 2 or influents.ndim != 2 or targets.ndim != 2
@@ -1345,6 +1366,10 @@ def _reconstruct_selected_violations(
         or influents.shape != (len(targets), N_COMPONENTS)
         or targets.shape[1] != geometry.mechanistic_response_count
         or state_scale.shape != (geometry.surrogate_response_count,)
+        or (
+            development_overflow_tss is not None
+            and development_overflow_tss.shape != (len(targets),)
+        )
     ):
         warnings.append("Selected-response physical audits could not be reconstructed from frozen scales.")
         return pd.DataFrame()
@@ -1367,6 +1392,7 @@ def _reconstruct_selected_violations(
             layout=layout,
             clarifier_volume_m3=geometry.clarifier_volume_m3,
             minimum_scale=1.0,
+            overflow_tss_closure=development_overflow_tss,
         )
     except (ValueError, FloatingPointError, np.linalg.LinAlgError) as exc:
         warnings.append(f"Selected-response row-scale reconstruction failed: {type(exc).__name__}: {exc}")
@@ -1378,6 +1404,9 @@ def _reconstruct_selected_violations(
         feed = case_influents.get(snapshot.case)
         if theta is None or feed is None:
             continue
+        overflow_tss_closure = (
+            None if closure is None else float(closure.predict(theta, feed))
+        )
         for method, response in _selected_response_map(snapshot, geometry).items():
             try:
                 record = violation_record(
@@ -1390,6 +1419,7 @@ def _reconstruct_selected_violations(
                     row_scales.equality,
                     row_scales.inequality,
                     state_scale,
+                    overflow_tss_closure=overflow_tss_closure,
                 )
             except (ValueError, FloatingPointError, np.linalg.LinAlgError) as exc:
                 warnings.append(

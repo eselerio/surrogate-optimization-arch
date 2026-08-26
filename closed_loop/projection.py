@@ -11,7 +11,8 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
 from itertools import product
-from typing import Callable, Iterable, Sequence
+import json
+from typing import Callable, Iterable, Mapping, Sequence
 
 import numpy as np
 import numpy.typing as npt
@@ -537,6 +538,121 @@ class QuadraticSurrogate:
 
 
 @dataclass(frozen=True)
+class LogOverflowTSSClosure:
+    """Positive scalar overflow-TSS model used by the system-wide projection.
+
+    The wrapped quadratic ridge model predicts ``log(X_E / reference)``.  The
+    raw multiresponse surrogate is deliberately kept separate and unchanged.
+    """
+
+    model: QuadraticSurrogate
+    reference_concentration: float = 1.0
+
+    def __post_init__(self) -> None:
+        if self.model.response_count != 1:
+            raise SurrogateValidationError(
+                "the log-overflow closure must contain exactly one response"
+            )
+        reference = float(self.reference_concentration)
+        if not np.isfinite(reference) or reference <= 0.0:
+            raise SurrogateValidationError(
+                "reference_concentration must be finite and strictly positive"
+            )
+        object.__setattr__(self, "reference_concentration", reference)
+
+    @classmethod
+    def from_serialized_arrays(
+        cls, arrays: Mapping[str, npt.ArrayLike],
+    ) -> "LogOverflowTSSClosure":
+        """Reconstruct a closure from the immutable runner NPZ fields."""
+
+        feature_map = QuadraticFeatureMap(
+            decision_center=np.asarray(arrays["decision_center"], dtype=float),
+            decision_scale=np.asarray(arrays["decision_scale"], dtype=float),
+            influent_center=np.asarray(arrays["influent_center"], dtype=float),
+            influent_scale=np.asarray(arrays["influent_scale"], dtype=float),
+            term_center=np.asarray(arrays["term_center"], dtype=float),
+            term_scale=np.asarray(arrays["term_scale"], dtype=float),
+            variance_relative_tolerance=float(np.asarray(
+                arrays["variance_relative_tolerance"], dtype=float,
+            )),
+        )
+        diagnostics = LeastSquaresDiagnostics(**json.loads(
+            str(np.asarray(arrays["diagnostics_json"]).item())
+        ))
+        model = QuadraticSurrogate(
+            feature_map=feature_map,
+            response_center=np.asarray(arrays["response_center"], dtype=float),
+            response_scale=np.asarray(arrays["response_scale"], dtype=float),
+            coefficients=np.asarray(arrays["coefficients"], dtype=float),
+            diagnostics=diagnostics,
+            ridge_penalty=float(np.asarray(arrays["ridge_penalty"], dtype=float)),
+        )
+        return cls(
+            model=model,
+            reference_concentration=float(np.asarray(
+                arrays["reference_concentration"], dtype=float,
+            )),
+        )
+
+    @classmethod
+    def fit_ridge(
+        cls,
+        decisions: npt.ArrayLike,
+        influent: npt.ArrayLike,
+        overflow_tss: npt.ArrayLike,
+        *,
+        ridge_penalty: float,
+        reference_concentration: float = 1.0,
+        variance_relative_tolerance: float = 1.0e-12,
+    ) -> "LogOverflowTSSClosure":
+        target = _finite_array(overflow_tss, name="overflow_tss")
+        if target.ndim != 1 or target.size < 2 or np.any(target <= 0.0):
+            raise SurrogateValidationError(
+                "overflow_tss must be a positive vector with at least two rows"
+            )
+        reference = float(reference_concentration)
+        if not np.isfinite(reference) or reference <= 0.0:
+            raise SurrogateValidationError(
+                "reference_concentration must be finite and strictly positive"
+            )
+        log_target = np.log(target / reference)[:, None]
+        model = QuadraticSurrogate.fit_ridge(
+            decisions,
+            influent,
+            log_target,
+            ridge_penalty=ridge_penalty,
+            variance_relative_tolerance=variance_relative_tolerance,
+        )
+        return cls(model=model, reference_concentration=reference)
+
+    def predict_log(self, decisions: npt.ArrayLike, influent: npt.ArrayLike) -> FloatArray:
+        prediction = np.asarray(self.model.predict(decisions, influent), dtype=np.float64)
+        if prediction.ndim == 1:
+            if prediction.shape != (1,):
+                raise SurrogateValidationError("scalar log-overflow prediction has invalid shape")
+            return np.asarray(float(prediction[0]))
+        if prediction.ndim != 2 or prediction.shape[1] != 1:
+            raise SurrogateValidationError("batch log-overflow prediction has invalid shape")
+        return prediction[:, 0]
+
+    def predict(self, decisions: npt.ArrayLike, influent: npt.ArrayLike) -> FloatArray:
+        log_prediction = self.predict_log(decisions, influent)
+        with np.errstate(over="raise", invalid="raise"):
+            try:
+                prediction = self.reference_concentration * np.exp(log_prediction)
+            except FloatingPointError as exc:
+                raise SurrogateValidationError(
+                    "log-overflow back-transformation produced a non-finite value"
+                ) from exc
+        if not np.all(np.isfinite(prediction)) or np.any(prediction <= 0.0):
+            raise SurrogateValidationError(
+                "log-overflow prediction must be finite and strictly positive"
+            )
+        return np.asarray(prediction, dtype=np.float64)
+
+
+@dataclass(frozen=True)
 class NetworkLayout:
     """Coordinate layout for ``chi=(m,c_1,...,c_N,g_E,g_U,M_cl)``.
 
@@ -626,6 +742,7 @@ def build_network_operators(
     tss_weights: npt.ArrayLike,
     layout: NetworkLayout | None = None,
     clarifier_volume_m3: float = 6_000.0,
+    overflow_tss_closure: float | None = None,
 ) -> NetworkOperators:
     """Assemble the manuscript's ordered H chi=b and G chi<=0 matrices.
 
@@ -655,11 +772,20 @@ def build_network_operators(
     effluent_flow = float(1.0 - waste_fraction)
 
     invariant_count = invariant.shape[0]
+    has_overflow_closure = overflow_tss_closure is not None
+    if has_overflow_closure and (
+        not np.isfinite(float(overflow_tss_closure))
+        or float(overflow_tss_closure) <= 0.0
+    ):
+        raise SurrogateValidationError(
+            "overflow_tss_closure must be finite and strictly positive"
+        )
     equality_count = (
         component_count
         + layout.stage_count * invariant_count
         + component_count
         + len(layout.soluble_indices)
+        + int(has_overflow_closure)
     )
     equality = np.zeros((equality_count, state_size), dtype=np.float64)
     rhs = np.zeros(equality_count, dtype=np.float64)
@@ -693,6 +819,11 @@ def build_network_operators(
     for component in layout.soluble_indices:
         equality[row, layout.underflow_flow_slice.start + component] = 1.0
         equality[row, final_reactor.start + component] = -underflow
+        row += 1
+
+    if has_overflow_closure:
+        equality[row, layout.overflow_flow_slice] = tss
+        rhs[row] = effluent_flow * float(overflow_tss_closure)
         row += 1
 
     if row != equality_count:
@@ -788,6 +919,7 @@ def fit_network_row_scales(
     layout: NetworkLayout | None = None,
     clarifier_volume_m3: float = 6_000.0,
     minimum_scale: float = 1.0e-12,
+    overflow_tss_closure: npt.ArrayLike | None = None,
 ) -> NetworkRowScales:
     """Fit D_b and D_g from the named physical terms in the manuscript."""
 
@@ -816,6 +948,15 @@ def fit_network_row_scales(
     q_clarifier = 1.0 + r_return
     q_underflow = r_return + waste
     q_effluent = 1.0 - waste
+    closure = None
+    if overflow_tss_closure is not None:
+        closure = _flow_vector(
+            overflow_tss_closure, row_count, name="overflow_tss_closure"
+        )
+        if np.any(closure <= 0.0):
+            raise SurrogateValidationError(
+                "overflow_tss_closure must be strictly positive"
+            )
 
     invariant_count = invariant.shape[0]
     equality_count = (
@@ -823,6 +964,7 @@ def fit_network_row_scales(
         + layout.stage_count * invariant_count
         + layout.component_count
         + len(layout.soluble_indices)
+        + int(closure is not None)
     )
     equality_mean_square = np.zeros((row_count, equality_count), dtype=np.float64)
     equality_term_count = np.zeros(equality_count, dtype=np.float64)
@@ -869,6 +1011,15 @@ def fit_network_row_scales(
         equality_mean_square[:, row] = (
             np.square(underflow_flow[:, component])
             + np.square(q_underflow * final_reactor[:, component])
+        )
+        equality_term_count[row] = 2.0
+        row += 1
+
+    if closure is not None:
+        overflow_tss_flow = overflow @ tss
+        predicted_tss_flow = q_effluent * closure
+        equality_mean_square[:, row] = (
+            np.square(overflow_tss_flow) + np.square(predicted_tss_flow)
         )
         equality_term_count[row] = 2.0
         row += 1
@@ -1939,6 +2090,7 @@ def deterministic_bounded_search(
 
 __all__ = [
     "LeastSquaresDiagnostics",
+    "LogOverflowTSSClosure",
     "NetworkLayout",
     "NetworkOperators",
     "NetworkRowScales",

@@ -1301,6 +1301,12 @@ class ArticleV3FiveThousandContractTests(unittest.TestCase):
             raw=np.zeros((profile.test_count, response_count)),
             projected=np.zeros((profile.test_count, response_count)),
             projected_targets=np.zeros((profile.test_count, response_count)),
+            overflow_tss_closure=np.ones(profile.test_count),
+        )
+        overflow_closure = SimpleNamespace(
+            predict=lambda decisions, influents: np.ones(
+                1 if np.asarray(decisions).ndim == 1 else len(decisions)
+            )
         )
         with tempfile.TemporaryDirectory() as temporary:
             run = Path(temporary)
@@ -1311,6 +1317,16 @@ class ArticleV3FiveThousandContractTests(unittest.TestCase):
                     np.zeros((profile.development_count, response_count)),
                     "ridge-input",
                 ),
+            ), patch.object(
+                runner, "fit_or_resume_log_overflow_closure",
+                return_value=(
+                    overflow_closure,
+                    np.ones(profile.development_count),
+                    "closure-input",
+                ),
+            ), patch.object(
+                runner, "overflow_tss_from_response",
+                return_value=np.ones(profile.development_count),
             ), patch.object(
                 runner, "fit_direct_assets", return_value=SimpleNamespace(),
             ), patch.object(

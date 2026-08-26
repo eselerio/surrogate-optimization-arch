@@ -26,7 +26,11 @@ from closed_loop.model import (
     assemble_target,
     solve_steady_state,
 )
-from closed_loop.projection import NetworkLayout, QuadraticSurrogate
+from closed_loop.projection import (
+    LogOverflowTSSClosure,
+    NetworkLayout,
+    QuadraticSurrogate,
+)
 from closed_loop.v3_reporting import write_reporting_tables
 from closed_loop.v3_smooth import (
     DirectCase,
@@ -75,7 +79,7 @@ def _write_json(path: Path, value: Any) -> None:
 
 def _load_inputs() -> tuple[
     dict[str, object], np.ndarray, np.ndarray, np.ndarray,
-    QuadraticSurrogate, np.ndarray,
+    QuadraticSurrogate, np.ndarray, LogOverflowTSSClosure, np.ndarray,
 ]:
     design = create_design(TEST_500)
     with np.load(RUN / "datasets/development/mechanistic_rows_v3.npz", allow_pickle=False) as data:
@@ -97,8 +101,21 @@ def _load_inputs() -> tuple[
             "the ridge checkpoint uses the superseded layer-output response; "
             "rerun reduced-response ridge selection before optimization"
         )
+    closure_path = RUN / "models/log_overflow_closure.npz"
+    if not closure_path.is_file():
+        raise RuntimeError(
+            "the required log-overflow-TSS closure checkpoint is unavailable; "
+            "rerun the assessment phase before optimization"
+        )
+    with np.load(closure_path, allow_pickle=False) as data:
+        closure_arrays = {name: np.asarray(data[name]) for name in data.files}
+    overflow_closure = LogOverflowTSSClosure.from_serialized_arrays(closure_arrays)
+    oof_overflow_tss = np.asarray(closure_arrays["out_of_fold_tss"], dtype=float)
+    if oof_overflow_tss.shape != (len(targets),) or np.any(oof_overflow_tss <= 0.0):
+        raise RuntimeError("the log-overflow-TSS closure checkpoint is inconsistent")
     return (
         design, mechanistic_targets, targets, oof_raw, model, np.asarray(gamma),
+        overflow_closure, oof_overflow_tss,
     )
 
 
@@ -134,7 +151,10 @@ def _shared_response(response: np.ndarray) -> np.ndarray:
 
 
 def main(case_limit: int) -> None:
-    design, mechanistic_targets, targets, oof_raw, model, _ = _load_inputs()
+    (
+        design, mechanistic_targets, targets, oof_raw, model, _,
+        overflow_closure, oof_overflow_tss,
+    ) = _load_inputs()
     layout = NetworkLayout(layer_count=TEST_500.layer_count)
     direct_assets = fit_direct_assets(
         design["development_decisions"], design["development_influents"],
@@ -144,6 +164,8 @@ def main(case_limit: int) -> None:
     trust = calibrate_trust_diagnostics(
         model, design["development_decisions"], design["development_influents"],
         targets, oof_raw, direct_assets, layout=layout,
+        overflow_closure=overflow_closure,
+        out_of_fold_overflow_tss=oof_overflow_tss,
     )
     surrogate_assets = build_surrogate_assets(
         model, design["development_decisions"], design["development_influents"], targets,
@@ -152,6 +174,8 @@ def main(case_limit: int) -> None:
         trust_callbacks=trust.callbacks,
         split_rms_threshold=trust.split_limit,
         reactor_rms_threshold=trust.reactor_limit,
+        overflow_closure=overflow_closure,
+        development_overflow_tss_closure=oof_overflow_tss,
     )
     features = model.feature_map.transform(
         design["development_decisions"], design["development_influents"],
@@ -247,6 +271,9 @@ def main(case_limit: int) -> None:
                         method, f"{case_id}:surrogate", response, selected_theta, influent,
                         layout, surrogate_assets.row_scales.equality,
                         surrogate_assets.row_scales.inequality, model.response_scale,
+                        overflow_tss_closure=float(
+                            overflow_closure.predict(selected_theta, influent)
+                        ),
                     ))
         if cached_surrogate is None and surrogate_selected is not None:
             final = surrogate_selected
@@ -259,6 +286,9 @@ def main(case_limit: int) -> None:
                     method, f"{case_id}:surrogate", response, final.theta, influent,
                     layout, surrogate_assets.row_scales.equality,
                     surrogate_assets.row_scales.inequality, model.response_scale,
+                    overflow_tss_closure=float(
+                        overflow_closure.predict(final.theta, influent)
+                    ),
                 ))
 
         print(f"[{case_id}] direct route", flush=True)
@@ -299,6 +329,9 @@ def main(case_limit: int) -> None:
                 "smooth", f"{case_id}:direct", _shared_response(direct_response), direct_theta,
                 influent, layout, surrogate_assets.row_scales.equality,
                 surrogate_assets.row_scales.inequality, model.response_scale,
+                overflow_tss_closure=float(
+                    overflow_closure.predict(direct_theta, influent)
+                ),
             ))
             equivalence = compare_smooth_reference(
                 direct_theta, influent, direct_assets,
@@ -318,6 +351,9 @@ def main(case_limit: int) -> None:
                 "reference", f"{case_id}:direct", _shared_response(response), direct_theta,
                 influent, layout, surrogate_assets.row_scales.equality,
                 surrogate_assets.row_scales.inequality, model.response_scale,
+                overflow_tss_closure=float(
+                    overflow_closure.predict(direct_theta, influent)
+                ),
             ))
         pd.DataFrame(violations).to_csv(
             RUN / "metrics/physical_violations_selected_cases.csv", index=False,

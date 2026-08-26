@@ -6,11 +6,13 @@ from unittest.mock import patch
 import numpy as np
 import pandas as pd
 
+import closed_loop.manuscript_v3 as manuscript_v3
 from closed_loop.manuscript_v3 import (
     TEST_500,
     StudyProfile,
     assess_raw_projected_mechanistic,
     clarifier_for,
+    cross_validate_log_overflow_closure,
     create_design,
     engineering_quantities,
     reduce_mechanistic_responses,
@@ -30,6 +32,37 @@ from closed_loop.projection import (
 
 
 class ManuscriptV3ContractTests(unittest.TestCase):
+    def test_log_overflow_cross_validation_is_complete_and_out_of_fold(self) -> None:
+        layout = NetworkLayout(
+            stage_count=1,
+            component_count=2,
+            layer_count=3,
+            soluble_indices=(0,),
+            particulate_indices=(1,),
+        )
+        rng = np.random.default_rng(20260827)
+        decisions = rng.uniform(0.1, 0.9, size=(120, 7))
+        decisions[:, 6] *= 0.05
+        influents = rng.uniform(1.0, 20.0, size=(120, 2))
+        exact = np.exp(
+            0.25 + 0.1 * decisions[:, 0] - 0.03 * influents[:, 1]
+        )
+        targets = np.ones((120, layout.state_size))
+        targets[:, layout.overflow_flow_slice.start + 1] = (
+            (1.0 - decisions[:, 6]) * exact
+        )
+        with patch.object(manuscript_v3, "TSS_VECTOR", np.asarray([0.0, 1.0])), \
+                patch.object(manuscript_v3, "RIDGE_GRID", np.asarray([1.0e-4])):
+            result = cross_validate_log_overflow_closure(
+                decisions, influents, targets, layout=layout,
+            )
+        self.assertEqual(len(result.scores), 5)
+        self.assertEqual(set(result.fold_membership), {1, 2, 3, 4, 5})
+        self.assertEqual(result.out_of_fold_tss.shape, (120,))
+        self.assertTrue(np.all(np.isfinite(result.out_of_fold_tss)))
+        self.assertTrue(np.all(result.out_of_fold_tss > 0.0))
+        np.testing.assert_allclose(result.exact_overflow_tss, exact)
+
     def test_parallel_holdout_projection_matches_serial_and_resumes(self) -> None:
         profile = StudyProfile(
             name="parallel_unit",

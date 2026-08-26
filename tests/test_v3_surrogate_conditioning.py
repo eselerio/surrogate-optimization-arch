@@ -8,7 +8,11 @@ import casadi as ca
 import numpy as np
 
 import closed_loop.v3_surrogate_nlp as surrogate_nlp
-from closed_loop.projection import NetworkLayout, build_network_operators
+from closed_loop.projection import (
+    LogOverflowTSSClosure,
+    NetworkLayout,
+    build_network_operators,
+)
 from closed_loop.v3_surrogate_nlp import (
     GAP_CONTINUATION,
     EngineeringLimits,
@@ -198,6 +202,63 @@ class SurrogateConditioningTests(unittest.TestCase):
             np.asarray(symbolic_values[1]).reshape(-1), numeric.equality_rhs
         )
         np.testing.assert_allclose(symbolic_values[2], numeric.inequality_matrix)
+
+        rng = np.random.default_rng(20260827)
+        closure_decisions = rng.uniform(0.1, 1.0, size=(120, 7))
+        closure_influents = rng.uniform(1.0, 20.0, size=(120, 2))
+        closure_target = np.exp(
+            0.2 + 0.1 * closure_decisions[:, 4]
+            - 0.02 * closure_influents[:, 1]
+        )
+        closure = LogOverflowTSSClosure.fit_ridge(
+            closure_decisions,
+            closure_influents,
+            closure_target,
+            ridge_penalty=1.0e-4,
+        )
+        closure_assets = SimpleNamespace(
+            layout=layout,
+            invariant_operator=invariant,
+            tss_weights=tss,
+            equality_count=7,
+            engineering=SimpleNamespace(clarifier_volume_m3=30.0),
+            overflow_closure=closure,
+        )
+        symbolic_closure = symbolic_network_operators(
+            theta_symbol, feed_symbol, closure_assets,
+        )
+        evaluate_closure = ca.Function(
+            "reduced_network_operator_closure_test",
+            [theta_symbol, feed_symbol],
+            [
+                symbolic_closure.equality_matrix,
+                symbolic_closure.equality_rhs,
+                symbolic_closure.inequality_matrix,
+            ],
+        )
+        closure_value = float(closure.predict(theta, feed))
+        numeric_closure = build_network_operators(
+            feed,
+            internal_recycle=theta[4],
+            return_recycle=theta[5],
+            waste_fraction=theta[6],
+            invariant_operator=invariant,
+            tss_weights=tss,
+            layout=layout,
+            clarifier_volume_m3=30.0,
+            overflow_tss_closure=closure_value,
+        )
+        symbolic_closure_values = evaluate_closure(theta, feed)
+        np.testing.assert_allclose(
+            symbolic_closure_values[0], numeric_closure.equality_matrix,
+        )
+        np.testing.assert_allclose(
+            np.asarray(symbolic_closure_values[1]).reshape(-1),
+            numeric_closure.equality_rhs,
+        )
+        np.testing.assert_allclose(
+            symbolic_closure_values[2], numeric_closure.inequality_matrix,
+        )
 
     def test_ipopt_options_and_stage_call_propagate_outer_duals(self) -> None:
         options = SurrogateSolverSettings().ipopt_options()

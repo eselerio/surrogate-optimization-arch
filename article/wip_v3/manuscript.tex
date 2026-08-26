@@ -65,12 +65,12 @@
 \cortext[cor1]{Corresponding author}
 
 \begin{abstract}
-Activated-sludge optimization is difficult because biological conversion, internal mixed-liquor recycle, return activated sludge, wasting, and secondary clarification form one nonlinear closed loop. This work compares two optimization routes for the same plant: the extended ICSOR surrogate ($S$) and a smooth mechanistic nonlinear program ($M$). The extended ICSOR retains the second-order multiresponse regression used by the ICSOR surrogate of Selerio Jr. (2026), but extends its invariant-constraint projection from an isolated response to the complete recycling system. One quadratic map predicts the mixer, every reactor outlet, both Clarifier outlet-flow vectors, and one aggregate Clarifier-solids inventory. A scaled-Euclidean projection then imposes recycle mixing, stoichiometric-invariant transport, Clarifier component conservation, soluble pass-through, particulate densification, a feed-dependent non-settleable-solids floor on overflow TSS, tight outlet-derived inventory bounds, and non-negativity. The case study uses five equal-volume reactors, independently adjustable aeration in reactors 3--5, a ten-layer mechanistic Clarifier, 16,714 accepted mechanistic design states, five-fold plant-grouped cross-validation, and ten post-selection influent scenarios. The surrogate optimizer cold-solves its projection at every distinct trial; verified total derivatives may support a strong first-order KKT tier, whereas deterministic value-only optimization and two-scale feasible no-descent polls provide an explicitly finite-resolution tier when derivative conditions fail. Every selected $S$ and $M$ candidate is replayed on the same exact nonsmooth, layer-resolved aggregate-solids model. The framework separates regression error, physical reconciliation, decision quality, smoothing effects, and computational cost without asserting layer-profile prediction or global optimality.
+Activated-sludge optimization is difficult because biological conversion, internal mixed-liquor recycle, return activated sludge, wasting, and secondary clarification form one nonlinear closed loop. This work compares two optimization routes for the same plant: the extended ICSOR surrogate ($S$) and a smooth mechanistic nonlinear program ($M$). The extended ICSOR retains the second-order multiresponse regression used by the ICSOR surrogate of Selerio Jr. (2026), but extends its invariant-constraint projection from an isolated response to the complete recycling system. One quadratic map predicts the mixer, every reactor outlet, both Clarifier outlet-flow vectors, and one aggregate Clarifier-solids inventory. A development-fitted log-scale regression supplies a strictly positive overflow-TSS closure, and a scaled-Euclidean projection then imposes that closure together with recycle mixing, stoichiometric-invariant transport, Clarifier component conservation, soluble pass-through, particulate densification, tight outlet-derived inventory bounds, and non-negativity. The case study uses five equal-volume reactors, independently adjustable aeration in reactors 3--5, a ten-layer mechanistic Clarifier, 16,714 accepted mechanistic design states, five-fold plant-grouped cross-validation, and ten post-selection influent scenarios. The surrogate optimizer cold-solves its projection at every distinct trial; verified total derivatives may support a strong first-order KKT tier, whereas deterministic value-only optimization and two-scale feasible no-descent polls provide an explicitly finite-resolution tier when derivative conditions fail. Every selected $S$ and $M$ candidate is replayed on the same exact nonsmooth, layer-resolved aggregate-solids model. The framework separates regression error, empirical endpoint closure, physical reconciliation, decision quality, smoothing effects, and computational cost without asserting layer-profile prediction or global optimality.
 \end{abstract}
 
 \begin{highlights}
 \item Extended ICSOR applies second-order regression to the complete recycling plant.
-\item Its system-wide invariant-constraint projection enforces a non-settleable-solids floor.
+\item A log-scale regression supplies a positive overflow-TSS projection closure.
 \item Extended ICSOR and the smooth NLP use identical controls and limits.
 \item Projection sensitivities support auditable surrogate optimization.
 \item Both routes are judged on one exact ten-layer reference model.
@@ -89,12 +89,12 @@ $A\in\R^{K\times F}$ & Full-row-rank stoichiometric-invariant operator\\
 $A_{\rm cl}$ & Clarifier surface area\\
 $a_i$, $k_La_i$ & Normalized aeration setting and oxygen-transfer coefficient in reactor $i$\\
 $c_i,m,c_E,c_U\in\R_+^F$ & Reactor-$i$, mixer, Clarifier-overflow, and Clarifier-underflow concentrations\\
-$D_\chi,D_y,D_b,D_g,D_T$ & Positive plant-response, mechanistic-state, physical-row, and quality scales\\
+$D_\chi,D_y,D_b,D_g,D_T$ & Positive plant-response, mechanistic-state, constraint-row, and quality scales\\
 $d_i$ & Recycle-adjusted dilution rate in reactor $i$, d$^{-1}$\\
 $E_S,E_X$ & Selectors for soluble and particulate components\\
 $F,F_S,F_X$ & Total, soluble, and particulate component counts\\
-$f_{\rm ns}$ & Non-settleable fraction in the Clarifier settling law\\
 $g_E=q_Ec_E$, $g_U=q_Uc_U$ & Clarifier outlet component flows divided by fresh flow\\
+$\gamma_S,\gamma_E$ & Ridge penalties for the raw multiresponse fit and scalar log-TSS closure\\
 $h_i$, $H$ & Nominal stage and total HRT on a fresh-flow basis, h\\
 $I_{\rm comp}$ & Component-to-COD/TN/TP/TSS reporting map\\
 $J$ & Dimensionless engineering objective\\
@@ -108,13 +108,15 @@ $Q_0$ & Fresh-influent flow\\
 $r_I,r_R,w$ & MLR, RAS, and WAS ratios relative to $Q_0$\\
 $s_\ell$ & Mechanistic TSS concentration in Clarifier layer $\ell$\\
 $t_X$ & Component-to-TSS column vector\\
+$X_\star$ & Positive reference concentration used to nondimensionalize the logarithmic TSS target\\
+$\widehat X_{E,\log}$ & Development-fitted positive overflow-TSS closure\\
 $\vartheta\in\R^{d_\vartheta}$ & Vector containing exactly the freely varied operating coordinates\\
 $x\in\R_+^F$ & Fresh-influent component vector\\
-$X_{\rm feed}=X_N$ & TSS concentration entering the Clarifier\\
 $\chi_{{\rm raw},S},\widehat\chi_S$ & Raw and physically projected extended-ICSOR operational responses\\
 $y$ & Reactor-and-Clarifier mechanistic state\\
 $\nu,\rho$ & Stoichiometric matrix and process-rate vector\\
 $\phi_S$ & Standardized unique-monomial feature vector for the extended-ICSOR fit\\
+$\widehat\beta_{E,\gamma_E}$ & Fitted coefficient vector for logarithmic overflow TSS\\
 $\varpi,\varpi_Q$ & Overall objective priorities and effluent-quality priorities\\
 \end{longtable}
 
@@ -122,9 +124,9 @@ $\varpi,\varpi_Q$ & Overall objective priorities and effluent-quality priorities
 
 An activated-sludge plant with mixed-liquor recycle (MLR), return activated sludge (RAS), waste activated sludge (WAS), and a secondary Clarifier is one recycling process. Changing an internal recycle alters reactor throughflow; changing aeration alters both conversion and power demand; changing wasting alters solids age; and the Clarifier determines the treated-water quality and the solids returned to the biology. Treating these decisions as independent subsystems would miss the loop that makes the plant operate.
 
-Activated Sludge Models describe this coupling mechanistically, while multilayer settling models represent clarification and thickening \citep{Henze2006,Takacs1991}. In the Tak\'acs settling law, the parameter $f_{\rm ns}$ identifies a feed-dependent concentration scale below which solids are treated as non-settleable. This low-concentration behavior matters at the treated-water outlet: non-negativity alone permits an arbitrarily small positive overflow TSS even when the feed carries an irreducible non-settleable fraction. Repeatedly integrating the mechanistic equations to a stable steady state is expensive inside operational optimization. A statistical surrogate can be evaluated much faster, but an unconstrained regression may predict a negative concentration, lose a conserved inventory between reactors, create component mass in the Clarifier, or overstate clarification by driving overflow TSS below that scale. Optimization amplifies this risk because its purpose is to search for unusually favorable predictions \citep{Bhosekar2018}.
+Activated Sludge Models describe this coupling mechanistically, while multilayer settling models represent clarification and thickening \citep{Henze2006,Takacs1991}. Repeatedly integrating those equations to a stable steady state is expensive inside operational optimization. A statistical surrogate can be evaluated much faster, but an unconstrained regression may predict a negative concentration, lose a conserved inventory between reactors, or create component mass in the Clarifier. This problem is especially visible for overflow TSS: effective clarification places the response near the lower edge of its physical range, where an additive error that is modest on the mixed-liquor scale can become a large relative effluent error. A quadratic regression fitted directly in concentration coordinates can therefore extrapolate toward implausibly small values even though residual, poorly settling, and dispersed solids keep the mechanistic overflow positive. Optimization amplifies this risk because its purpose is to search for unusually favorable predictions \citep{Bhosekar2018}.
 
-The present formulation gives regression and physics different, auditable roles. It extends the invariant-aware ICSOR surrogate of \citet{Selerio2026}, which uses a second-order regression and invariant-constraint projection, from its original response setting to the complete recycling plant. The extended ICSOR predicts the complete decision-relevant closed-loop response in one quadratic map. Internal Clarifier layers are omitted from the statistical response because they are not needed to close the recycle, calculate outlet quality, or evaluate the operating objective; their volume-weighted total is retained because whole-plant solids retention time depends on Clarifier inventory. A strictly convex quadratic program (QP) finds the nearest response satisfying the stated linear physical relations, including a scalar lower bound that prevents predicted overflow TSS from falling below the declared non-settleable fraction of feed TSS. The extended ICSOR and the smooth mechanistic NLP use identical controls, objective, and engineering limits. Apart from this reduced endpoint closure, nonlinear biological rates and the nonlinear settling law are not attributed to the projection; they are checked independently with the full layer-resolved state of the declared aggregate-solids mechanistic model. This distinction is important because satisfying conservation, the non-settleable floor, and aggregate inventory bounds is necessary for a credible plant response, but it is not sufficient to establish kinetic or layer-profile accuracy.
+The present formulation gives regression, empirical endpoint closure, and physics distinct, auditable roles. It extends the invariant-aware ICSOR surrogate of \citet{Selerio2026}, which uses a second-order regression and invariant-constraint projection, from its original response setting to the complete recycling plant. The extended ICSOR predicts the complete decision-relevant closed-loop response in one quadratic map. Internal Clarifier layers are omitted from the statistical response because they are not needed to close the recycle, calculate outlet quality, or evaluate the operating objective; their volume-weighted total is retained because whole-plant solids retention time depends on Clarifier inventory. A separate scalar ridge regression uses the same second-order input family but models overflow TSS on a logarithmic scale. Exponentiation guarantees a positive endpoint estimate and makes proportional, rather than additive, deviations natural across the wide TSS range. The estimate is imposed as one equality in the same strictly convex system-wide projection; it is not clipping, a fixed settling ratio, or a mechanistic settling law. The extended ICSOR and the smooth mechanistic NLP use identical controls, objective, and engineering limits. Nonlinear biological rates and the nonlinear settling law are not attributed to the projection; they are checked independently with the full layer-resolved state of the declared aggregate-solids mechanistic model. This distinction is important because satisfying conservation, the fitted endpoint closure, and aggregate inventory bounds is necessary for a credible surrogate response, but it is not sufficient to establish kinetic or layer-profile accuracy.
 
 The derivation is dimension-parametric. It applies to $N$ biological stages, an $L$-layer mechanistic Clarifier, and any declared set of free stage and plant controls. Numerical values---including $N$, $L$, the aerated stages, operating bounds, objective priorities, and engineering limits---are introduced only in the case study. Changing $L$ changes the mechanistic state and the construction of its aggregate inventory, but not the number of statistical response coordinates. The case uses five reactors and ten mechanistic layers, but neither number is built into the theory.
 
@@ -229,19 +231,6 @@ E_Sg_U=q_UE_Sc_N,\qquad E_Xg_U\ge q_UE_Xc_N.
 \end{equation}
 The first relation, together with Equation~\eqref{eq:clarifierbalance}, also gives $E_Sg_E=q_EE_Sc_N$. The second says that the underflow particulate concentration cannot be lower than the feed concentration. With non-negative outlet flows it bounds each particulate recovery between $q_U/q_C$ and one; after applying the non-negative TSS map and the total Clarifier balance, it also gives $X_E\le X_N\le X_U$.
 
-Define the Clarifier-feed TSS as $X_{\rm feed}:=X_N=t_X^\top c_N$. The Tak\'acs double-exponential settling relation is evaluated using an effective solids concentration displaced by $f_{\rm ns}X_{\rm feed}$ and clipped to non-negative settling velocity \citep{Takacs1991}. This construction represents a fraction of the feed solids that is not removed by gravity settling. In a reduced endpoint model that does not carry the layer fluxes, its relevant consequence is declared explicitly as
-\begin{equation}
-X_E\ge f_{\rm ns}X_{\rm feed}=f_{\rm ns}X_N,
-\qquad 0\le f_{\rm ns}<1.
-\label{eq:nonsettleablefloor}
-\end{equation}
-Because $q_E>0$, the equivalent division-free form is
-\begin{equation}
-q_Ef_{\rm ns}t_X^\top c_N-t_X^\top g_E\le0.
-\label{eq:nonsettleableflow}
-\end{equation}
-Equation~\eqref{eq:nonsettleablefloor} prevents the regression and optimizer from representing complete or near-complete solids removal when the Clarifier feed contains a declared non-settleable fraction. It is a conservative scalar endpoint closure motivated by the settling law, not a replacement for its nonlinear flux function or layer balances.
-
 Let $s_\ell$ be the mechanistic TSS concentration in layer $\ell$, numbered from the water surface ($\ell=1$) to the hopper ($\ell=L$). The endpoint concentrations are determined by the outlet component flows:
 \begin{equation}
 X_E=s_1=\frac{t_X^\top g_E}{q_E},\qquad
@@ -299,9 +288,24 @@ With development response mean $\bar\chi$, positive scale $D_\chi$, and fitted c
 \end{equation}
 The ridge parameter $\gamma_S$ controls statistical complexity. At this point Equation~\eqref{eq:raw} is only a regression prediction; no sign or balance property has yet been imposed.
 
+Overflow TSS spans a strongly asymmetric range and is most decision-sensitive at its low end. To represent this endpoint without changing the raw multiresponse fit, define the dimensionless development target
+\begin{equation}
+\ell_E=\log\!\left(\frac{X_E}{X_\star}\right),
+\qquad X_\star=1\ {\rm mg\,L^{-1}},
+\label{eq:logtarget}
+\end{equation}
+and fit a separate scalar ridge coefficient vector $\widehat\beta_{E,\gamma_E}$ on the same complete second-order input family. Its positive concentration-scale prediction is
+\begin{equation}
+\widehat X_{E,\log}(\vartheta,x)
+=X_\star\exp\!\left\{\widehat\beta_{E,\gamma_E}^{\top}
+\phi_S(\vartheta,x)\right\}>0.
+\label{eq:logclosure}
+\end{equation}
+The logarithm treats a given fractional discrepancy similarly at low and high concentration and prevents a negative fitted endpoint after back-transformation. Under squared log error, direct exponentiation estimates a conditional geometric center rather than an unbiased concentration-scale conditional mean; no post hoc smearing factor is introduced. It does not create a mechanistic lower bound: $\widehat X_{E,\log}$ varies with all declared controls and influent coordinates. No clipping rule and no fixed overflow-to-feed settling ratio is imposed. The closure regression is fitted and selected only from development rows; grouped out-of-fold values are used wherever a development prediction enters projection assessment or trust calibration.
+
 \subsection{System-wide invariant-constraint projection}
 
-The projection is built by collecting the physical statements already derived, rather than introducing unrelated constraints at once. Define $\delta_i(\vartheta)=d_i^{-1}A\xi_i(\vartheta)$ and let $\mathcal H(\vartheta)\chi=\mathfrak b(\vartheta,x)$ represent
+The projection keeps the derived network physics distinct from the empirical overflow closure. Define $\delta_i(\vartheta)=d_i^{-1}A\xi_i(\vartheta)$ and let $\mathcal H(\vartheta)\chi=\mathfrak b(\vartheta,x)$ represent
 \begin{equation}
 \col\!\left(
 \begin{array}{c}
@@ -310,14 +314,19 @@ q_Pm-r_Ic_N-(r_R/q_U)g_U-x\\
 g_E+g_U-q_Cc_N\\
 E_Sg_U-q_UE_Sc_N
 \end{array}\right)=0.
-\label{eq:H}
+\label{eq:Hbase}
 \end{equation}
-There are
+The fitted overflow endpoint is appended to these physical equalities as
 \begin{equation}
-n_h=2F+NK+F_S
+t_X^\top g_E=q_E\widehat X_{E,\log}(\vartheta,x).
+\label{eq:overflowclosure}
+\end{equation}
+At fixed $(\vartheta,x)$, the right-hand side is a known positive scalar, so Equation~\eqref{eq:overflowclosure} is linear in $\chi$ and preserves the QP structure. The complete equality operator $\mathcal H_{\log}(\vartheta)\chi=\mathfrak b_{\log}(\vartheta,x)$ collects Equations~\eqref{eq:Hbase} and \eqref{eq:overflowclosure}. There are
+\begin{equation}
+n_h=2F+NK+F_S+1
 \label{eq:eqcount}
 \end{equation}
-rows: one mixer balance, $N$ invariant transitions, one full Clarifier balance, and soluble pass-through. No separate endpoint identities are needed because the endpoint TSS values are derived from the outlet flows.
+rows: one mixer balance, $N$ invariant transitions, one full Clarifier balance, soluble pass-through, and the scalar overflow-TSS closure. The closure fixes only total overflow TSS. It does not prescribe the particulate composition of $g_E$; that allocation is reconciled jointly with the raw component predictions and the remaining constraints.
 
 The remaining linear physical directions are written $\mathcal G(\vartheta)\chi\le0$:
 \begin{equation}
@@ -325,7 +334,6 @@ The remaining linear physical directions are written $\mathcal G(\vartheta)\chi\
 \col\!\left(
 \begin{array}{c}
 q_UE_Xc_N-E_Xg_U\\
-q_Ef_{\rm ns}t_X^\top c_N-t_X^\top g_E\\
 q_U(V_{\rm cl}-V_{{\rm cl},L})t_X^\top g_E
 +q_EV_{{\rm cl},L}t_X^\top g_U-q_Eq_UM_{\rm cl}\\
 q_Eq_UM_{\rm cl}-q_UV_{{\rm cl},1}t_X^\top g_E
@@ -333,20 +341,20 @@ q_Eq_UM_{\rm cl}-q_UV_{{\rm cl},1}t_X^\top g_E
 \end{array}\right)\le0.
 \label{eq:G}
 \end{equation}
-Thus $n_g=F_X+3$ inequality rows describe particulate densification, the non-settleable overflow floor, and aggregate-inventory feasibility. The scalar row after particulate densification is Equation~\eqref{eq:nonsettleableflow}; the last two rows are the division-free form of Equation~\eqref{eq:inventoryenvelope}. All remain linear in $\chi$ at fixed $\vartheta$. Non-negativity contributes another $n_\chi$ inequalities.
+Thus $n_g=F_X+2$ inequality rows describe particulate densification and aggregate-inventory feasibility. The last two rows are the division-free form of Equation~\eqref{eq:inventoryenvelope}; they remain linear in $\chi$ at fixed $\vartheta$. Non-negativity contributes another $n_\chi$ inequalities.
 
 The correction is measured in standardized plant-response coordinates $D_\chi$, so that the large-magnitude inventory coordinate does not overwhelm a small nutrient coordinate. The projected displacement and response are
 \begin{align}
-\widehat u_k(\vartheta,x)=\argminop_{u\in\R^{n_\chi}}\quad&\tfrac12\|u\|_2^2
+\widehat u_S(\vartheta,x)=\argminop_{u\in\R^{n_\chi}}\quad&\tfrac12\|u\|_2^2
 \label{eq:projection}\\
 \text{subject to}\quad&
-D_b^{-1}\{\mathcal H(\vartheta)[\chi_{{\rm raw},S}+D_\chi u]-\mathfrak b(\vartheta,x)\}=0,\notag\\
+ D_b^{-1}\{\mathcal H_{\log}(\vartheta)[\chi_{{\rm raw},S}+D_\chi u]-\mathfrak b_{\log}(\vartheta,x)\}=0,\notag\\
 &\chi_{{\rm raw},S}+D_\chi u\ge0,\notag\\
 &D_g^{-1}\mathcal G(\vartheta)[\chi_{{\rm raw},S}+D_\chi u]\le0,\notag\\[1mm]
 \widehat\chi_S(\vartheta,x)={}&\chi_{{\rm raw},S}(\vartheta,x)+D_\chi\widehat u_S(\vartheta,x).
 \label{eq:projected}
 \end{align}
-$D_b$ and $D_g$ improve numerical conditioning but do not alter the feasible set. The projection is applied once after the complete raw plant response is assembled; per-unit projections would change the method and are not used. Whenever that set is nonempty, the identity Hessian makes the objective strictly convex and coercive, so the projected response exists and is unique for an available raw response. In the no-addition case, nonemptiness holds at every declared design point by construction: set $m=c_i=x$ for all $i$, $g_E=q_Ex$, $g_U=q_Ux$, and $M_{\rm cl}=V_{\rm cl}t_X^\top x$. This construction has $X_E=X_N\ge f_{\rm ns}X_N$ for $0\le f_{\rm ns}<1$, so it also satisfies the new row. For nonzero additions, nonemptiness is instead a required domain-admissibility check because the invariant right-hand sides change.
+$D_b$ and $D_g$ improve numerical conditioning but do not alter the feasible set; the overflow-closure row receives a positive development-frozen scale by the same convention as the other equality rows. The projection is applied once after the complete raw plant response is assembled; per-unit projections would change the method and are not used. Whenever the intersection is nonempty, the identity Hessian makes the objective strictly convex and coercive, so the projected response exists and is unique for an available raw response. Because Equation~\eqref{eq:overflowclosure} is fitted rather than an identity, nonemptiness is not asserted analytically over the full operating box. It is audited for every grouped out-of-fold development row, optimization evaluation, and reported holdout or selected-decision evaluation. An infeasible closure is a failed projection, not a value to be clipped or silently relaxed.
 
 The projection has a useful audit property. If a mechanistic reference $\chi_{\rm ref}$ satisfies the projection constraints exactly, Euclidean-projection geometry in standardized coordinates gives
 \begin{equation}
@@ -355,7 +363,7 @@ The projection has a useful audit property. If a mechanistic reference $\chi_{\r
 -\|\widehat u_S\|_2^2.
 \label{eq:nonexpansive}
 \end{equation}
-Thus the physical correction cannot increase standardized squared error to a reduced mechanistic reference point that is actually in the projection set. A numerically near-feasible target requires the finite-distance bound introduced in the methodology; small infeasibility is not treated as exact feasibility. Neither result reconstructs an internal Clarifier profile or proves that the projected response satisfies all kinetic or nonlinear settling equations, which are tested separately by full mechanistic replay.
+Thus the correction cannot increase standardized squared error to a reduced mechanistic reference point that is actually in the projection set. Because a mechanistic target generally does not equal the fitted value in Equation~\eqref{eq:overflowclosure}, that stronger result is not presumed for the revised projection. The finite-distance bound introduced in the methodology is the general audit; small infeasibility is not treated as exact feasibility. Neither result reconstructs an internal Clarifier profile or proves that the projected response satisfies all kinetic or nonlinear settling equations, which are tested separately by full mechanistic replay.
 
 \subsection{Engineering objective and operating constraints}
 
@@ -396,7 +404,7 @@ The whole-plant solids retention time, surface overflow rate, and Clarifier soli
 \end{align}
 The factor $10^{-3}$ converts grams to kilograms in SLR. Symbolic lower and upper limits on SRT, SOR, SLR, $X_U$, and any effluent targets form $g_{\rm eng}(\vartheta,\chi)\le0$; only the case-study section assigns their values. In computation the SRT bounds are imposed in cross-multiplied form after the positive-loss guard, avoiding division by a small quantity.
 
-Physical feasibility alone does not prevent optimization from asking the projection to make an unusually large repair or from exploiting a state that conserves inventories but is kinetically implausible. The extended-ICSOR vector $g_{{\rm trust},S}$ retains its four development-supported diagnostics: standardized correction $\kappa_{{\rm corr},S}=\|\widehat u_S\|_2/\sqrt{n_\chi}$; whole-system regularized feature leverage; deviation from a common particulate recovery; and the scaled smooth reactor-balance residual. Explicit formulas and thresholds are provided in the Supplementary Material. Each threshold is determined from grouped development calculations without using the post-selection holdout or optimization responses. No scalar aggregate can reproduce the discarded layer-flux residual, so nonlinear Clarifier plausibility is deliberately reserved for the exact $L$-layer replay rather than represented by a surrogate trust statistic.
+Network feasibility and endpoint closure do not prevent optimization from asking the projection to make an unusually large repair or from exploiting a state that conserves inventories but is kinetically implausible. The extended-ICSOR vector $g_{{\rm trust},S}$ retains its four development-supported diagnostics: standardized correction $\kappa_{{\rm corr},S}=\|\widehat u_S\|_2/\sqrt{n_\chi}$; whole-system regularized feature leverage; deviation from a common particulate recovery; and the scaled smooth reactor-balance residual. Explicit formulas and thresholds are provided in the Supplementary Material. Each threshold is determined from grouped development calculations without using the post-selection holdout or optimization responses. No scalar aggregate can reproduce the discarded layer-flux residual, so nonlinear Clarifier plausibility is deliberately reserved for the exact $L$-layer replay rather than represented by a surrogate trust statistic.
 
 The extended-ICSOR operational problem is
 \begin{equation}
@@ -488,7 +496,6 @@ $Q_0$ & 10,000 m$^3$ d$^{-1}$ & Fresh-flow basis\\
 $N$; $L$; $\ell_F$ & 5; 10; 5 & Reactors; layers; feed layer\\
 $f_i^V$ & $1/5$ & Equal reactor-volume fractions\\
 $A_{\rm cl}$; depth & 1500 m$^2$; 4.0 m & Clarifier geometry\\
-$f_{\rm ns}$ & 0.00228 & Non-settleable TSS fraction\\
 $H$ & 6--36 h & Total nominal HRT\\
 $a_3,a_4,a_5$ & independently 0--1 & Stage aeration settings\\
 $r_I$ & 0--4 & MLR ratio\\
@@ -500,7 +507,7 @@ $w$ & 0.001--0.05 & WAS ratio\\
 
 Five equal-volume stages provide a compact anoxic--aerobic train for the comparative calculation, while ten 0.4-m Clarifier layers resolve the specified 4-m depth without making the layer count a structural constant. The operating box deliberately spans low-to-high residence time, aeration, recycle, and wasting settings while preserving $q_E>0$ and $q_U>0$. These choices define the case-study domain; they are not asserted as universal design bounds.
 
-For this case, extended ICSOR has $d_z=d_\vartheta+F=27$ and $n_{\phi,S}=406$. It assembles $n_\chi=161$ responses with $n_h=75$, $n_g=13$, and $n_q=174$, while the mechanistic route has $n_y=110$. These are evaluations of Equations~\eqref{eq:state}, \eqref{eq:featurecount}, \eqref{eq:eqcount}, and \eqref{eq:G}; they are not fixed architectural constants. Changing $N$ or the free-control set changes the extended-ICSOR problem and requires renewed validation. Changing $L$ changes $n_y$, the mechanistic discretization, and the deterministic construction of $M_{\rm cl}$, but not $n_\chi$; it still requires renewed mechanistic and response validation.
+For this case, extended ICSOR has $d_z=d_\vartheta+F=27$ and $n_{\phi,S}=406$. It assembles $n_\chi=161$ responses with $n_h=76$, $n_g=12$, and $n_q=173$, while the mechanistic route has $n_y=110$. The additional equality is the scalar log-regression overflow closure; it does not add a response coordinate or an inequality. These are evaluations of Equations~\eqref{eq:state}, \eqref{eq:featurecount}, \eqref{eq:eqcount}, and \eqref{eq:G}; they are not fixed architectural constants. Changing $N$ or the free-control set changes the extended-ICSOR problem and requires renewed validation. Changing $L$ changes $n_y$, the mechanistic discretization, and the deterministic construction of $M_{\rm cl}$, but not $n_\chi$; it still requires renewed mechanistic and response validation.
 
 The overall objective priorities are
 \begin{equation}
@@ -547,7 +554,7 @@ After all eleven casewise calculations were complete, the repeated holdout infer
 
 On 25 August 2026, after layer-wise holdout summaries and case artifacts from the 170-coordinate surrogate existed, the author explicitly replaced the ten statistical layer outputs by the single inventory $M_{\rm cl}$. This is an outcome-aware model revision motivated by response parsimony and the fact that internal layers are unnecessary for recycle closure and operational evaluation. The accepted mechanistic checkpoints and their full ten-layer states remain valid source data; $M_{\rm cl}$ is derived from them by Equation~\eqref{eq:inventory} under a new response-schema hash. The former response arrays, ridge fit, response scales, projection and trust thresholds, holdout assessment, surrogate decisions, convergence certificates, replays at those decisions, and surrogate timings are excluded from the revised analysis. The reduced surrogate is refitted and every downstream surrogate assessment, optimization, replay, and timing calculation is repeated. The ten-layer mechanistic generator, direct model, exact reference, accepted-row memberships, nominal input, and ten scenario input vectors are unchanged. Because the old holdout summaries informed this revision, the 3,343 rows are retained only as a frozen post-selection holdout; their new reduced-response metrics are descriptive and do not serve as a confirmatory admission gate. The unchanged scenario inputs likewise form post-selection stress cases, so their casewise results support only descriptive comparisons.
 
-On 26 August 2026, after descriptive low-TSS prediction diagnostics had been inspected, the invariant-constraint projection was revised to include Equation~\eqref{eq:nonsettleablefloor}. The diagnostic showed that conservation, densification, inventory bounds, and non-negativity alone still permit a reduced response with overflow TSS below the non-settleable scale represented in the mechanistic settling law. This outcome-aware methodological revision leaves the second-order response definition, statistical inputs, and method names unchanged, but adds one inequality row to the projection polyhedron. It therefore changes projected predictions, active sets and sensitivities, projection-correction and trust diagnostics, and any optimization or certification that depends on the projected response. Earlier projected assessments and route-$S$ optimization results are consequently superseded and must be recomputed under the revised projection. The frozen post-selection holdout and ten scenario inputs remain descriptive rather than confirmatory evidence.
+On 26 August 2026, inspection of the low-overflow-TSS diagnostics motivated a further outcome-aware projection revision. The original 161-coordinate whole-system regression and its response definition were retained unchanged. A separate development-fitted scalar log regression was added only to supply Equation~\eqref{eq:overflowclosure}; the projected response is therefore recomputed, and every downstream surrogate assessment, trust calibration, optimization, replay, and timing calculation must be rerun. No fixed feed-ratio floor or post-projection clipping is part of the revised method. Because the same frozen holdout informed this choice, it remains descriptive rather than confirmatory evidence, as do the ten scenario inputs.
 
 The ordered component vector is
 \begin{equation}
@@ -571,19 +578,28 @@ The 13,371 development plant rows are partitioned reproducibly into five folds w
 \end{equation}
 Every center and scale is recomputed within the corresponding fitting fold. Positive candidate values of $\gamma_S$ guarantee a unique, stable coefficient solution even if a feature matrix is nearly rank deficient. The fold score is full reduced-response standardized RMSE of the raw response. The one-standard-error rule chooses the largest $\gamma_S$ whose mean score is within one standard error of the minimum \citep{Hastie2009}. Projection metrics are recorded but do not select $\gamma_S$, so reconciliation cannot hide a weak raw model. Because replacing ten layers by one inventory changes the response weighting, ridge selection and all out-of-fold predictions are recomputed rather than inherited from the old fit. The chosen value is refitted once on all 13,371 development rows.
 
-The frozen post-selection holdout reports descriptive RMSE, MAE, bias, normalized RMSE, and $R^2$ for the extended-ICSOR mixer, each reactor, both outlet-flow blocks, Clarifier solids inventory, and full reduced response. Raw and projected assembled predictions are reported side by side. The report additionally gives the raw and projected counts and maximum magnitudes of violations of Equation~\eqref{eq:nonsettleablefloor}, together with the fraction of projected rows for which the floor is active within the declared numerical tolerance. For holdout row $i$, let $\mathcal C_i$ be its projection polyhedron and let $P_{\mathcal C_i}$ be metric projection in the norm $\|v\|_{D_\chi^{-1}}:=\|D_\chi^{-1}v\|_2$. Because a numerical mechanistic target $\chi_i$ satisfies equations only to finite tolerance, its feasibility distance $\delta_{{\rm feas},i}=\|P_{\mathcal C_i}(\chi_i)-\chi_i\|_{D_\chi^{-1}}$ is reported. The following general bound is checked for every target:
+The scalar closure uses targets $\ell_{E,i}=\log(X_{E,i}/X_\star)$ and the same fold-specific second-order feature construction. For fitting set $\mathcal I$, it solves
 \begin{equation}
-\|P_{\mathcal C_i}(\chi_{{\rm raw},S,i})-\chi_i\|_{D_\chi^{-1}}
+\widehat\beta_{E,\gamma_E}=\argminop_\beta
+\left\{\frac{1}{|\mathcal I|}\|\ell_{E,\mathcal I}-\Phi_{\mathcal I}\beta\|_2^2
++\gamma_E\|R_\phi\beta\|_2^2\right\}.
+\label{eq:logridge}
+\end{equation}
+The penalty grid, grouped folds, fold-local scaling, one-standard-error rule, and final development-only refit follow the multiresponse protocol. Each development row is projected with its out-of-fold $\widehat X_{E,\log}$, not the in-sample fitted value. The final development refit is used only for the frozen holdout, optimization, and selected-decision evaluations. Strict positivity of every mechanistic training target, finiteness of every log prediction and back-transformation, and the hash of the closure coefficients and preprocessing state are mandatory integrity checks.
+
+The frozen post-selection holdout reports descriptive RMSE, MAE, bias, normalized RMSE, and $R^2$ for the extended-ICSOR mixer, each reactor, both outlet-flow blocks, Clarifier solids inventory, and full reduced response. Raw and projected assembled predictions are reported side by side. Overflow TSS is additionally reported on both the concentration and logarithmic scales, including low-concentration and upper-tail strata fixed from development quantiles, so improvement near the usual operating range cannot conceal compression of rare high-TSS breakthrough cases. For holdout row $i$, let $\mathcal C_{\log,i}$ be the projection polyhedron containing Equation~\eqref{eq:overflowclosure} and let $P_{\mathcal C_{\log,i}}$ be metric projection in the norm $\|v\|_{D_\chi^{-1}}:=\|D_\chi^{-1}v\|_2$. Because a numerical mechanistic target $\chi_i$ generally differs from the fitted closure and also satisfies numerical equations only to finite tolerance, its feasibility distance $\delta_{{\rm feas},i}=\|P_{\mathcal C_{\log,i}}(\chi_i)-\chi_i\|_{D_\chi^{-1}}$ is reported. The following general bound is checked for every target:
+\begin{equation}
+\|P_{\mathcal C_{\log,i}}(\chi_{{\rm raw},S,i})-\chi_i\|_{D_\chi^{-1}}
 \le \|\chi_{{\rm raw},S,i}-\chi_i\|_{D_\chi^{-1}}+\delta_{{\rm feas},i}.
 \label{eq:finitefeasibility}
 \end{equation}
-Equation~\eqref{eq:nonexpansive} is invoked only for a target known to be exactly feasible; a merely small positive $\delta_{{\rm feas},i}$ does not justify the stronger squared inequality. Extended ICSOR retains its existing admission gates: the development out-of-fold QPs must pass primal--dual audits, full assembled-response and inventory-coordinate raw nRMSE values must remain below one, and every trust limit must be frozen before optimization. The separate inventory criterion prevents its single coordinate from being hidden in the 161-coordinate average even though it enters SRT directly. Holdout metrics are descriptive and do not alter these gates. A failed scientific gate does not trigger refitting. A non-finite or incomplete numerical object from which a downstream problem cannot be defined remains a hard computational failure.
+Equation~\eqref{eq:nonexpansive} is invoked only for a target known to be exactly feasible; agreement with every network identity but disagreement with Equation~\eqref{eq:overflowclosure} does not qualify. Extended ICSOR retains its existing admission gates and adds closure-specific gates: the development out-of-fold QPs must pass primal--dual audits, full assembled-response and inventory-coordinate raw nRMSE values must remain below one, every trust limit must be frozen before optimization, every out-of-fold closure projection must be feasible, and both concentration-scale and log-scale overflow-TSS errors must be reported before optimization. The separate inventory and overflow-TSS criteria prevent single decision-relevant quantities from being hidden in the 161-coordinate average. Holdout metrics are descriptive and do not alter these gates. A failed scientific gate does not trigger refitting. A non-finite or incomplete numerical object from which a downstream problem cannot be defined remains a hard computational failure.
 
 \subsection{Nominal optimization and exact common-reference replay}
 
 The nominal influent is the midpoint of each declared influent interval. Both optimization routes use the same free controls, bounds, objective priorities, and engineering constraints. Each route begins at the componentwise center of the normalized seven-dimensional box. For extended ICSOR, the former primal--dual-gap IPOPT continuation is not executed; its exact-QP active-set problem in the seven normalized controls remains the primary solver.
 
-The system-wide projection QP is cold-solved to its acceptance tolerances at every distinct extended-ICSOR trial point. On a stable active set, response derivatives follow from the equality-plus-active-inequality QP KKT sensitivity system after rank and conditioning checks; an active-set change triggers a fresh QP and derivative reconstruction. If exact active-set derivatives cannot be constructed, deterministic value-only COBYQA continues within the normalized control bounds. Every distinct fallback trial receives a new cold solve and complete audit of the same projection QP; the fallback introduces neither an approximate projection nor finite-difference derivatives. Its selected best feasible visited point is cold-projected again.
+The system-wide projection QP is cold-solved to its acceptance tolerances at every distinct extended-ICSOR trial point. On a stable active set, response derivatives follow from the equality-plus-active-inequality QP KKT sensitivity system after rank and conditioning checks; the analytic chain includes the derivative of $q_E\widehat X_{E,\log}$ through the quadratic feature map and exponential back-transformation. An active-set change triggers a fresh QP and derivative reconstruction. If exact active-set derivatives cannot be constructed, deterministic value-only COBYQA continues within the normalized control bounds. Every distinct fallback trial receives a new cold solve and complete audit of the same projection QP; the fallback introduces neither an approximate projection nor finite-difference derivatives. Its selected best feasible visited point is cold-projected again.
 
 An extended-ICSOR candidate receives the strong first-order tier only if its projected-response derivative chain and independently recomputed lower-QP and upper KKT audits pass. Otherwise, complete feasible no-descent polls at both normalized radii $10^{-3}$ and $10^{-4}$ can qualify it only at finite resolution under protocol v3. After a winning poll step, up to 16 search-only complete route evaluations expand geometrically along that ray; a new complete poll is mandatory after every accepted move, so an acceleration trial never supplies certification evidence. Each completed poll must contain a feasible nonzero displacement; direction rank is diagnostic only. Any accepted fine-scale move forces the coarse poll to be repeated before certification, and the route has a 10,000-evaluation certification safety budget. A failed or incomplete poll leaves stationarity unresolved. First-order stationarity is not a certificate of local minimality, and the finite poll is neither KKT/Clarke stationarity nor proof of local or global optimality.
 
@@ -600,7 +616,7 @@ e_{\rm nat,k}&=D_\chi^{-1}[\chi_{{\rm nat},k}-\chi_{{\rm ref},k}],\notag\\
 \end{align}
 Each valid, physically audited exact replay retains its exact objective and objective components even when the exact response is engineering-infeasible. Such a candidate is reported but cannot enter the paired comparison. The difference in Equation~\eqref{eq:comparisons} is eligible only when both candidates have valid, engineering-feasible exact replays. These quantities compare selected feasible incumbents and are not called regret because neither route supplies a global certificate. A symmetric relative objective difference and normalized control RMS and maximum differences accompany every eligible pair.
 
-The two exact replays use the declared primary and alternate reference initializations for every selected decision. Their generation-scale and frozen-state-scale root discrepancies must each be no greater than $10^{-6}$. Categorical branch assignments must agree except that a mismatch within either start's declared boundary-ambiguity band is retained as a qualifier rather than used alone to reject an otherwise agreeing root. Exact mass-conservation, non-negativity, non-settleable-floor, layer-residual, domain, and reduced-stability audits must also pass. Proximity to a branch boundary prevents an unqualified differentiable-stationarity or smooth-equivalence interpretation. Whole-holdout smooth/reference validation is retired. The 3,343 post-selection holdout inputs remain excluded from fitting and trust calibration and are used only for descriptive raw and projected reduced-response assessment; any partial legacy equivalence rows are excluded from analysis.
+The two exact replays use the declared primary and alternate reference initializations for every selected decision. Their generation-scale and frozen-state-scale root discrepancies must each be no greater than $10^{-6}$. Categorical branch assignments must agree except that a mismatch within either start's declared boundary-ambiguity band is retained as a qualifier rather than used alone to reject an otherwise agreeing root. Exact mass-conservation, non-negativity, layer-residual, domain, and reduced-stability audits must also pass. Proximity to a branch boundary prevents an unqualified differentiable-stationarity or smooth-equivalence interpretation. Whole-holdout smooth/reference validation is retired. The 3,343 post-selection holdout inputs remain excluded from fitting and trust calibration and are used only for descriptive raw and projected reduced-response assessment; any partial legacy equivalence rows are excluded from analysis.
 
 \subsection{Ten-case influent sensitivity scenarios}
 
@@ -635,7 +651,7 @@ Frozen post-selection holdout & -- & 3,343 & -- & -- & -- & --\\
 
 \begin{table}[htbp]
 \centering
-\caption{Plant-grouped five-fold selection and descriptive post-selection holdout performance for extended ICSOR. Raw and projected errors are required for every assembled reduced-response block.}
+\caption{Plant-grouped five-fold selection and descriptive post-selection holdout performance for extended ICSOR. Raw and projected errors are required for every assembled reduced-response block; the overflow-TSS closure is assessed separately before its equality is imposed.}
 \label{tab:prediction_results}
 \scriptsize
 \begin{tabular}{llrrrrr}
@@ -645,6 +661,7 @@ Route & Block & CV raw & CV projected & Holdout raw & Holdout projected & Correc
 $S$ & Mixer & -- & -- & -- & -- & --\\
 $S$ & Reactors 1--$N$ (each reported) & -- & -- & -- & -- & --\\
 $S$ & Clarifier overflow & -- & -- & -- & -- & --\\
+$S$ & Overflow-TSS log closure & -- & n.a. & -- & n.a. & n.a.\\
 $S$ & Clarifier underflow & -- & -- & -- & -- & --\\
 $S$ & Clarifier solids inventory $M_{\rm cl}$ & -- & -- & -- & -- & --\\
 $S$ & Full reduced response & -- & -- & -- & -- & --\\
@@ -692,18 +709,18 @@ Exact mechanistic & Accepted generations and every replay start & -- & -- & -- &
 
 \begin{table}[htbp]
 \centering
-\caption{Required scope-specific feasibility and nonlinear audit. Each entry reports the applicable maximum residual and exceedance count; the non-settleable-floor entry also reports the active-row fraction. n.a. means that the source has no layer state on which to evaluate that quantity.}
+\caption{Required scope-specific feasibility and nonlinear audit. Each entry reports the applicable maximum residual and exceedance count; n.a. means that the source has no layer state on which to evaluate that quantity. The closure column is the residual in Equation~\eqref{eq:overflowclosure}, not the closure's prediction error relative to mechanistic TSS.}
 \label{tab:scope_audit_results}
 \scriptsize
 \resizebox{\linewidth}{!}{%
 \begin{tabular}{lcccccc}
 \toprule
-Source & Non-settleable floor & Inventory bounds & Reactor residual & Layer envelope & Layer residual & Stability\\
+Source & Log closure & Inventory bounds & Reactor residual & Layer envelope & Layer residual & Stability\\
 \midrule
-Extended ICSOR raw reduced & -- & -- & -- & n.a. & n.a. & n.a.\\
+Extended ICSOR raw reduced & n.a. & -- & -- & n.a. & n.a. & n.a.\\
 Extended ICSOR projected reduced & -- & -- & -- & n.a. & n.a. & n.a.\\
-Smooth-direct native & -- & -- & -- & -- & -- & --\\
-Exact mechanistic & -- & -- & -- & -- & -- & --\\
+Smooth-direct native & n.a. & -- & -- & -- & -- & --\\
+Exact mechanistic & n.a. & -- & -- & -- & -- & --\\
 \bottomrule
 \end{tabular}
 }
@@ -746,7 +763,6 @@ Mixer: COD, TN, TP, TSS & -- & -- & -- & --\\
 Reactor $i=1,\ldots,N$: DO, TN, TP, TSS & -- & -- & -- & --\\
 Clarifier overflow: COD, TN, TP, TSS & -- & -- & -- & --\\
 Clarifier underflow: COD, TN, TP, TSS & -- & -- & -- & --\\
-Clarifier floor ratio $X_E/(f_{\rm ns}X_N)$ & -- & -- & -- & --\\
 Clarifier solids inventory $M_{\rm cl}$ & -- & -- & -- & --\\
 Mechanistic layer $\ell=1,\ldots,L$: TSS & n.a. & n.a. & $k=M$ only & --\\
 \bottomrule
@@ -754,7 +770,7 @@ Mechanistic layer $\ell=1,\ldots,L$: TSS & n.a. & n.a. & $k=M$ only & --\\
 }
 \end{table}
 
-The nominal discussion will trace raw, projected, optimizer-native, and exact responses from the mixer through the reactors, outlet streams, and $M_{\rm cl}$. Detailed Clarifier layers will be discussed only for smooth-direct and exact mechanistic states. The discussion will identify which inventories required correction, which controls or engineering constraints were active, whether any replay carries a branch-boundary qualifier, and whether the two exact-reference objectives differ materially.
+The nominal discussion will trace raw, projected, optimizer-native, and exact responses from the mixer through the reactors, outlet streams, and $M_{\rm cl}$. Detailed Clarifier layers will be discussed only for smooth-direct and exact mechanistic states. The discussion will distinguish the raw overflow TSS, the independent log-regression estimate, the equality-constrained projected value, and exact replay; it will also identify which inventories required correction, which controls or engineering constraints were active, whether any replay carries a branch-boundary qualifier, and whether the two exact-reference objectives differ materially.
 
 \subsection{Casewise exact common-reference validation}
 
@@ -878,11 +894,11 @@ The one-time costs of mechanistic data generation and fitting are reported separ
 
 \section{Conclusions}
 
-The formulation defines two optimization routes for the same $N$-stage recycling mixer--reactor--Clarifier plant: extended ICSOR ($S$) and the smooth mechanistic NLP ($M$). Extended ICSOR retains the second-order regression of the original ICSOR surrogate and extends its invariant-constraint projection to the complete recycling system. It assembles a reduced operational response in which outlet component flows determine the effluent and underflow TSS endpoints, while the retained Clarifier scalar, $M_{\rm cl}$, supplies the storage term needed for whole-plant SRT. The surrogate does not predict internal layer profiles, and its response dimension remains independent of the number of mechanistic Clarifier layers.
+The formulation defines two optimization routes for the same $N$-stage recycling mixer--reactor--Clarifier plant: extended ICSOR ($S$) and the smooth mechanistic NLP ($M$). Extended ICSOR retains the second-order regression of the original ICSOR surrogate and extends its invariant-constraint projection to the complete recycling system. It assembles a reduced operational response in which outlet component flows determine the effluent and underflow TSS endpoints, while the retained Clarifier scalar, $M_{\rm cl}$, supplies the storage term needed for whole-plant SRT. A separate scalar log regression provides a positive, input-dependent overflow-TSS closure without changing the 161-coordinate raw response or introducing a fixed settling ratio. The surrogate does not predict internal layer profiles, and its response dimension remains independent of the number of mechanistic Clarifier layers.
 
-The system-wide projection has a deliberately limited role: after extended ICSOR has assembled all 161 coordinates, it enforces the declared linear network physics, the feed-dependent non-settleable overflow-TSS floor, the tight endpoint-induced inventory interval, and non-negativity while making the smallest standardized change. The floor prevents a reduced surrogate response from claiming removal of the fraction explicitly treated as non-settleable. Beyond that scalar endpoint closure, the projection does not enforce nonlinear kinetics, nonlinear settling fluxes, or a layer profile. Extended ICSOR retains its exact-QP optimizer and its active-projection sensitivity audit; when that derivative audit is unavailable, its deterministic value-only and feasible-poll tiers remain explicitly finite resolution.
+The system-wide projection has a deliberately limited role: after extended ICSOR has assembled all 161 coordinates, it enforces the declared linear network physics, the development-fitted overflow-TSS equality, tight endpoint-induced inventory interval, and non-negativity while making the smallest standardized change. The equality regularizes a decision-critical endpoint but remains empirical; it does not enforce nonlinear kinetics, settling fluxes, or a layer profile. Extended ICSOR retains its exact-QP optimizer and its active-projection sensitivity audit; when that derivative audit is unavailable, its deterministic value-only and feasible-poll tiers remain explicitly finite resolution.
 
-The comparison holds controls, engineering requirements, physical projection, and exact reference fixed. Nonlinear kinetics, all ten layer balances, stability, and objective comparability are adjudicated by replaying every available selected candidate from both routes on the same exact nonsmooth mechanistic model. The 3,343-row holdout and the ten scenario inputs are post-selection evidence and support descriptive rather than confirmatory claims. Numerical conclusions about accuracy, speed, robustness, viability, or decision quality will be finalized only after every required table is repopulated; the present revision defines an implementable, auditable comparison protocol without prejudging its outcome.
+The comparison holds controls, engineering requirements, projection specification, and exact reference fixed. Nonlinear kinetics, all ten layer balances, stability, and objective comparability are adjudicated by replaying every available selected candidate from both routes on the same exact nonsmooth mechanistic model. The 3,343-row holdout and the ten scenario inputs are post-selection evidence and support descriptive rather than confirmatory claims. Numerical conclusions about accuracy, speed, robustness, viability, or decision quality will be finalized only after every required table is repopulated; the present revision defines an implementable, auditable comparison protocol without prejudging its outcome.
 
 \section*{CRediT authorship contribution statement}
 
@@ -894,7 +910,7 @@ This work is funded by the Department of Science and Technology of the Philippin
 
 \section*{Data availability}
 
-The study record will contain the 16,714 accepted full mechanistic states frozen from 18,211 completed attempts; the deterministic mapping from every layer state to the reduced response and $M_{\rm cl}$; the complete accepted and rejected candidate-attempt ledger; immutable plant-to-partition and grouped-fold membership; the fitted extended-ICSOR package, plant-response scales, and ridge selection; descriptive raw and projected post-selection-holdout predictions, including non-settleable-floor slack and activity; every rerun nominal and influent-scenario optimization record and convergence tier; route-$S$ conditional direct-recovery provenance; casewise exact common-reference states; raw, projected, optimizer-native, and exact physical-audit ledgers; timing summaries; and the separately archived, explicitly superseded layer-output artifacts.
+The study record will contain the 16,714 accepted full mechanistic states frozen from 18,211 completed attempts; the deterministic mapping from every layer state to the reduced response and $M_{\rm cl}$; the complete accepted and rejected candidate-attempt ledger; immutable plant-to-partition and grouped-fold membership; the fitted extended-ICSOR package, plant-response scales, and ridge selection; the log-closure preprocessing, penalty, coefficients, out-of-fold predictions, and equality audits; descriptive raw and projected post-selection-holdout predictions; every rerun nominal and influent-scenario optimization record and convergence tier; route-$S$ conditional direct-recovery provenance; casewise exact common-reference states; raw, projected, optimizer-native, and exact physical-audit ledgers; timing summaries; and the separately archived, explicitly superseded layer-output artifacts.
 
 \begin{thebibliography}{00}
 \bibitem[Bhosekar and Ierapetritou(2018)]{Bhosekar2018}

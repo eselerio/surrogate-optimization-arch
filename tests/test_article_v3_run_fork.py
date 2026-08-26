@@ -45,10 +45,10 @@ def _retained_stage(source: Path) -> dict[str, object]:
 
 
 class ArticleV3RunForkTests(unittest.TestCase):
-    def test_schema_ten_defaults_name_a_new_folder_and_v3_protocol(self) -> None:
+    def test_schema_eleven_defaults_name_a_new_folder_and_v3_protocol(self) -> None:
         self.assertEqual(runner.LEGACY_RUN_ID, "article_full_5000_001")
         self.assertEqual(runner.DEFAULT_RUN_ID, "article_full_5000_002")
-        self.assertEqual(runner.RUNNER_SCHEMA, 10)
+        self.assertEqual(runner.RUNNER_SCHEMA, 11)
         self.assertEqual(
             runner.COMPARISON_PROTOCOL,
             "casewise_exact_common_reference_v3",

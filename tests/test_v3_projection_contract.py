@@ -7,6 +7,7 @@ import numpy as np
 from scipy import linalg
 
 from closed_loop.projection import (
+    LogOverflowTSSClosure,
     NetworkLayout,
     PhysicalProjector,
     ProjectionWarmStart,
@@ -118,6 +119,29 @@ class RidgeNumericalContractTests(unittest.TestCase):
                 decisions, influent, responses, ridge_penalty=1.0e-16
             )
 
+    def test_log_overflow_closure_is_positive_and_recovers_quadratic_target(self) -> None:
+        rng = np.random.default_rng(903)
+        decisions = rng.uniform(-1.0, 1.0, size=(80, 1))
+        influent = rng.uniform(-2.0, 2.0, size=(80, 1))
+        log_target = (
+            0.4
+            + 0.3 * decisions[:, 0]
+            - 0.2 * influent[:, 0]
+            + 0.1 * decisions[:, 0] * influent[:, 0]
+            + 0.05 * influent[:, 0] ** 2
+        )
+        exact = 2.5 * np.exp(log_target)
+        closure = LogOverflowTSSClosure.fit_ridge(
+            decisions,
+            influent,
+            exact,
+            ridge_penalty=1.0e-10,
+            reference_concentration=2.5,
+        )
+        predicted = closure.predict(decisions, influent)
+        self.assertTrue(np.all(predicted > 0.0))
+        np.testing.assert_allclose(predicted, exact, rtol=2.0e-9, atol=2.0e-9)
+
 
 class ReducedResponseNetworkTests(unittest.TestCase):
     @staticmethod
@@ -195,6 +219,41 @@ class ReducedResponseNetworkTests(unittest.TestCase):
         self.assertLess(residual[0], 0.0)
         self.assertAlmostEqual(residual[1], 0.0, places=12)
 
+    def test_log_overflow_closure_adds_and_enforces_one_equality(self) -> None:
+        layout = self._layout()
+        operators = build_network_operators(
+            np.asarray([2.0, 10.0]),
+            internal_recycle=1.0,
+            return_recycle=0.5,
+            waste_fraction=0.1,
+            invariant_operator=np.asarray([[1.0, 0.0]]),
+            tss_weights=np.asarray([0.0, 1.0]),
+            layout=layout,
+            clarifier_volume_m3=30.0,
+            overflow_tss_closure=4.0,
+        )
+        self.assertEqual(operators.equality_matrix.shape, (7, layout.state_size))
+        np.testing.assert_array_equal(
+            operators.equality_matrix[-1, layout.overflow_flow_slice],
+            np.asarray([0.0, 1.0]),
+        )
+        self.assertAlmostEqual(operators.equality_rhs[-1], 0.9 * 4.0)
+
+        projector = PhysicalProjector(
+            np.ones(layout.state_size),
+            np.ones(7),
+            np.ones(layout.inequality_count),
+        )
+        result = projector.project(
+            np.ones(layout.state_size),
+            operators.equality_matrix,
+            operators.equality_rhs,
+            operators.inequality_matrix,
+        )
+        self.assertTrue(result.accepted)
+        overflow_tss = result.state[layout.overflow_flow_slice][1] / 0.9
+        self.assertAlmostEqual(overflow_tss, 4.0, places=8)
+
     def test_reduced_network_row_scales_are_positive_and_dimensioned(self) -> None:
         layout = self._layout()
         rows = 2
@@ -234,6 +293,22 @@ class ReducedResponseNetworkTests(unittest.TestCase):
         self.assertEqual(scales.inequality.shape, (3,))
         self.assertTrue(np.all(scales.equality >= 1.0))
         self.assertTrue(np.all(scales.inequality >= 1.0))
+
+        closure_scales = fit_network_row_scales(
+            np.asarray(states),
+            influents,
+            internal_recycle=internal,
+            return_recycle=returned,
+            waste_fraction=waste,
+            invariant_operator=np.asarray([[1.0, 0.0]]),
+            tss_weights=np.asarray([0.0, 1.0]),
+            layout=layout,
+            clarifier_volume_m3=30.0,
+            minimum_scale=1.0,
+            overflow_tss_closure=np.asarray([10.0, 12.0]),
+        )
+        self.assertEqual(closure_scales.equality.shape, (7,))
+        self.assertTrue(np.all(closure_scales.equality >= 1.0))
 
 
 class PhysicalProjectionNumericalContractTests(unittest.TestCase):

@@ -13,6 +13,7 @@ import numpy.typing as npt
 
 from .model import INVARIANT_MATRIX, N_COMPONENTS, N_STAGES, TSS_VECTOR
 from .projection import (
+    LogOverflowTSSClosure,
     NetworkLayout,
     PhysicalProjector,
     QuadraticSurrogate,
@@ -34,6 +35,7 @@ _TRUST_PROJECTION_CONTEXT: tuple[
     NetworkLayout,
     PhysicalProjector,
     float,
+    np.ndarray | None,
 ] | None = None
 
 
@@ -46,6 +48,7 @@ def _initialize_trust_projection_worker(
     equality_scale: np.ndarray,
     inequality_scale: np.ndarray,
     clarifier_volume_m3: float,
+    overflow_tss_closure: np.ndarray | None,
 ) -> None:
     global _TRUST_PROJECTION_CONTEXT
     _TRUST_PROJECTION_CONTEXT = (
@@ -61,19 +64,29 @@ def _initialize_trust_projection_worker(
             relative_tolerance=1.0e-12,
         ),
         float(clarifier_volume_m3),
+        (
+            None
+            if overflow_tss_closure is None
+            else np.asarray(overflow_tss_closure, dtype=np.float64)
+        ),
     )
 
 
 def _trust_projection_batch(bounds: tuple[int, int]) -> Mapping[str, np.ndarray]:
     if _TRUST_PROJECTION_CONTEXT is None:
         raise RuntimeError("trust-projection worker was not initialized")
-    raw, theta, feed, layout, projector, clarifier_volume_m3 = (
+    raw, theta, feed, layout, projector, clarifier_volume_m3, overflow_tss_closure = (
         _TRUST_PROJECTION_CONTEXT
     )
     start, stop = bounds
     projected = np.empty((stop - start, layout.state_size), dtype=np.float64)
     accepted = np.empty(stop - start, dtype=bool)
     for local, row in enumerate(range(start, stop)):
+        closure_value = (
+            None
+            if overflow_tss_closure is None
+            else float(overflow_tss_closure[row])
+        )
         operators = build_network_operators(
             feed[row],
             internal_recycle=float(theta[row, 4]),
@@ -83,6 +96,7 @@ def _trust_projection_batch(bounds: tuple[int, int]) -> Mapping[str, np.ndarray]
             tss_weights=TSS_VECTOR,
             layout=layout,
             clarifier_volume_m3=clarifier_volume_m3,
+            overflow_tss_closure=closure_value,
         )
         result = projector.project(
             raw[row],
@@ -218,6 +232,8 @@ def calibrate_trust_diagnostics(
     out_of_fold_raw: npt.ArrayLike,
     direct_assets: DirectAssets,
     *,
+    overflow_closure: LogOverflowTSSClosure | None = None,
+    out_of_fold_overflow_tss: npt.ArrayLike | None = None,
     layout: NetworkLayout,
     parallel_workers: int = 1,
     batch_size: int = 64,
@@ -241,6 +257,24 @@ def calibrate_trust_diagnostics(
         raise ValueError("OOF predictions and development targets have inconsistent shapes")
     if direct_assets.clarifier.layer_count != layout.layer_count:
         raise ValueError("direct and surrogate Clarifier layer geometries must match")
+    if overflow_closure is None:
+        closure_prediction = None
+        if out_of_fold_overflow_tss is not None:
+            raise ValueError(
+                "out_of_fold_overflow_tss requires an overflow closure model"
+            )
+    else:
+        if out_of_fold_overflow_tss is None:
+            raise ValueError(
+                "the production overflow closure requires out-of-fold predictions"
+            )
+        closure_prediction = np.asarray(out_of_fold_overflow_tss, dtype=np.float64)
+        if (
+            closure_prediction.shape != (len(theta),)
+            or not np.all(np.isfinite(closure_prediction))
+            or np.any(closure_prediction <= 0.0)
+        ):
+            raise ValueError("out-of-fold overflow-TSS predictions are invalid")
 
     row_scales = fit_network_row_scales(
         truth, feed,
@@ -251,6 +285,7 @@ def calibrate_trust_diagnostics(
             direct_assets.clarifier.layer_volume * direct_assets.clarifier.layer_count
         ),
         minimum_scale=1.0,
+        overflow_tss_closure=closure_prediction,
     )
     if checkpoint_directory is not None and not checkpoint_contract:
         raise ValueError(
@@ -279,6 +314,7 @@ def calibrate_trust_diagnostics(
             row_scales.equality,
             row_scales.inequality,
             clarifier_volume_m3,
+            closure_prediction,
         ),
         progress=progress,
     )

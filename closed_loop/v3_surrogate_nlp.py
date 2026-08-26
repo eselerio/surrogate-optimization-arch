@@ -31,6 +31,7 @@ from scipy.optimize import Bounds, NonlinearConstraint, minimize
 from .manuscript_v3 import DECISION_LOWER, DECISION_UPPER
 from .model import COMPOSITE_MATRIX, INVARIANT_MATRIX, TSS_VECTOR
 from .projection import (
+    LogOverflowTSSClosure,
     NetworkLayout,
     NetworkRowScales,
     PhysicalProjector,
@@ -276,6 +277,7 @@ class SurrogateNLPAssets:
     trust_thresholds: TrustThresholds
     quality_operator: FloatArray
     quality_scale: FloatArray
+    overflow_closure: LogOverflowTSSClosure | None = None
     trust_callbacks: TrustDiagnosticCallbacks = field(
         default_factory=TrustDiagnosticCallbacks
     )
@@ -306,6 +308,7 @@ class SurrogateNLPAssets:
             2 * component_count
             + self.layout.stage_count * invariant.shape[0]
             + len(self.layout.soluble_indices)
+            + int(self.overflow_closure is not None)
         )
         equality_scale = _vector(
             self.row_scales.equality, equality_count, "equality row scales", positive=True
@@ -319,6 +322,13 @@ class SurrogateNLPAssets:
         tss = _vector(self.tss_weights, component_count, "tss_weights")
         if np.any(tss < 0.0) or not np.any(tss > 0.0):
             raise ValueError("tss_weights must be nonnegative and nonzero.")
+        if self.overflow_closure is not None:
+            closure_map = self.overflow_closure.model.feature_map
+            if (
+                closure_map.decision_count != self.model.feature_map.decision_count
+                or closure_map.influent_count != self.model.feature_map.influent_count
+            ):
+                raise ValueError("overflow closure input dimensions do not match the surrogate")
         feature_count = self.model.feature_map.feature_count
         leverage = _matrix(
             self.leverage_precision,
@@ -441,6 +451,8 @@ def build_surrogate_assets(
     split_rms_threshold: float | None = None,
     reactor_rms_threshold: float | None = None,
     engineering: EngineeringLimits | None = None,
+    overflow_closure: LogOverflowTSSClosure | None = None,
+    development_overflow_tss_closure: npt.ArrayLike | None = None,
 ) -> SurrogateNLPAssets:
     """Fit the projection scales, leverage contract, and quality normalization.
 
@@ -460,6 +472,25 @@ def build_surrogate_assets(
     if targets.shape != (decisions.shape[0], layout.state_size):
         raise ValueError("development_targets have inconsistent dimensions.")
     engineering_limits = engineering or EngineeringLimits()
+    if overflow_closure is None:
+        closure_prediction = None
+        if development_overflow_tss_closure is not None:
+            raise ValueError(
+                "development_overflow_tss_closure requires an overflow closure model"
+            )
+    else:
+        closure_prediction = np.asarray(
+            development_overflow_tss_closure
+            if development_overflow_tss_closure is not None
+            else overflow_closure.predict(decisions, influents),
+            dtype=np.float64,
+        )
+        if (
+            closure_prediction.shape != (len(decisions),)
+            or not np.all(np.isfinite(closure_prediction))
+            or np.any(closure_prediction <= 0.0)
+        ):
+            raise ValueError("development overflow-TSS closure predictions are invalid")
     row_scales = fit_network_row_scales(
         targets,
         influents,
@@ -471,6 +502,7 @@ def build_surrogate_assets(
         layout=layout,
         clarifier_volume_m3=engineering_limits.clarifier_volume_m3,
         minimum_scale=1.0,
+        overflow_tss_closure=closure_prediction,
     )
     precision, leverage_limit = regularized_leverage_contract(model, decisions, influents)
     quality_matrix = np.asarray(quality_operator, dtype=np.float64)
@@ -494,6 +526,7 @@ def build_surrogate_assets(
         trust_thresholds=thresholds,
         quality_operator=quality_matrix,
         quality_scale=quality_scale,
+        overflow_closure=overflow_closure,
         trust_callbacks=trust_callbacks or TrustDiagnosticCallbacks(),
         engineering=engineering_limits,
     )
@@ -625,6 +658,18 @@ def symbolic_network_operators(
     for component in layout.soluble_indices:
         equality[row, layout.underflow_flow_slice.start + component] = 1.0
         equality[row, final_reactor.start + component] = -underflow
+        row += 1
+
+    overflow_closure = getattr(assets, "overflow_closure", None)
+    if overflow_closure is not None:
+        log_prediction, _ = symbolic_quadratic_prediction(
+            overflow_closure.model, theta, influent,
+        )
+        overflow_tss = (
+            overflow_closure.reference_concentration * ca.exp(log_prediction[0])
+        )
+        equality[row, layout.overflow_flow_slice] = ca.DM(assets.tss_weights).T
+        rhs[row] = effluent * overflow_tss
         row += 1
 
     if row != equality_count:
@@ -1011,6 +1056,33 @@ class SurrogateCertificationResult:
         }
 
 
+def _update_overflow_closure_digest(
+    digest: Any, closure: LogOverflowTSSClosure | None,
+) -> None:
+    if closure is None:
+        digest.update(b"\0no-log-overflow-closure\0")
+        return
+    digest.update(b"\0log-overflow-closure-v1\0")
+    feature_map = closure.model.feature_map
+    for value in (
+        feature_map.decision_center,
+        feature_map.decision_scale,
+        feature_map.influent_center,
+        feature_map.influent_scale,
+        feature_map.term_center,
+        feature_map.term_scale,
+        closure.model.response_center,
+        closure.model.response_scale,
+        closure.model.coefficients,
+        np.asarray([
+            feature_map.variance_relative_tolerance,
+            closure.model.ridge_penalty,
+            closure.reference_concentration,
+        ]),
+    ):
+        digest.update(np.asarray(value, dtype="<f8").tobytes(order="C"))
+
+
 def surrogate_start_resume_contract(
     assets: SurrogateNLPAssets,
     case: SurrogateCase,
@@ -1032,6 +1104,7 @@ def surrogate_start_resume_contract(
         np.asarray(case.parameter_vector(assets), dtype="<f8").tobytes(order="C")
     )
     digest.update(np.asarray(GAP_CONTINUATION, dtype="<f8").tobytes(order="C"))
+    _update_overflow_closure_digest(digest, assets.overflow_closure)
     digest.update(
         json.dumps(
             asdict(settings),
@@ -1067,6 +1140,7 @@ def surrogate_exact_qp_resume_contract(
         np.asarray(case.parameter_vector(assets), dtype="<f8").tobytes(order="C")
     )
     digest.update(np.asarray(EXACT_QP_CENTER_START, dtype="<f8").tobytes(order="C"))
+    _update_overflow_closure_digest(digest, assets.overflow_closure)
     digest.update(
         json.dumps(
             {
@@ -1398,6 +1472,11 @@ def cold_reproject(
         tss_weights=assets.tss_weights,
         layout=assets.layout,
         clarifier_volume_m3=assets.engineering.clarifier_volume_m3,
+        overflow_tss_closure=(
+            None
+            if assets.overflow_closure is None
+            else float(assets.overflow_closure.predict(theta, influent))
+        ),
     )
     # A new projector means a new OSQP workspace; no primal or dual warm start
     # can leak from the continuation or a preceding outer trial.

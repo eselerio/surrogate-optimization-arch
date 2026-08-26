@@ -19,6 +19,7 @@ import tempfile
 from typing import Any, Callable, Mapping
 
 import numpy as np
+import numpy.typing as npt
 import pandas as pd
 from scipy import linalg
 from scipy.optimize import minimize
@@ -44,6 +45,7 @@ from .model import (
     unpack_state,
 )
 from .projection import (
+    LogOverflowTSSClosure,
     NetworkLayout,
     PhysicalProjector,
     QuadraticFeatureMap,
@@ -58,6 +60,8 @@ DECISION_NAMES = ("H", "a_3", "a_4", "a_5", "r_I", "r_R", "w")
 DECISION_LOWER = np.asarray([6.0, 0.0, 0.0, 0.0, 0.0, 0.25, 0.001])
 DECISION_UPPER = np.asarray([36.0, 1.0, 1.0, 1.0, 4.0, 1.25, 0.05])
 RIDGE_GRID = np.logspace(-8, 2, 11)
+OVERFLOW_TSS_LOW_QUANTILE = 0.25
+OVERFLOW_TSS_HIGH_QUANTILE = 0.90
 
 
 @dataclass(frozen=True)
@@ -100,6 +104,7 @@ class AssessmentResult:
     raw: np.ndarray
     projected: np.ndarray
     projected_targets: np.ndarray
+    overflow_tss_closure: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -108,6 +113,17 @@ class RidgeSelectionResult:
     scores: pd.DataFrame
     fold_membership: np.ndarray
     out_of_fold_raw: np.ndarray
+    elapsed_seconds: float
+
+
+@dataclass(frozen=True)
+class LogOverflowClosureSelectionResult:
+    closure: LogOverflowTSSClosure
+    scores: pd.DataFrame
+    fold_membership: np.ndarray
+    out_of_fold_log: np.ndarray
+    out_of_fold_tss: np.ndarray
+    exact_overflow_tss: np.ndarray
     elapsed_seconds: float
 
 
@@ -489,6 +505,96 @@ def cross_validate_ridge(
     )
 
 
+def overflow_tss_from_response(
+    responses: npt.ArrayLike,
+    decisions: npt.ArrayLike,
+    layout: NetworkLayout,
+) -> np.ndarray:
+    states = np.asarray(responses, dtype=np.float64)
+    theta = np.asarray(decisions, dtype=np.float64)
+    if states.ndim != 2 or states.shape[1] != layout.state_size:
+        raise ValueError("responses have inconsistent dimensions for overflow TSS")
+    if theta.shape != (states.shape[0], 7):
+        raise ValueError("decisions have inconsistent dimensions for overflow TSS")
+    q_effluent = 1.0 - theta[:, 6]
+    if np.any(q_effluent <= 0.0):
+        raise ValueError("overflow flow must be strictly positive")
+    values = states[:, layout.overflow_flow_slice] @ TSS_VECTOR / q_effluent
+    if not np.all(np.isfinite(values)) or np.any(values <= 0.0):
+        raise ValueError("mechanistic overflow TSS must be finite and strictly positive")
+    return values
+
+
+def cross_validate_log_overflow_closure(
+    decisions: np.ndarray,
+    influents: np.ndarray,
+    targets: np.ndarray,
+    *,
+    layout: NetworkLayout | None = None,
+    reference_concentration: float = 1.0,
+) -> LogOverflowClosureSelectionResult:
+    """Select and refit the development-only quadratic log-overflow closure."""
+
+    layout = layout or NetworkLayout()
+    exact = overflow_tss_from_response(targets, decisions, layout)
+    log_exact = np.log(exact / float(reference_concentration))
+    order = _fold_permutation(len(decisions))
+    folds = np.array_split(order, 5)
+    rows: list[dict[str, float | int]] = []
+    log_predictions = {
+        float(gamma): np.full(len(decisions), np.nan, dtype=np.float64)
+        for gamma in RIDGE_GRID
+    }
+    membership = np.empty(len(decisions), dtype=int)
+    started = perf_counter()
+    for fold_index, validation in enumerate(folds):
+        membership[validation] = fold_index + 1
+        fitting = np.setdiff1d(order, validation, assume_unique=True)
+        for gamma in RIDGE_GRID:
+            closure = LogOverflowTSSClosure.fit_ridge(
+                decisions[fitting],
+                influents[fitting],
+                exact[fitting],
+                ridge_penalty=float(gamma),
+                reference_concentration=reference_concentration,
+            )
+            prediction = np.asarray(
+                closure.predict_log(decisions[validation], influents[validation]),
+                dtype=np.float64,
+            )
+            log_predictions[float(gamma)][validation] = prediction
+            score = float(np.sqrt(np.mean(np.square(prediction - log_exact[validation]))))
+            rows.append({"fold": fold_index + 1, "gamma": gamma, "log_rmse": score})
+    scores = pd.DataFrame(rows)
+    summary = scores.groupby("gamma")["log_rmse"].agg(["mean", "std"]).reset_index()
+    summary["standard_error"] = summary["std"] / math.sqrt(5.0)
+    minimum = summary.loc[summary["mean"].idxmin()]
+    eligible = summary.loc[summary["mean"] <= minimum["mean"] + minimum["standard_error"]]
+    selected = float(eligible["gamma"].max())
+    scores = scores.merge(summary, on="gamma", how="left")
+    scores["selected"] = scores["gamma"].eq(selected)
+    final = LogOverflowTSSClosure.fit_ridge(
+        decisions,
+        influents,
+        exact,
+        ridge_penalty=selected,
+        reference_concentration=reference_concentration,
+    )
+    selected_log = log_predictions[selected]
+    selected_tss = reference_concentration * np.exp(selected_log)
+    if not np.all(np.isfinite(selected_tss)) or np.any(selected_tss <= 0.0):
+        raise RuntimeError("out-of-fold log-overflow predictions are invalid")
+    return LogOverflowClosureSelectionResult(
+        closure=final,
+        scores=scores,
+        fold_membership=membership,
+        out_of_fold_log=selected_log,
+        out_of_fold_tss=selected_tss,
+        exact_overflow_tss=exact,
+        elapsed_seconds=perf_counter() - started,
+    )
+
+
 def select_ridge(
     decisions: np.ndarray, influents: np.ndarray, targets: np.ndarray,
 ) -> tuple[QuadraticSurrogate, pd.DataFrame]:
@@ -498,12 +604,17 @@ def select_ridge(
     return result.model, result.scores
 
 
-def _operators(theta: np.ndarray, influent: np.ndarray, layout: NetworkLayout):
+def _operators(
+    theta: np.ndarray,
+    influent: np.ndarray,
+    layout: NetworkLayout,
+    overflow_tss_closure: float | None = None,
+):
     return build_network_operators(
         influent, internal_recycle=float(theta[4]),
         return_recycle=float(theta[5]), waste_fraction=float(theta[6]),
         invariant_operator=INVARIANT_MATRIX, tss_weights=TSS_VECTOR,
-        layout=layout,
+        layout=layout, overflow_tss_closure=overflow_tss_closure,
     )
 
 
@@ -521,8 +632,11 @@ def violation_record(
     method: str, case: str, state: np.ndarray, theta: np.ndarray,
     influent: np.ndarray, layout: NetworkLayout, equality_scale: np.ndarray,
     inequality_scale: np.ndarray, state_scale: np.ndarray,
+    overflow_tss_closure: float | None = None,
 ) -> dict[str, object]:
-    operators = _operators(theta, influent, layout)
+    operators = _operators(
+        theta, influent, layout, overflow_tss_closure=overflow_tss_closure,
+    )
     equality_physical = operators.equality_matrix @ state - operators.equality_rhs
     equality = equality_physical / equality_scale
     inequality_physical = operators.inequality_matrix @ state
@@ -545,6 +659,10 @@ def violation_record(
             2 * N_COMPONENTS + layout.stage_count * invariant_count + len(layout.soluble_indices),
         ),
     }
+    if overflow_tss_closure is not None:
+        family_slices["overflow_tss_closure"] = slice(
+            equality_physical.size - 1, equality_physical.size,
+        )
     family_maxima = {
         name: float(np.max(np.abs(equality[index])))
         for name, index in family_slices.items()
@@ -562,7 +680,8 @@ def violation_record(
         1.0, np.max(np.abs(external_terms), axis=0),
     )
     family_maxima["external_invariant"] = float(np.max(external_scaled))
-    combined_mass = np.concatenate((np.abs(equality), external_scaled))
+    base_equality_count = equality.size - int(overflow_tss_closure is not None)
+    combined_mass = np.concatenate((np.abs(equality[:base_equality_count]), external_scaled))
     names = response_coordinate_names(layout)
     negative_indices = np.flatnonzero(negative > 1.0e-10)
     # A reduced response contains no internal layer profile.  Nonlinear layer
@@ -584,6 +703,20 @@ def violation_record(
         ),
         "clarifier_inventory_bound_violation_max": float(
             np.max(np.maximum(inventory_inequality, 0.0))
+        ),
+        "overflow_tss_closure_mg_L": (
+            math.nan if overflow_tss_closure is None else float(overflow_tss_closure)
+        ),
+        "overflow_tss_closure_residual_g_m3": (
+            math.nan
+            if overflow_tss_closure is None
+            else float(
+                (TSS_VECTOR @ overflow) / (1.0 - float(theta[6]))
+                - float(overflow_tss_closure)
+            )
+        ),
+        "overflow_tss_closure_scaled_residual": (
+            math.nan if overflow_tss_closure is None else float(equality[-1])
         ),
         "nonnegativity_violation_max": float(np.max(negative)),
         "nonnegativity_violation_count": int(np.count_nonzero(negative > 1e-10)),
@@ -673,6 +806,85 @@ def _prediction_metric_rows(
     return rows
 
 
+def _overflow_closure_metric_rows(
+    prediction: np.ndarray,
+    reference: np.ndarray,
+    development_reference: np.ndarray,
+) -> list[dict[str, object]]:
+    """Return concentration/log metrics with development-frozen tail strata."""
+
+    predicted = np.asarray(prediction, dtype=np.float64)
+    exact = np.asarray(reference, dtype=np.float64)
+    development = np.asarray(development_reference, dtype=np.float64)
+    if (
+        predicted.shape != exact.shape
+        or predicted.ndim != 1
+        or development.ndim != 1
+        or not np.all(np.isfinite(predicted))
+        or not np.all(np.isfinite(exact))
+        or not np.all(np.isfinite(development))
+        or np.any(predicted <= 0.0)
+        or np.any(exact <= 0.0)
+        or np.any(development <= 0.0)
+    ):
+        raise ValueError("overflow closure metric inputs must be finite positive vectors")
+    low = float(np.quantile(development, OVERFLOW_TSS_LOW_QUANTILE))
+    high = float(np.quantile(development, OVERFLOW_TSS_HIGH_QUANTILE))
+    strata = (
+        ("all", np.ones(len(exact), dtype=bool), np.ones(len(development), dtype=bool)),
+        ("low_q25", exact <= low, development <= low),
+        ("upper_q90", exact >= high, development >= high),
+    )
+    rows: list[dict[str, object]] = []
+    for stratum, mask, development_mask in strata:
+        for scale_name, values, targets, development_values in (
+            ("concentration", predicted, exact, development),
+            ("log", np.log(predicted), np.log(exact), np.log(development)),
+        ):
+            count = int(np.count_nonzero(mask))
+            if count:
+                error = values[mask] - targets[mask]
+                centered = targets[mask] - np.mean(targets[mask])
+                ss_tot = float(np.sum(np.square(centered)))
+                frozen_scale = max(
+                    1.0e-12,
+                    float(np.std(development_values[development_mask], ddof=0)),
+                )
+                rmse = float(np.sqrt(np.mean(np.square(error))))
+                mae = float(np.mean(np.abs(error)))
+                bias = float(np.mean(error))
+                r2 = (
+                    math.nan
+                    if ss_tot <= 0.0
+                    else float(1.0 - np.sum(np.square(error)) / ss_tot)
+                )
+            else:
+                rmse = mae = bias = r2 = frozen_scale = math.nan
+            rows.append({
+                "method": "log_overflow_closure",
+                "block": (
+                    "clarifier_overflow_tss"
+                    if scale_name == "concentration"
+                    else "clarifier_overflow_tss_log"
+                ),
+                "coordinate": (
+                    "TSS" if scale_name == "concentration" else "log(TSS/1mgL)"
+                ),
+                "stratum": stratum,
+                "sample_count": count,
+                "coordinate_count": 1,
+                "rmse": rmse,
+                "mae": mae,
+                "bias": bias,
+                "nrmse": rmse / frozen_scale if count else math.nan,
+                "nmae": mae / frozen_scale if count else math.nan,
+                "r2_mean": r2,
+                "development_low_q25_mg_L": low,
+                "development_upper_q90_mg_L": high,
+            })
+    return rows
+
+
 _HOLDOUT_PROJECTION_CONTEXT: tuple[
     np.ndarray,
     np.ndarray,
@@ -682,6 +894,7 @@ _HOLDOUT_PROJECTION_CONTEXT: tuple[
     np.ndarray,
     np.ndarray,
     np.ndarray,
+    np.ndarray | None,
     PhysicalProjector,
 ] | None = None
 
@@ -695,6 +908,7 @@ def _initialize_holdout_projection_worker(
     state_scale: np.ndarray,
     equality_scale: np.ndarray,
     inequality_scale: np.ndarray,
+    overflow_tss_closure: np.ndarray | None,
 ) -> None:
     global _HOLDOUT_PROJECTION_CONTEXT
     _HOLDOUT_PROJECTION_CONTEXT = (
@@ -706,6 +920,11 @@ def _initialize_holdout_projection_worker(
         np.asarray(state_scale, dtype=np.float64),
         np.asarray(equality_scale, dtype=np.float64),
         np.asarray(inequality_scale, dtype=np.float64),
+        (
+            None
+            if overflow_tss_closure is None
+            else np.asarray(overflow_tss_closure, dtype=np.float64)
+        ),
         PhysicalProjector(
             state_scale,
             equality_scale,
@@ -728,6 +947,7 @@ def _holdout_projection_batch(bounds: tuple[int, int]) -> Mapping[str, np.ndarra
         state_scale,
         equality_scale,
         inequality_scale,
+        overflow_tss_closure,
         projector,
     ) = _HOLDOUT_PROJECTION_CONTEXT
     start, stop = bounds
@@ -738,7 +958,15 @@ def _holdout_projection_batch(bounds: tuple[int, int]) -> Mapping[str, np.ndarra
     feasibility_rows: list[str] = []
     violation_rows: list[str] = []
     for local, row in enumerate(range(start, stop)):
-        operators = _operators(decisions[row], influents[row], layout)
+        closure_value = (
+            None
+            if overflow_tss_closure is None
+            else float(overflow_tss_closure[row])
+        )
+        operators = _operators(
+            decisions[row], influents[row], layout,
+            overflow_tss_closure=closure_value,
+        )
         started = perf_counter_ns()
         projection = projector.project(
             raw[row],
@@ -804,6 +1032,7 @@ def _holdout_projection_batch(bounds: tuple[int, int]) -> Mapping[str, np.ndarra
                 equality_scale,
                 inequality_scale,
                 state_scale,
+                closure_value,
             )))
     return {
         "projected": projected,
@@ -867,6 +1096,8 @@ def assess_raw_projected_mechanistic(
     test_targets: np.ndarray,
     profile: StudyProfile,
     *,
+    overflow_closure: LogOverflowTSSClosure | None = None,
+    development_overflow_tss_closure: np.ndarray | None = None,
     parallel_workers: int = 1,
     batch_size: int = 64,
     checkpoint_directory: Path | None = None,
@@ -875,6 +1106,25 @@ def assess_raw_projected_mechanistic(
 ) -> AssessmentResult:
     layout = NetworkLayout(layer_count=profile.layer_count)
     state_scale = model.response_scale
+    holdout_closure = (
+        None
+        if overflow_closure is None
+        else np.asarray(
+            overflow_closure.predict(test_decisions, test_influents),
+            dtype=np.float64,
+        )
+    )
+    if overflow_closure is not None:
+        development_closure = np.asarray(
+            development_overflow_tss_closure
+            if development_overflow_tss_closure is not None
+            else overflow_closure.predict(development_decisions, development_influents),
+            dtype=np.float64,
+        )
+        if development_closure.shape != (len(development_decisions),):
+            raise ValueError("development overflow-TSS closure predictions are invalid")
+    else:
+        development_closure = None
     row_scales = fit_network_row_scales(
         development_targets, development_influents,
         internal_recycle=development_decisions[:, 4],
@@ -882,6 +1132,7 @@ def assess_raw_projected_mechanistic(
         waste_fraction=development_decisions[:, 6],
         invariant_operator=INVARIANT_MATRIX, tss_weights=TSS_VECTOR,
         layout=layout, minimum_scale=1.0,
+        overflow_tss_closure=development_closure,
     )
     raw = model.predict(test_decisions, test_influents)
     if checkpoint_directory is not None and not checkpoint_contract:
@@ -914,6 +1165,7 @@ def assess_raw_projected_mechanistic(
             state_scale,
             row_scales.equality,
             row_scales.inequality,
+            holdout_closure,
         ),
         progress=progress,
     )
@@ -938,6 +1190,16 @@ def assess_raw_projected_mechanistic(
         metrics.extend(_prediction_metric_rows(
             method, values, test_targets, model.response_scale, layout,
         ))
+    if holdout_closure is not None:
+        exact_overflow = overflow_tss_from_response(test_targets, test_decisions, layout)
+        development_exact_overflow = overflow_tss_from_response(
+            development_targets, development_decisions, layout,
+        )
+        metrics.extend(_overflow_closure_metric_rows(
+            holdout_closure,
+            exact_overflow,
+            development_exact_overflow,
+        ))
     correction = (projected - raw) / model.response_scale
     metrics.append({
         "method": "projection_correction", "block": "complete_response",
@@ -951,6 +1213,7 @@ def assess_raw_projected_mechanistic(
         metrics=pd.DataFrame(metrics), violations=pd.DataFrame(violations),
         qp_diagnostics=pd.DataFrame(qp_rows), feasibility=pd.DataFrame(feasibility_rows),
         raw=raw, projected=projected, projected_targets=projected_targets,
+        overflow_tss_closure=holdout_closure,
     )
 
 
@@ -1011,6 +1274,9 @@ def optimize_surrogate_case(
     development_influents: np.ndarray,
     development_targets: np.ndarray,
     profile: StudyProfile,
+    *,
+    overflow_closure: LogOverflowTSSClosure | None = None,
+    development_overflow_tss_closure: npt.ArrayLike | None = None,
 ) -> dict[str, object]:
     """Nine-start projected-response optimization with independent final QP replay.
 
@@ -1019,6 +1285,10 @@ def optimize_surrogate_case(
     primal--dual-gap continuation/KKT audit is executed for the article run.
     """
 
+    if (overflow_closure is None) != (development_overflow_tss_closure is None):
+        raise ValueError(
+            "overflow_closure and its development predictions must be supplied together"
+        )
     layout = NetworkLayout(layer_count=profile.layer_count)
     row_scales = fit_network_row_scales(
         development_targets, development_influents,
@@ -1027,6 +1297,7 @@ def optimize_surrogate_case(
         waste_fraction=development_decisions[:, 6],
         invariant_operator=INVARIANT_MATRIX, tss_weights=TSS_VECTOR,
         layout=layout, minimum_scale=1.0,
+        overflow_tss_closure=development_overflow_tss_closure,
     )
     projector = PhysicalProjector(
         model.response_scale, row_scales.equality, row_scales.inequality,
@@ -1042,7 +1313,14 @@ def optimize_surrogate_case(
         if key not in cache:
             theta = DECISION_LOWER + np.asarray(key) * (DECISION_UPPER - DECISION_LOWER)
             raw = model.predict(theta, influent)
-            operators = _operators(theta, influent, layout)
+            closure_value = (
+                None if overflow_closure is None
+                else float(overflow_closure.predict(theta, influent))
+            )
+            operators = _operators(
+                theta, influent, layout,
+                overflow_tss_closure=closure_value,
+            )
             projection = projector.project(
                 raw, operators.equality_matrix, operators.equality_rhs,
                 operators.inequality_matrix,
@@ -1102,9 +1380,16 @@ def replay_selected_case(
     model: QuadraticSurrogate, development_decisions: np.ndarray,
     development_influents: np.ndarray, development_targets: np.ndarray,
     profile: StudyProfile,
+    *,
+    overflow_closure: LogOverflowTSSClosure | None = None,
+    development_overflow_tss_closure: npt.ArrayLike | None = None,
 ) -> tuple[dict[str, object], pd.DataFrame]:
     if "theta" not in selected:
         return {"case": case, "status": selected["status"]}, pd.DataFrame()
+    if (overflow_closure is None) != (development_overflow_tss_closure is None):
+        raise ValueError(
+            "overflow_closure and its development predictions must be supplied together"
+        )
     theta = np.asarray(selected["theta"], dtype=float)
     clarifier = clarifier_for(profile)
     operating = _operating(theta)
@@ -1119,9 +1404,16 @@ def replay_selected_case(
         waste_fraction=development_decisions[:, 6],
         invariant_operator=INVARIANT_MATRIX, tss_weights=TSS_VECTOR,
         layout=layout, minimum_scale=1.0,
+        overflow_tss_closure=development_overflow_tss_closure,
     )
     raw = model.predict(theta, influent)
-    operators = _operators(theta, influent, layout)
+    closure_value = (
+        None if overflow_closure is None
+        else float(overflow_closure.predict(theta, influent))
+    )
+    operators = _operators(
+        theta, influent, layout, overflow_tss_closure=closure_value,
+    )
     projected = PhysicalProjector(
         model.response_scale, row_scales.equality, row_scales.inequality,
         absolute_tolerance=1.0e-12, relative_tolerance=1.0e-12,
@@ -1130,7 +1422,7 @@ def replay_selected_case(
     violations = pd.DataFrame([
         violation_record(method, case, state, theta, influent, layout,
                          row_scales.equality, row_scales.inequality,
-                         model.response_scale)
+                         model.response_scale, closure_value)
         for method, state in (("raw", raw), ("projected", projected),
                               ("mechanistic", mechanistic))
     ])
@@ -1151,6 +1443,8 @@ def write_json(path: Path, value: object) -> None:
 
 __all__ = [
     "ARTICLE_FULL", "TEST_500", "DECISION_NAMES", "RIDGE_GRID", "StudyProfile",
+    "LogOverflowClosureSelectionResult", "cross_validate_log_overflow_closure",
+    "overflow_tss_from_response",
     "assess_raw_projected_mechanistic", "clarifier_for", "create_design",
     "engineering_quantities", "generate_mechanistic_block", "objective_value",
     "optimize_surrogate_case", "replay_selected_case", "select_ridge",

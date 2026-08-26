@@ -1,7 +1,8 @@
-"""Chart the effect of a Takacs non-settleable-solids projection constraint.
+"""Chart a log-regression closure for Extended-ICSOR overflow TSS.
 
-This is a sensitivity analysis.  It does not overwrite the fitted Extended
-ICSOR model, its archived holdout predictions, or any optimization result.
+This is a development-fitted sensitivity analysis. It does not overwrite the
+production surrogate, archived holdout predictions, or optimization results.
+No non-settleable-fraction floor is imposed by this analysis.
 """
 
 from __future__ import annotations
@@ -23,10 +24,13 @@ import numpy as np
 import osqp
 import pandas as pd
 from scipy import sparse
+from sklearn.linear_model import Ridge, RidgeCV
+from sklearn.model_selection import KFold, cross_val_predict
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import PolynomialFeatures, StandardScaler
 
 from closed_loop.manuscript_v3 import reduce_mechanistic_responses
 from closed_loop.model import (
-    CLARIFIER,
     COMPOSITE_MATRIX,
     INVARIANT_MATRIX,
     NOMINAL_INFLUENT,
@@ -51,6 +55,8 @@ BASELINE = "#147D92"
 CORRECTED = "#D97904"
 MECHANISTIC = "#343A40"
 GRID = "#D8DEE4"
+LOG_RIDGE_GRID = np.logspace(-4, 4, 17)
+LOG_REGRESSION_FOLD_SEED = 20260826
 
 
 def save(fig: plt.Figure, output: Path, stem: str) -> None:
@@ -59,50 +65,97 @@ def save(fig: plt.Figure, output: Path, stem: str) -> None:
     plt.close(fig)
 
 
-def floor_row(
-    theta: np.ndarray,
+def make_log_regression(*, alpha: float | None = None):
+    """Return the deterministic standardized quadratic log-TSS estimator."""
+
+    estimator = RidgeCV(alphas=LOG_RIDGE_GRID) if alpha is None else Ridge(alpha=alpha)
+    return make_pipeline(
+        StandardScaler(),
+        PolynomialFeatures(degree=2, include_bias=False),
+        StandardScaler(),
+        estimator,
+    )
+
+
+def fit_log_overflow_regression(
+    development_decisions: np.ndarray,
+    development_influents: np.ndarray,
+    development_responses: np.ndarray,
     layout: NetworkLayout,
+) -> tuple[object, np.ndarray, float]:
+    """Fit log(X_E) on development rows and return grouped-style OOF predictions."""
+
+    q_effluent = 1.0 - development_decisions[:, 6]
+    overflow_tss = (
+        development_responses[:, layout.overflow_flow_slice] @ TSS_VECTOR
+    ) / q_effluent
+    if np.any(overflow_tss <= 0.0):
+        raise ValueError("development overflow TSS must be strictly positive for log regression")
+    predictors = np.column_stack((development_decisions, development_influents))
+    log_target = np.log(overflow_tss)
+    selector = make_log_regression()
+    selector.fit(predictors, log_target)
+    alpha = float(selector[-1].alpha_)
+    folds = KFold(n_splits=5, shuffle=True, random_state=LOG_REGRESSION_FOLD_SEED)
+    out_of_fold_log = cross_val_predict(
+        make_log_regression(alpha=alpha), predictors, log_target, cv=folds, n_jobs=1,
+    )
+    final = make_log_regression(alpha=alpha)
+    final.fit(predictors, log_target)
+    return final, np.exp(out_of_fold_log), alpha
+
+
+def predict_log_overflow(
+    model: object,
+    decisions: np.ndarray,
+    influents: np.ndarray,
 ) -> np.ndarray:
-    """Return G row for q_E*f_ns*X_feed - t_X' g_E <= 0."""
+    decision_matrix = np.asarray(decisions, dtype=float)
+    influent_matrix = np.asarray(influents, dtype=float)
+    single = decision_matrix.ndim == 1
+    if single:
+        decision_matrix = decision_matrix[None, :]
+        influent_matrix = influent_matrix[None, :]
+    prediction = np.exp(model.predict(np.column_stack((decision_matrix, influent_matrix))))
+    if not np.all(np.isfinite(prediction)) or np.any(prediction <= 0.0):
+        raise FloatingPointError("log-regression overflow prediction must be finite and positive")
+    return prediction[0] if single else prediction
+
+
+def overflow_equality_row(layout: NetworkLayout) -> np.ndarray:
+    """Return the linear row t_X' g_E = q_E X_E,log."""
 
     row = np.zeros(layout.state_size, dtype=float)
-    q_effluent = 1.0 - float(theta[6])
-    row[layout.reactor_slice(layout.stage_count - 1)] = (
-        q_effluent * CLARIFIER.nonsettleable_fraction * TSS_VECTOR
-    )
-    row[layout.overflow_flow_slice] = -TSS_VECTOR
+    row[layout.overflow_flow_slice] = TSS_VECTOR
     return row
 
 
-def fit_floor_scale(
+def fit_log_equality_scale(
     development: np.ndarray,
     decisions: np.ndarray,
+    log_predictions: np.ndarray,
     layout: NetworkLayout,
 ) -> float:
-    final_tss = development[:, layout.reactor_slice(layout.stage_count - 1)] @ TSS_VECTOR
     overflow_tss_flow = development[:, layout.overflow_flow_slice] @ TSS_VECTOR
-    lower_bound_flow = (
-        (1.0 - decisions[:, 6])
-        * CLARIFIER.nonsettleable_fraction
-        * final_tss
-    )
+    predicted_flow = (1.0 - decisions[:, 6]) * log_predictions
     return max(
         1.0,
-        float(np.sqrt(np.mean((lower_bound_flow**2 + overflow_tss_flow**2) / 2.0))),
+        float(np.sqrt(np.mean((predicted_flow**2 + overflow_tss_flow**2) / 2.0))),
     )
 
 
-def floor_project(
+def log_regression_project(
     raw: np.ndarray,
     theta: np.ndarray,
     influent: np.ndarray,
+    predicted_overflow_tss: float,
     *,
     layout: NetworkLayout,
     state_scale: np.ndarray,
     equality_scale: np.ndarray,
     inequality_scale: np.ndarray,
 ) -> tuple[np.ndarray, dict[str, float | int | str]]:
-    """Solve the augmented standardized projection QP and audit its primal state."""
+    """Solve the projection QP with the log-regression overflow closure."""
 
     operators = build_network_operators(
         influent,
@@ -113,16 +166,20 @@ def floor_project(
         tss_weights=TSS_VECTOR,
         layout=layout,
     )
-    inequality = np.vstack((operators.inequality_matrix, floor_row(theta, layout)))
+    equality = np.vstack((operators.equality_matrix, overflow_equality_row(layout)))
+    equality_rhs_physical = np.concatenate((
+        operators.equality_rhs,
+        [(1.0 - float(theta[6])) * float(predicted_overflow_tss)],
+    ))
     scaled_equality = (
-        operators.equality_matrix
+        equality
         * state_scale[None, :]
         / equality_scale[:, None]
     )
     equality_rhs = (
-        operators.equality_rhs - operators.equality_matrix @ raw
+        equality_rhs_physical - equality @ raw
     ) / equality_scale
-    physical_scaled_inequality = inequality / inequality_scale[:, None]
+    physical_scaled_inequality = operators.inequality_matrix / inequality_scale[:, None]
     scaled_network_inequality = physical_scaled_inequality * state_scale[None, :]
     network_rhs = -(physical_scaled_inequality @ raw)
     scaled_inequality = np.vstack((-np.eye(layout.state_size), scaled_network_inequality))
@@ -134,9 +191,20 @@ def floor_project(
     ))
     upper = np.concatenate((equality_rhs, inequality_rhs))
     attempts = (
-        {"max_iter": 100_000},
-        {"rho": 0.01, "adaptive_rho": False, "max_iter": 200_000},
-        {"rho": 10.0, "adaptive_rho": False, "max_iter": 200_000},
+        {"eps_abs": 1.0e-8, "eps_rel": 1.0e-8, "max_iter": 100_000},
+        {
+            "eps_abs": 1.0e-10, "eps_rel": 1.0e-10,
+            "check_termination": 1, "polish_refine_iter": 20,
+            "max_iter": 200_000,
+        },
+        {
+            "eps_abs": 1.0e-8, "eps_rel": 1.0e-8,
+            "rho": 0.01, "adaptive_rho": False, "max_iter": 200_000,
+        },
+        {
+            "eps_abs": 1.0e-8, "eps_rel": 1.0e-8,
+            "rho": 10.0, "adaptive_rho": False, "max_iter": 200_000,
+        },
     )
     result = None
     state = None
@@ -152,8 +220,6 @@ def floor_project(
             A=constraint,
             l=lower,
             u=upper,
-            eps_abs=1.0e-8,
-            eps_rel=1.0e-8,
             polishing=True,
             verbose=False,
             **options,
@@ -162,11 +228,11 @@ def floor_project(
         if candidate.x is not None and str(candidate.info.status).lower().startswith("solved"):
             candidate_state = raw + state_scale * np.asarray(candidate.x, dtype=float)
             candidate_equality_residual = float(np.max(np.abs(
-                (operators.equality_matrix @ candidate_state - operators.equality_rhs)
+                (equality @ candidate_state - equality_rhs_physical)
                 / equality_scale
             )))
             candidate_inequality_residual = float(np.max(np.maximum(
-                (inequality @ candidate_state) / inequality_scale, 0.0,
+                (operators.inequality_matrix @ candidate_state) / inequality_scale, 0.0,
             )))
             candidate_nonnegative_residual = float(np.max(np.maximum(
                 -candidate_state / state_scale, 0.0,
@@ -197,6 +263,11 @@ def floor_project(
         "equality_residual": equality_residual,
         "inequality_residual": inequality_residual,
         "nonnegative_residual": nonnegative_residual,
+        "overflow_closure_residual_mg_L": float(
+            candidate_state[layout.overflow_flow_slice] @ TSS_VECTOR
+            / (1.0 - float(theta[6]))
+            - predicted_overflow_tss
+        ),
     }
 
 
@@ -232,6 +303,13 @@ def main() -> None:
         state_scale = np.asarray(stored["response_scale"], dtype=float)
 
     layout = NetworkLayout(layer_count=10)
+    log_model, development_oof_tss, selected_alpha = fit_log_overflow_regression(
+        development_decisions,
+        development_influents,
+        development,
+        layout,
+    )
+    holdout_log_tss = predict_log_overflow(log_model, test_decisions, test_influents)
     row_scales = fit_network_row_scales(
         development,
         development_influents,
@@ -243,21 +321,27 @@ def main() -> None:
         layout=layout,
         minimum_scale=1.0,
     )
-    added_scale = fit_floor_scale(development, development_decisions, layout)
-    inequality_scale = np.concatenate((row_scales.inequality, [added_scale]))
+    added_scale = fit_log_equality_scale(
+        development, development_decisions, development_oof_tss, layout,
+    )
+    equality_scale = np.concatenate((row_scales.equality, [added_scale]))
+    inequality_scale = row_scales.inequality
 
-    checkpoint = output / "corrected_holdout_checkpoint.npz"
-    raw_digest = hashlib.sha256(np.ascontiguousarray(raw).view(np.uint8)).hexdigest()
+    checkpoint = output / "log_regression_corrected_holdout_checkpoint.npz"
+    digest = hashlib.sha256()
+    digest.update(np.ascontiguousarray(raw).view(np.uint8))
+    digest.update(np.ascontiguousarray(holdout_log_tss).view(np.uint8))
+    contract_digest = digest.hexdigest()
     corrected = np.empty_like(raw)
     audits: list[dict[str, float | int | str]] = []
     start_row = 0
     if checkpoint.is_file():
         with np.load(checkpoint, allow_pickle=False) as stored:
             stored_corrected = np.asarray(stored["corrected"], dtype=float)
-            stored_digest = str(stored["raw_digest"].item())
+            stored_digest = str(stored["contract_digest"].item())
             stored_audits = [json.loads(str(item)) for item in stored["audits_json"]]
         if (
-            stored_digest == raw_digest
+            stored_digest == contract_digest
             and stored_corrected.ndim == 2
             and stored_corrected.shape[1] == raw.shape[1]
             and len(stored_corrected) == len(stored_audits)
@@ -269,11 +353,11 @@ def main() -> None:
             print(f"resumed corrected holdout projections: {start_row}/{len(raw)}", flush=True)
     for row in range(start_row, len(raw)):
         try:
-            corrected[row], audit = floor_project(
-                raw[row], test_decisions[row], test_influents[row],
+            corrected[row], audit = log_regression_project(
+                raw[row], test_decisions[row], test_influents[row], holdout_log_tss[row],
                 layout=layout,
                 state_scale=state_scale,
-                equality_scale=row_scales.equality,
+                equality_scale=equality_scale,
                 inequality_scale=inequality_scale,
             )
         except RuntimeError as error:
@@ -281,19 +365,34 @@ def main() -> None:
         audits.append({"row": row, **audit})
         if (row + 1) % 250 == 0:
             print(f"corrected holdout projections: {row + 1}/{len(raw)}", flush=True)
-            temporary = output / "corrected_holdout_checkpoint.tmp.npz"
+            temporary = output / "log_regression_corrected_holdout_checkpoint.tmp.npz"
             np.savez_compressed(
                 temporary,
                 corrected=corrected[:row + 1],
                 audits_json=np.asarray([json.dumps(item, sort_keys=True) for item in audits]),
-                raw_digest=np.asarray(raw_digest),
+                contract_digest=np.asarray(contract_digest),
             )
             os.replace(temporary, checkpoint)
+
+    temporary = output / "log_regression_corrected_holdout_checkpoint.tmp.npz"
+    np.savez_compressed(
+        temporary,
+        corrected=corrected,
+        audits_json=np.asarray([json.dumps(item, sort_keys=True) for item in audits]),
+        contract_digest=np.asarray(contract_digest),
+    )
+    os.replace(temporary, checkpoint)
+    np.savez_compressed(
+        output / "log_regression_diagnostics.npz",
+        selected_ridge_alpha=np.asarray(selected_alpha),
+        development_oof_tss=development_oof_tss,
+        holdout_predicted_tss=holdout_log_tss,
+    )
 
     truth_composite = response_composites(mechanistic, test_decisions)
     baseline_composite = response_composites(baseline, test_decisions)
     corrected_composite = response_composites(corrected, test_decisions)
-    composite_sets = {"Baseline": baseline_composite, "Floor-corrected": corrected_composite}
+    composite_sets = {"Baseline": baseline_composite, "Log-regression closure": corrected_composite}
     summary_rows: list[dict[str, object]] = []
 
     # Figure 1: overflow-TSS parity before and after correction.
@@ -330,7 +429,7 @@ def main() -> None:
     colorbar_axis = fig.add_axes((0.91, 0.17, 0.018, 0.64))
     colorbar = fig.colorbar(density[0], cax=colorbar_axis)
     colorbar.set_label("Holdout rows per hexagon (log scale)")
-    fig.suptitle("Effect of the non-settleable-solids floor on overflow-TSS parity", fontsize=14)
+    fig.suptitle("Effect of the log-regression closure on overflow-TSS parity", fontsize=14)
     fig.subplots_adjust(left=0.08, right=0.87, bottom=0.12, top=0.86, wspace=0.34)
     save(fig, output, "01_overflow_tss_parity_before_after")
 
@@ -339,11 +438,11 @@ def main() -> None:
     metrics = {label: finite_score(truth_tss, values) for label, values in zip(composite_sets, parity_predictions, strict=True)}
     feed = {}
     effluent = {}
-    for label, values in (("Mechanistic", mechanistic), ("Baseline", baseline), ("Floor-corrected", corrected)):
+    for label, values in (("Mechanistic", mechanistic), ("Baseline", baseline), ("Log-regression closure", corrected)):
         feed[label], effluent[label] = tss_values(values, test_decisions)
-    violations = {
-        label: int(np.sum(effluent[label] < CLARIFIER.nonsettleable_fraction * feed[label] - 1.0e-8))
-        for label in effluent
+    absolute_mae = {
+        label: float(np.mean(np.abs(values - truth_tss)))
+        for label, values in zip(composite_sets, parity_predictions, strict=True)
     }
     low_mae = {
         label: float(np.mean(np.abs(values[low_mask] - truth_tss[low_mask])))
@@ -358,28 +457,24 @@ def main() -> None:
         bars = axis.bar(composite_sets.keys(), vals, color=(BASELINE, CORRECTED))
         axis.set_title(f"{name}\n({better})")
         axis.bar_label(bars, fmt="%.3f", padding=3, fontsize=8)
-    bars = axes[2].bar(low_mae.keys(), low_mae.values(), color=(BASELINE, CORRECTED))
-    axes[2].set_title(f"MAE where exact TSS ≤10 mg/L\n(n={int(np.sum(low_mask)):,}; lower is better)")
+    bars = axes[2].bar(absolute_mae.keys(), absolute_mae.values(), color=(BASELINE, CORRECTED))
+    axes[2].set_title("Overflow-TSS MAE\n(lower is better)")
     axes[2].set_ylabel("MAE (mg/L)")
     axes[2].bar_label(bars, fmt="%.2f", padding=3, fontsize=8)
-    bars = axes[3].bar(
-        ("Mechanistic", "Baseline", "Floor-corrected"),
-        [violations[name] for name in ("Mechanistic", "Baseline", "Floor-corrected")],
-        color=(MECHANISTIC, BASELINE, CORRECTED),
-    )
-    axes[3].set_title("Rows below feed-dependent floor\n(lower is better)")
-    axes[3].set_ylabel("Holdout rows")
-    axes[3].bar_label(bars, padding=3, fontsize=8)
+    bars = axes[3].bar(low_mae.keys(), low_mae.values(), color=(BASELINE, CORRECTED))
+    axes[3].set_title(f"MAE where exact TSS <= 10 mg/L\n(n={int(np.sum(low_mask)):,}; lower is better)")
+    axes[3].set_ylabel("MAE (mg/L)")
+    axes[3].bar_label(bars, fmt="%.2f", padding=3, fontsize=8)
     for axis in axes:
         axis.tick_params(axis="x", labelrotation=18)
-    fig.suptitle("Overflow-TSS performance change after adding the settling floor", fontsize=14)
+    fig.suptitle("Overflow-TSS performance change with the log-regression closure", fontsize=14)
     fig.tight_layout(rect=(0, 0, 1, 0.90))
     save(fig, output, "02_overflow_tss_performance_change")
     for label in composite_sets:
         summary_rows.extend((
             {"scope": "holdout_overflow_tss_low", "method": label, "metric": "mae_exact_le_10_mg_L", "value": low_mae[label]},
-            {"scope": "holdout_floor", "method": label, "metric": "violation_count", "value": violations[label]},
-            {"scope": "holdout_floor", "method": label, "metric": "minimum_effluent_tss_mg_L", "value": float(np.min(effluent[label]))},
+            {"scope": "holdout_overflow_tss", "method": label, "metric": "mae_mg_L", "value": absolute_mae[label]},
+            {"scope": "holdout_overflow_tss", "method": label, "metric": "minimum_prediction_mg_L", "value": float(np.min(effluent[label]))},
         ))
 
     # Figure 3: Q3-compatible all-location composite performance.
@@ -396,11 +491,11 @@ def main() -> None:
         (axes[0, 1], 1, "nMAE", "Location-normalized MAE"),
         (axes[1, 0], 2, "Mean location R²", "Mean location coefficient of determination"),
     ):
-        for offset, (label, color) in zip((-width / 2, width / 2), (("Baseline", BASELINE), ("Floor-corrected", CORRECTED)), strict=True):
+        for offset, (label, color) in zip((-width / 2, width / 2), (("Baseline", BASELINE), ("Log-regression closure", CORRECTED)), strict=True):
             axis.bar(x + offset, [score[metric_index] for score in all_scores[label]], width, color=color, label=label)
         axis.set(xticks=x, xticklabels=COMPOSITES, ylabel=ylabel, title=title)
     changes = 100.0 * (
-        np.asarray([score[0] for score in all_scores["Floor-corrected"]])
+        np.asarray([score[0] for score in all_scores["Log-regression closure"]])
         / np.asarray([score[0] for score in all_scores["Baseline"]]) - 1.0
     )
     bars = axes[1, 1].bar(COMPOSITES, changes, color=np.where(changes <= 0.0, CORRECTED, "#B91C1C"))
@@ -408,7 +503,7 @@ def main() -> None:
     axes[1, 1].set(title="nRMSE change (negative improves)", ylabel="Change (%)")
     axes[1, 1].bar_label(bars, fmt="%.1f%%", padding=3, fontsize=8)
     axes[0, 0].legend(ncol=2)
-    fig.suptitle("All-location composite performance before and after the settling-floor correction", fontsize=14)
+    fig.suptitle("All-location composite performance with the log-regression closure", fontsize=14)
     fig.tight_layout(rect=(0, 0, 1, 0.94))
     save(fig, output, "03_all_location_composite_performance_change")
     for label, scores in all_scores.items():
@@ -429,11 +524,11 @@ def main() -> None:
                     truth_composite[:, i, j], values[:, i, j],
                 )[0]
         matrices[label] = matrix
-    delta = 100.0 * (matrices["Floor-corrected"] / matrices["Baseline"] - 1.0)
-    common_max = float(max(np.max(matrices["Baseline"]), np.max(matrices["Floor-corrected"])))
+    delta = 100.0 * (matrices["Log-regression closure"] / matrices["Baseline"] - 1.0)
+    common_max = float(max(np.max(matrices["Baseline"]), np.max(matrices["Log-regression closure"])))
     delta_limit = float(np.max(np.abs(delta)))
     fig, axes = plt.subplots(1, 3, figsize=(14.8, 5.3))
-    for axis, label in zip(axes[:2], ("Baseline", "Floor-corrected"), strict=True):
+    for axis, label in zip(axes[:2], ("Baseline", "Log-regression closure"), strict=True):
         image = axis.imshow(matrices[label], aspect="auto", cmap="YlOrRd", vmin=0.0, vmax=common_max)
         fig.colorbar(image, ax=axis, pad=0.02, label="nRMSE")
         axis.set_title(label)
@@ -442,32 +537,31 @@ def main() -> None:
     fig.colorbar(image, ax=axes[2], pad=0.02, label="nRMSE change (%)")
     axes[2].set_title("Correction change (negative improves)")
     axes[2].set(yticks=np.arange(8), yticklabels=LOCATION_LABELS, xticks=np.arange(4), xticklabels=COMPOSITES)
-    fig.suptitle("Location-level effect of the settling-floor correction", fontsize=14)
+    fig.suptitle("Location-level effect of the log-regression closure", fontsize=14)
     fig.tight_layout(rect=(0, 0, 1, 0.94))
     save(fig, output, "04_location_composite_nrmse_change")
 
-    # Figure 5: empirical floor-ratio distribution.
+    # Figure 5: empirical overflow-to-feed ratio distribution.
     ratios = {
-        label: effluent[label] / (CLARIFIER.nonsettleable_fraction * feed[label])
-        for label in ("Mechanistic", "Baseline", "Floor-corrected")
+        label: effluent[label] / feed[label]
+        for label in ("Mechanistic", "Baseline", "Log-regression closure")
     }
     fig, axis = plt.subplots(figsize=(9.5, 5.5))
-    for label, color in (("Mechanistic", MECHANISTIC), ("Baseline", BASELINE), ("Floor-corrected", CORRECTED)):
+    for label, color in (("Mechanistic", MECHANISTIC), ("Baseline", BASELINE), ("Log-regression closure", CORRECTED)):
         ordered = np.sort(ratios[label])
         probability = np.arange(1, len(ordered) + 1) / len(ordered)
         axis.plot(ordered, probability, color=color, lw=2.0, label=label)
-    axis.axvline(1.0, color="#dc2626", ls="--", lw=1.3, label="Declared floor")
     axis.set_xscale("log")
     axis.set(
-        xlabel=r"Overflow TSS / ($f_{ns}$ × feed TSS)",
+        xlabel="Overflow TSS / feed TSS",
         ylabel="Cumulative fraction of holdout rows",
-        title="Feed-normalized overflow-TSS distribution",
+        title="Overflow-to-feed TSS ratio distribution",
         xlim=(max(1.0e-3, min(np.min(value) for value in ratios.values()) / 1.3), max(np.max(value) for value in ratios.values()) * 1.2),
         ylim=(0.0, 1.01),
     )
     axis.legend()
     fig.tight_layout()
-    save(fig, output, "05_feed_normalized_tss_floor_distribution")
+    save(fig, output, "05_overflow_to_feed_tss_ratio_distribution")
 
     # Figure 6: fixed-decision diagnostic on the archived surrogate optima.
     cases = ["nominal", *[f"robustness_{i:02d}" for i in range(1, 11)]]
@@ -480,11 +574,14 @@ def main() -> None:
             case_raw = np.asarray(stored["raw"], dtype=float)
             case_baseline = np.asarray(stored["projected"], dtype=float)
             exact = np.asarray(stored["exact_reference"], dtype=float)
-        case_corrected, _ = floor_project(
-            case_raw, theta, np.asarray(influent, dtype=float),
+        predicted_tss = float(predict_log_overflow(
+            log_model, theta, np.asarray(influent, dtype=float),
+        ))
+        case_corrected, _ = log_regression_project(
+            case_raw, theta, np.asarray(influent, dtype=float), predicted_tss,
             layout=layout,
             state_scale=state_scale,
-            equality_scale=row_scales.equality,
+            equality_scale=equality_scale,
             inequality_scale=inequality_scale,
         )
         q_e = 1.0 - theta[6]
@@ -492,14 +589,14 @@ def main() -> None:
             "case": case, "label": label,
             "mechanistic": float(TSS_VECTOR @ exact[120:140] / q_e),
             "baseline": float(TSS_VECTOR @ case_baseline[120:140] / q_e),
-            "floor_corrected": float(TSS_VECTOR @ case_corrected[120:140] / q_e),
+            "log_regression": float(TSS_VECTOR @ case_corrected[120:140] / q_e),
         })
     selected = pd.DataFrame(selected_rows)
     selected.to_csv(output / "selected_decision_tss.csv", index=False)
     x = np.arange(len(selected)); width = 0.25
     fig, axis = plt.subplots(figsize=(12.0, 5.2))
     axis.bar(x - width, selected["baseline"], width, color=BASELINE, label="Baseline projected")
-    axis.bar(x, selected["floor_corrected"], width, color=CORRECTED, label="Floor-corrected projected")
+    axis.bar(x, selected["log_regression"], width, color=CORRECTED, label="Log-regression closure")
     axis.bar(x + width, selected["mechanistic"], width, color=MECHANISTIC, label="Exact mechanistic replay")
     axis.set(
         xticks=x, xticklabels=selected["label"],
@@ -518,23 +615,28 @@ def main() -> None:
         "02_overflow_tss_performance_change",
         "03_all_location_composite_performance_change",
         "04_location_composite_nrmse_change",
-        "05_feed_normalized_tss_floor_distribution",
+        "05_overflow_to_feed_tss_ratio_distribution",
         "06_selected_decision_tss_fixed_decisions",
     )
     pd.DataFrame([
         {"chart": index, "png": f"{stem}.png", "svg": f"{stem}.svg"}
         for index, stem in enumerate(stems, 1)
     ]).to_csv(output / "chart_index.csv", index=False)
-    (output / "correction_definition.json").write_text(json.dumps({
-        "analysis_type": "holdout sensitivity plus fixed-decision diagnostic; no surrogate refit or reoptimization",
-        "constraint": "X_E >= f_ns * X_feed",
-        "nonsettleable_fraction": CLARIFIER.nonsettleable_fraction,
+    (output / "log_regression_definition.json").write_text(json.dumps({
+        "analysis_type": "development-fitted log-regression closure, holdout assessment, and fixed-decision diagnostic; no production-surrogate refit or reoptimization",
+        "regression_target": "log(overflow TSS in mg/L)",
+        "regression_features": "standardized controls and influent; complete second-order polynomial",
+        "ridge_selection": "development-only RidgeCV over a fixed logarithmic grid",
+        "selected_ridge_alpha": selected_alpha,
+        "projection_closure": "t_X' g_E = q_E * exp(log-regression prediction)",
+        "nonsettleable_fraction_constraint": "not used",
         "projection_objective": "minimum standardized Euclidean displacement from the same raw Extended-ICSOR prediction",
         "holdout_rows": len(raw),
         "corrected_projection_failures": 0,
         "maximum_scaled_equality_residual": float(audit_frame["equality_residual"].max()),
         "maximum_scaled_inequality_residual": float(audit_frame["inequality_residual"].max()),
         "maximum_scaled_nonnegativity_residual": float(audit_frame["nonnegative_residual"].max()),
+        "maximum_absolute_overflow_closure_residual_mg_L": float(audit_frame["overflow_closure_residual_mg_L"].abs().max()),
     }, indent=2), encoding="utf-8")
     print(output)
     print(pd.DataFrame(summary_rows).to_string(index=False))

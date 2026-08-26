@@ -47,7 +47,9 @@ from closed_loop.manuscript_v3 import (
     assess_raw_projected_mechanistic,
     clarifier_for,
     create_design,
+    cross_validate_log_overflow_closure,
     cross_validate_ridge,
+    overflow_tss_from_response,
     reduce_mechanistic_responses,
     violation_record,
 )
@@ -70,6 +72,7 @@ from closed_loop.model import (
 )
 from closed_loop.projection import (
     LeastSquaresDiagnostics,
+    LogOverflowTSSClosure,
     NetworkLayout,
     PhysicalProjector,
     QuadraticFeatureMap,
@@ -125,8 +128,9 @@ ROOT = Path(__file__).resolve().parents[1]
 RESULTS_ROOT = ROOT / "results" / "article_v3"
 LEGACY_RUN_ID = "article_full_5000_001"
 DEFAULT_RUN_ID = "article_full_5000_002"
-RUNNER_SCHEMA = 10
+RUNNER_SCHEMA = 11
 RESPONSE_SCHEMA = "clarifier_inventory_v1"
+PROJECTION_SCHEMA = "system_wide_log_overflow_closure_v1"
 ASSESSMENT_GATE_EXECUTION_POLICY = "advisory_continue"
 DIRECT_SINGLE_CENTER_PROTOCOL = "smooth_direct_single_center_v1"
 OPTIMIZATION_PROTOCOL = "single_center_local_exact_qp_v1"
@@ -192,6 +196,7 @@ REDUCED_FORK_DATASET_FILES = frozenset({
     "datasets/effective_design.npz",
     "datasets/effective_design_manifest.json",
     "datasets/frozen_accepted_complete.json",
+    "datasets/sampled_accepted_complete.json",
     *(
         f"datasets/{block}/{name}"
         for block in ("development", "test")
@@ -221,6 +226,7 @@ REDUCED_FORK_INPUT_FILES = (
     "inputs/partial_generation_fork.json",
     "inputs/frozen_accepted_partition.json",
     "inputs/frozen_accepted/source_design_50000.npz",
+    "inputs/random_sampled_accepted_partition.json",
 )
 
 
@@ -859,6 +865,7 @@ class AnalysisBundle:
     surrogate_assets: Any
     assessment: AssessmentResult | None
     gate: dict[str, Any]
+    overflow_closure: LogOverflowTSSClosure | None = None
 
 
 @dataclass(frozen=True)
@@ -1251,6 +1258,7 @@ def _build_contract(
             "clarifier_volume_m3": 6_000.0,
             "holdout_role": "frozen_post_selection_descriptive",
         },
+        "projection_schema": PROJECTION_SCHEMA,
         "dataset_protocol": (
             "frozen_accepted_checkpoint_split_80_20_v1"
             if profile.name == FROZEN_PROFILE_NAME
@@ -3247,12 +3255,15 @@ def _initialize_reduced_response_fork(
     source_run: Path,
     source_contract: Mapping[str, Any],
     successor_contract: Mapping[str, Any],
+    retain_ridge: bool = False,
 ) -> None:
-    """Fork only immutable generation evidence into the reduced-response run.
+    """Fork immutable generation evidence and, optionally, the unchanged ridge fit.
 
     Layer-resolved mechanistic checkpoints remain authoritative source data.
-    Every model, assessment, optimization, replay-at-selected-controls, timing,
-    and report artifact is intentionally excluded from this fork.
+    When ``retain_ridge`` is false, every model is excluded.  When true, only
+    the byte-identical Extended-ICSOR response fit is retained; closure,
+    projection, assessment, optimization, replay, timing, and reports are
+    intentionally excluded.
     """
 
     source_root = source_run.resolve()
@@ -3288,6 +3299,13 @@ def _initialize_reduced_response_fork(
     generation_summary = source_run / "metrics" / "mechanistic_generation_summary.csv"
     if generation_summary.is_file():
         relative_paths.add(generation_summary.relative_to(source_run).as_posix())
+    if retain_ridge:
+        relative_paths.update({
+            "models/ridge_complete.json",
+            "models/ridge_surrogate.npz",
+            "metrics/ridge_cross_validation.csv",
+            "metrics/ridge_fold_membership.csv",
+        })
     for relative in sorted(relative_paths):
         source = (source_run / relative).resolve()
         target = (temporary / relative).resolve()
@@ -3339,23 +3357,56 @@ def _initialize_reduced_response_fork(
         }
     summary_relative = "metrics/mechanistic_generation_summary.csv"
     if (temporary / summary_relative).is_file():
+        generation_source_ids = {
+            str(stages[f"generation/{block}"]["artifact_source_digest"])
+            for block in ("development", "test")
+        }
+        if len(generation_source_ids) != 1 or "" in generation_source_ids:
+            raise RuntimeError(
+                "retained generation blocks do not share one source binding"
+            )
         stages["generation/summary"] = {
-            "artifact_source_digest": source_contract["source_digest"],
+            "artifact_source_digest": next(iter(generation_source_ids)),
             "checkpoint": summary_relative,
             "checkpoint_sha256": file_digest(temporary / summary_relative),
             "artifacts": {},
         }
     effective_relative = "datasets/effective_design_manifest.json"
     if (temporary / effective_relative).is_file():
+        effective_marker = _load_json_object(
+            temporary / effective_relative,
+            description="retained effective-design marker",
+        )
+        effective_source_id = str(effective_marker.get("source_digest", ""))
+        if not effective_source_id:
+            raise RuntimeError("retained effective-design marker omits its source binding")
         stages["generation/effective_design"] = {
-            "artifact_source_digest": source_contract["source_digest"],
+            "artifact_source_digest": effective_source_id,
             "checkpoint": effective_relative,
             "checkpoint_sha256": file_digest(temporary / effective_relative),
             "artifacts": {},
         }
+    if retain_ridge:
+        ridge_relative = "models/ridge_complete.json"
+        ridge_checkpoint = temporary / ridge_relative
+        ridge_marker = _load_json_object(
+            ridge_checkpoint, description="retained Extended-ICSOR ridge marker",
+        )
+        if not _artifacts_match(temporary, ridge_marker.get("artifacts", {})):
+            raise RuntimeError("retained Extended-ICSOR ridge artifacts changed")
+        stages["ridge"] = {
+            "artifact_source_digest": str(ridge_marker.get("source_digest", "")),
+            "checkpoint": ridge_relative,
+            "checkpoint_sha256": file_digest(ridge_checkpoint),
+            "artifacts": dict(ridge_marker.get("artifacts", {})),
+        }
     retained = {
         "schema": 1,
-        "policy": "generation_only_for_clarifier_inventory_response_v1",
+        "policy": (
+            "generation_and_unchanged_extended_icsor_fit_for_log_closure_v1"
+            if retain_ridge
+            else "generation_only_for_clarifier_inventory_response_v1"
+        ),
         "predecessor_source_digest": source_contract["source_digest"],
         "stages": stages,
     }
@@ -3363,7 +3414,10 @@ def _initialize_reduced_response_fork(
     atomic_json(retained_path, retained)
     reuse_manifest = {
         "schema": 1,
-        "copy_mode": "independent_byte_copy_generation_only",
+        "copy_mode": (
+            "independent_byte_copy_generation_and_ridge"
+            if retain_ridge else "independent_byte_copy_generation_only"
+        ),
         "source_run_id": source_run.name,
         "target_run_id": run.name,
         "source_contract_sha256": file_digest(source_run / "inputs" / "contract.json"),
@@ -3382,6 +3436,10 @@ def _initialize_reduced_response_fork(
         "migration_id": migration_id,
         "authorized_date": "2026-08-25",
         "reason": (
+            "User-authorized addition of the log-overflow-TSS projection closure "
+            "while preserving the exact sampled dataset and unchanged trained "
+            "Extended-ICSOR response model."
+            if retain_ridge else
             "User-authorized replacement of layer-wise surrogate outputs by one "
             "clarifier-solids inventory while preserving full mechanistic checkpoints."
         ),
@@ -3390,6 +3448,8 @@ def _initialize_reduced_response_fork(
             "target_run_id": run.name,
             "self_contained": True,
             "recomputed_scope": (
+                "closure_fit_projection_assessment_optimization_replay_timing_reporting"
+                if retain_ridge else
                 "response_transform_fit_assessment_optimization_replay_timing_reporting"
             ),
         },
@@ -3408,6 +3468,7 @@ def _initialize_reduced_response_fork(
             "source_digest": successor_contract["source_digest"],
             "source_files": dict(new_files),
             "response_schema": RESPONSE_SCHEMA,
+            "projection_schema": successor_contract.get("projection_schema"),
         },
         "changed_source_files": {
             name: {"old": old_files.get(name), "new": new_files.get(name)}
@@ -3424,10 +3485,18 @@ def _initialize_reduced_response_fork(
             "file_count": len(copied),
             "file_set_digest": reuse_manifest["file_set_digest"],
         },
-        "superseded_artifact_scopes": [
-            "models", "predictions", "assessment_metrics", "optimization",
-            "selected_control_replays", "timing", "report",
-        ],
+        "superseded_artifact_scopes": (
+            [
+                "log_overflow_closure_model", "projection", "predictions",
+                "assessment_metrics", "optimization", "selected_control_replays",
+                "timing", "report",
+            ]
+            if retain_ridge else
+            [
+                "models", "predictions", "assessment_metrics", "optimization",
+                "selected_control_replays", "timing", "report",
+            ]
+        ),
         "applied_at_utc": datetime.now(timezone.utc).isoformat(),
     }
     record_path = migrations_directory / f"{migration_id}.json"
@@ -3522,12 +3591,27 @@ def initialize_reused_run(
         and source_contract.get("dataset_protocol")
         == successor_contract.get("dataset_protocol")
     )
-    if is_reduced_response_fork:
+    is_log_overflow_closure_fork = bool(
+        int(source_contract.get("runner_schema", -1)) == 10
+        and int(successor_contract.get("runner_schema", -1)) == RUNNER_SCHEMA
+        and source_contract.get("response_schema")
+        == successor_contract.get("response_schema")
+        and source_contract.get("profile") == successor_contract.get("profile")
+        and source_contract.get("fixed_dataset_total")
+        == successor_contract.get("fixed_dataset_total")
+        and source_contract.get("development_test_split")
+        == successor_contract.get("development_test_split")
+        and source_contract.get("dataset_protocol")
+        == successor_contract.get("dataset_protocol")
+        and successor_contract.get("projection_schema") == PROJECTION_SCHEMA
+    )
+    if is_reduced_response_fork or is_log_overflow_closure_fork:
         _initialize_reduced_response_fork(
             run,
             source_run=source_run,
             source_contract=source_contract,
             successor_contract=successor_contract,
+            retain_ridge=is_log_overflow_closure_fork,
         )
         return
     is_pinned_v2_to_v3 = bool(
@@ -5156,6 +5240,230 @@ def fit_or_resume_ridge(
     return result.model, result.out_of_fold_raw, input_id
 
 
+def _validate_log_overflow_scores(
+    scores: pd.DataFrame, fold_membership: np.ndarray, row_count: int,
+) -> None:
+    required = {"fold", "gamma", "log_rmse", "selected"}
+    if required - set(scores.columns):
+        raise RuntimeError("log-overflow score checkpoint omits required columns")
+    if len(scores) != 5 * len(RIDGE_GRID):
+        raise RuntimeError("log-overflow checkpoint does not contain the full 5-fold grid")
+    if set(np.asarray(scores["fold"], dtype=int)) != {1, 2, 3, 4, 5}:
+        raise RuntimeError("log-overflow checkpoint has invalid fold identifiers")
+    gamma = np.asarray(scores["gamma"], dtype=float)
+    error = np.asarray(scores["log_rmse"], dtype=float)
+    if not np.all(np.isfinite(gamma)) or not np.all(np.isfinite(error)):
+        raise RuntimeError("log-overflow score checkpoint contains non-finite values")
+    for candidate in RIDGE_GRID:
+        if np.count_nonzero(np.isclose(gamma, candidate, rtol=1e-12, atol=0.0)) != 5:
+            raise RuntimeError("log-overflow checkpoint does not cover each penalty five times")
+    selected = scores["selected"].astype(str).str.lower().map(
+        {"true": True, "false": False}
+    )
+    if selected.isna().any() or int(selected.sum()) != 5:
+        raise RuntimeError("log-overflow checkpoint has an invalid selected penalty")
+    chosen = gamma[selected.to_numpy()]
+    if not np.allclose(chosen, chosen[0], rtol=0.0, atol=0.0):
+        raise RuntimeError("log-overflow checkpoint selects more than one penalty")
+    membership = np.asarray(fold_membership, dtype=int)
+    if membership.shape != (row_count,) or set(membership) != {1, 2, 3, 4, 5}:
+        raise RuntimeError("log-overflow fold membership checkpoint is invalid")
+    counts = np.bincount(membership, minlength=6)[1:]
+    if int(counts.max() - counts.min()) > 1:
+        raise RuntimeError("log-overflow folds do not form the declared balanced partition")
+
+
+def save_log_overflow_closure(
+    run: Path, result: Any, *, input_id: str, source_id: str,
+) -> None:
+    closure = result.closure
+    model = closure.model
+    scores_path = run / "metrics" / "log_overflow_closure_cross_validation.csv"
+    fold_path = run / "metrics" / "log_overflow_closure_fold_membership.csv"
+    bundle_path = run / "models" / "log_overflow_closure.npz"
+    atomic_dataframe(scores_path, result.scores)
+    atomic_dataframe(fold_path, pd.DataFrame({
+        "row": np.arange(len(result.fold_membership)),
+        "fold": result.fold_membership,
+    }))
+    atomic_npz(
+        bundle_path,
+        input_digest=np.asarray(input_id),
+        source_digest=np.asarray(source_id),
+        reference_concentration=np.asarray(closure.reference_concentration),
+        decision_center=model.feature_map.decision_center,
+        decision_scale=model.feature_map.decision_scale,
+        influent_center=model.feature_map.influent_center,
+        influent_scale=model.feature_map.influent_scale,
+        term_center=model.feature_map.term_center,
+        term_scale=model.feature_map.term_scale,
+        variance_relative_tolerance=np.asarray(
+            model.feature_map.variance_relative_tolerance
+        ),
+        response_center=model.response_center,
+        response_scale=model.response_scale,
+        coefficients=model.coefficients,
+        ridge_penalty=np.asarray(model.ridge_penalty),
+        diagnostics_json=np.asarray(json.dumps(asdict(model.diagnostics), sort_keys=True)),
+        fold_membership=np.asarray(result.fold_membership, dtype=int),
+        out_of_fold_log=result.out_of_fold_log,
+        out_of_fold_tss=result.out_of_fold_tss,
+        exact_overflow_tss=result.exact_overflow_tss,
+        elapsed_seconds=np.asarray(result.elapsed_seconds),
+    )
+    paths = (scores_path, fold_path, bundle_path)
+    atomic_json(run / "models" / "log_overflow_closure_complete.json", {
+        "stage": "log_overflow_closure_cross_validation",
+        "projection_schema": PROJECTION_SCHEMA,
+        "source_digest": source_id,
+        "input_digest": input_id,
+        "selected_penalty": model.ridge_penalty,
+        "reference_concentration_mg_L": closure.reference_concentration,
+        "artifacts": _artifact_hashes(run, paths),
+    })
+
+
+def _load_log_overflow_closure(
+    run: Path,
+    *,
+    decisions: np.ndarray,
+    influents: np.ndarray,
+    targets: np.ndarray,
+    input_id: str,
+    source_id: str,
+    layout: NetworkLayout,
+) -> tuple[LogOverflowTSSClosure, np.ndarray] | None:
+    marker_path = run / "models" / "log_overflow_closure_complete.json"
+    bundle_path = run / "models" / "log_overflow_closure.npz"
+    scores_path = run / "metrics" / "log_overflow_closure_cross_validation.csv"
+    fold_path = run / "metrics" / "log_overflow_closure_fold_membership.csv"
+    if not all(path.is_file() for path in (marker_path, bundle_path, scores_path, fold_path)):
+        return None
+    try:
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+        marker_source_id = str(marker.get("source_digest", ""))
+        if (
+            marker.get("projection_schema") != PROJECTION_SCHEMA
+            or not _checkpoint_source_is_authorized(
+                run, stage="ridge", checkpoint=marker_path,
+                observed_source_id=marker_source_id,
+                current_source_id=source_id,
+            )
+            or marker.get("input_digest") != input_id
+            or not _artifacts_match(run, marker.get("artifacts", {}))
+        ):
+            return None
+        with np.load(bundle_path, allow_pickle=False) as stored:
+            if (
+                str(stored["input_digest"].item()) != input_id
+                or str(stored["source_digest"].item()) != marker_source_id
+            ):
+                return None
+            feature_map = QuadraticFeatureMap(
+                decision_center=np.asarray(stored["decision_center"], dtype=float),
+                decision_scale=np.asarray(stored["decision_scale"], dtype=float),
+                influent_center=np.asarray(stored["influent_center"], dtype=float),
+                influent_scale=np.asarray(stored["influent_scale"], dtype=float),
+                term_center=np.asarray(stored["term_center"], dtype=float),
+                term_scale=np.asarray(stored["term_scale"], dtype=float),
+                variance_relative_tolerance=float(stored["variance_relative_tolerance"]),
+            )
+            diagnostics = LeastSquaresDiagnostics(**json.loads(
+                str(stored["diagnostics_json"].item())
+            ))
+            model = QuadraticSurrogate(
+                feature_map=feature_map,
+                response_center=np.asarray(stored["response_center"], dtype=float),
+                response_scale=np.asarray(stored["response_scale"], dtype=float),
+                coefficients=np.asarray(stored["coefficients"], dtype=float),
+                diagnostics=diagnostics,
+                ridge_penalty=float(stored["ridge_penalty"]),
+            )
+            closure = LogOverflowTSSClosure(
+                model=model,
+                reference_concentration=float(stored["reference_concentration"]),
+            )
+            membership = np.asarray(stored["fold_membership"], dtype=int)
+            oof_log = np.asarray(stored["out_of_fold_log"], dtype=float)
+            oof_tss = np.asarray(stored["out_of_fold_tss"], dtype=float)
+            exact = np.asarray(stored["exact_overflow_tss"], dtype=float)
+        expected_features = QuadraticFeatureMap.expected_feature_count(
+            decisions.shape[1], influents.shape[1]
+        )
+        expected_exact = overflow_tss_from_response(targets, decisions, layout)
+        if (
+            feature_map.decision_count != decisions.shape[1]
+            or feature_map.influent_count != influents.shape[1]
+            or feature_map.feature_count != expected_features
+            or model.response_center.shape != (1,)
+            or model.response_scale.shape != (1,)
+            or model.coefficients.shape != (1, expected_features)
+            or oof_log.shape != (len(decisions),)
+            or oof_tss.shape != (len(decisions),)
+            or exact.shape != (len(decisions),)
+            or not np.all(np.isfinite(oof_log))
+            or not np.all(np.isfinite(oof_tss))
+            or np.any(oof_tss <= 0.0)
+            or not np.allclose(exact, expected_exact, rtol=1e-12, atol=1e-12)
+            or not np.allclose(
+                oof_tss,
+                closure.reference_concentration * np.exp(oof_log),
+                rtol=1e-12,
+                atol=1e-12,
+            )
+            or not np.any(np.isclose(
+                model.ridge_penalty, RIDGE_GRID, rtol=1e-12, atol=0.0,
+            ))
+        ):
+            return None
+        scores = pd.read_csv(scores_path)
+        fold_frame = pd.read_csv(fold_path)
+        if not np.array_equal(fold_frame["row"].to_numpy(), np.arange(len(decisions))):
+            return None
+        if not np.array_equal(fold_frame["fold"].to_numpy(dtype=int), membership):
+            return None
+        _validate_log_overflow_scores(scores, membership, len(decisions))
+        return closure, oof_tss
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+        return None
+
+
+def fit_or_resume_log_overflow_closure(
+    run: Path,
+    decisions: np.ndarray,
+    influents: np.ndarray,
+    targets: np.ndarray,
+    *,
+    layout: NetworkLayout,
+    source_files: Mapping[str, str],
+) -> tuple[LogOverflowTSSClosure, np.ndarray, str]:
+    input_id = array_digest(
+        projection_schema=np.frombuffer(PROJECTION_SCHEMA.encode("utf-8"), dtype=np.uint8),
+        development_decisions=np.asarray(decisions, dtype="<f8"),
+        development_influents=np.asarray(influents, dtype="<f8"),
+        development_targets=np.asarray(targets, dtype="<f8"),
+    )
+    source_id = source_digest(source_files)
+    resumed = _load_log_overflow_closure(
+        run,
+        decisions=decisions,
+        influents=influents,
+        targets=targets,
+        input_id=input_id,
+        source_id=source_id,
+        layout=layout,
+    )
+    if resumed is not None:
+        return resumed[0], resumed[1], input_id
+    result = cross_validate_log_overflow_closure(
+        decisions, influents, targets, layout=layout,
+    )
+    _validate_log_overflow_scores(result.scores, result.fold_membership, len(decisions))
+    assert_source_unchanged(source_files)
+    save_log_overflow_closure(run, result, input_id=input_id, source_id=source_id)
+    return result.closure, result.out_of_fold_tss, input_id
+
+
 def _validate_assessment(
     assessment: AssessmentResult, *, test_count: int, response_count: int,
 ) -> None:
@@ -5166,6 +5474,14 @@ def _validate_assessment(
         for value in arrays
     ):
         raise RuntimeError("post-selection holdout predictions are incomplete or non-finite")
+    if assessment.overflow_tss_closure is not None:
+        closure = np.asarray(assessment.overflow_tss_closure, dtype=float)
+        if (
+            closure.shape != (test_count,)
+            or not np.all(np.isfinite(closure))
+            or np.any(closure <= 0.0)
+        ):
+            raise RuntimeError("post-selection overflow-TSS closure predictions are invalid")
     qp = assessment.qp_diagnostics
     if len(qp) != 2 * test_count or set(qp["projection_input"]) != {
         "raw_prediction", "mechanistic_target",
@@ -5300,6 +5616,7 @@ def evaluate_admission_gate(
     development_oof_projection_accepted: np.ndarray,
     development_oof_complete_nrmse: float,
     development_oof_inventory_nrmse: float,
+    development_oof_overflow_metrics_complete: bool = True,
     test_count: int,
 ) -> dict[str, Any]:
     _validate_assessment(
@@ -5370,6 +5687,9 @@ def evaluate_admission_gate(
         "all_development_oof_projection_qp_audits_passed": bool(
             oof_projection_accepted.all()
         ),
+        "development_oof_log_overflow_metrics_complete": bool(
+            development_oof_overflow_metrics_complete
+        ),
         "all_four_trust_limits_frozen": True,
         "correction_limit_at_most_0_50": bool(correction_limit <= 0.50),
     }
@@ -5425,6 +5745,9 @@ def _assessment_binding(
         test_targets=np.asarray(test_targets, dtype="<f8"),
         test_reduced=np.asarray(test_reduced, dtype="<f8"),
         response_schema=np.frombuffer(RESPONSE_SCHEMA.encode("utf-8"), dtype=np.uint8),
+        projection_schema=np.frombuffer(
+            PROJECTION_SCHEMA.encode("utf-8"), dtype=np.uint8,
+        ),
     )
 
 
@@ -5543,6 +5866,14 @@ def run_assessment(
         source_files=source_files,
     )
     layout = NetworkLayout(layer_count=profile.layer_count)
+    overflow_closure, oof_overflow_tss, _ = fit_or_resume_log_overflow_closure(
+        run,
+        development_decisions,
+        development_influents,
+        development_reduced,
+        layout=layout,
+        source_files=source_files,
+    )
     direct_assets = fit_direct_assets(
         development_decisions, development_influents, development_targets,
         clarifier=clarifier_for(profile),
@@ -5550,6 +5881,8 @@ def run_assessment(
     trust = calibrate_trust_diagnostics(
         model, development_decisions, development_influents, development_reduced,
         oof_raw, direct_assets, layout=layout,
+        overflow_closure=overflow_closure,
+        out_of_fold_overflow_tss=oof_overflow_tss,
     )
     surrogate_assets = build_surrogate_assets(
         model, development_decisions, development_influents, development_reduced,
@@ -5558,6 +5891,8 @@ def run_assessment(
         trust_callbacks=trust.callbacks,
         split_rms_threshold=trust.split_limit,
         reactor_rms_threshold=trust.reactor_limit,
+        overflow_closure=overflow_closure,
+        development_overflow_tss_closure=oof_overflow_tss,
     )
     features = model.feature_map.transform(development_decisions, development_influents)
     leverage = np.einsum(
@@ -5583,6 +5918,7 @@ def run_assessment(
             passed=bool(existing_gate["passed"]), model=model,
             direct_assets=direct_assets, surrogate_assets=surrogate_assets,
             assessment=None, gate=existing_gate,
+            overflow_closure=overflow_closure,
         )
     trust_frame = pd.DataFrame(trust_values, columns=[
         "correction", "regularized_leverage", "particulate_split",
@@ -5610,6 +5946,8 @@ def run_assessment(
         np.asarray(design["test_influents"]),
         test_reduced,
         profile,
+        overflow_closure=overflow_closure,
+        development_overflow_tss_closure=oof_overflow_tss,
     )
     _validate_assessment(
         assessment, test_count=profile.test_count,
@@ -5633,6 +5971,11 @@ def run_assessment(
         run / "datasets" / "development" / "surrogate_responses_inventory_v1.npz",
         run / "datasets" / "test" / "surrogate_responses_inventory_v1.npz",
         holdout_trust_path,
+        run / "models" / "log_overflow_closure.npz",
+        run / "models" / "log_overflow_closure_complete.json",
+        run / "metrics" / "log_overflow_closure_cross_validation.csv",
+        run / "metrics" / "log_overflow_closure_fold_membership.csv",
+        run / "metrics" / "log_overflow_closure_development_oof.json",
     )
     atomic_dataframe(paths[0], assessment.metrics)
     atomic_dataframe(paths[1], assessment.violations)
@@ -5643,12 +5986,32 @@ def run_assessment(
         projected_targets=assessment.projected_targets,
         mechanistic=test_reduced,
         mechanistic_full=test_targets,
+        overflow_tss_closure=assessment.overflow_tss_closure,
     )
     oof_scaled = (oof_raw - development_reduced) / model.response_scale
     development_oof_complete_nrmse = float(np.sqrt(np.mean(oof_scaled**2)))
     development_oof_inventory_nrmse = float(
         np.sqrt(np.mean(oof_scaled[:, layout.inventory_index] ** 2))
     )
+    exact_development_overflow = overflow_tss_from_response(
+        development_reduced, development_decisions, layout,
+    )
+    oof_closure_error = oof_overflow_tss - exact_development_overflow
+    oof_log_error = np.log(oof_overflow_tss) - np.log(exact_development_overflow)
+    oof_closure_metrics = {
+        "sample_count": int(len(oof_overflow_tss)),
+        "rmse_mg_L": float(np.sqrt(np.mean(np.square(oof_closure_error)))),
+        "mae_mg_L": float(np.mean(np.abs(oof_closure_error))),
+        "bias_mg_L": float(np.mean(oof_closure_error)),
+        "log_rmse": float(np.sqrt(np.mean(np.square(oof_log_error)))),
+        "log_bias": float(np.mean(oof_log_error)),
+        "minimum_prediction_mg_L": float(np.min(oof_overflow_tss)),
+        "maximum_prediction_mg_L": float(np.max(oof_overflow_tss)),
+        "all_finite_and_positive": bool(
+            np.all(np.isfinite(oof_overflow_tss)) and np.all(oof_overflow_tss > 0.0)
+        ),
+    }
+    atomic_json(paths[-1], oof_closure_metrics)
     gate = evaluate_admission_gate(
         assessment, correction_limit=trust.correction_limit,
         trust_limits=limits,
@@ -5657,6 +6020,15 @@ def run_assessment(
         ),
         development_oof_complete_nrmse=development_oof_complete_nrmse,
         development_oof_inventory_nrmse=development_oof_inventory_nrmse,
+        development_oof_overflow_metrics_complete=bool(
+            oof_closure_metrics["all_finite_and_positive"]
+            and all(
+                np.isfinite(float(oof_closure_metrics[name]))
+                for name in (
+                    "rmse_mg_L", "mae_mg_L", "bias_mg_L", "log_rmse", "log_bias",
+                )
+            )
+        ),
         test_count=profile.test_count,
     )
     holdout_trust = _post_selection_holdout_trust_diagnostics(
@@ -5681,6 +6053,7 @@ def run_assessment(
         passed=bool(gate["passed"]), model=model,
         direct_assets=direct_assets, surrogate_assets=surrogate_assets,
         assessment=assessment, gate=gate,
+        overflow_closure=overflow_closure,
     )
 
 
@@ -5688,8 +6061,14 @@ def _raw_inference_batch(
     model: QuadraticSurrogate,
     decisions: np.ndarray,
     influents: np.ndarray,
+    overflow_closure: LogOverflowTSSClosure | None = None,
 ) -> np.ndarray:
-    return np.asarray(model.predict(decisions, influents), dtype=float)
+    raw = np.asarray(model.predict(decisions, influents), dtype=float)
+    if overflow_closure is not None:
+        closure = np.asarray(overflow_closure.predict(decisions, influents), dtype=float)
+        if closure.shape != (len(raw),) or not np.all(np.isfinite(closure)):
+            raise RuntimeError("timed overflow-TSS closure inference returned invalid output")
+    return raw
 
 
 def _projection_inference_batch(
@@ -5698,10 +6077,17 @@ def _projection_inference_batch(
     influents: np.ndarray,
     projector: PhysicalProjector,
     layout: NetworkLayout,
+    overflow_tss_closure: np.ndarray | None = None,
 ) -> int:
     """Project one cached-raw batch without evaluating the surrogate."""
 
     accepted = 0
+    if overflow_tss_closure is not None:
+        closure = np.asarray(overflow_tss_closure, dtype=float)
+        if closure.shape != (len(cached_raw),) or np.any(closure <= 0.0):
+            raise RuntimeError("cached overflow-TSS closure predictions are invalid")
+    else:
+        closure = None
     for row in range(len(cached_raw)):
         theta = decisions[row]
         operators = build_network_operators(
@@ -5712,6 +6098,7 @@ def _projection_inference_batch(
             invariant_operator=INVARIANT_MATRIX,
             tss_weights=TSS_VECTOR,
             layout=layout,
+            overflow_tss_closure=(None if closure is None else float(closure[row])),
         )
         result = projector.project(
             cached_raw[row],
@@ -5737,6 +6124,7 @@ def _timing_contract_id(
     decisions: np.ndarray,
     influents: np.ndarray,
     cached_raw: np.ndarray,
+    cached_overflow_tss_closure: np.ndarray | None = None,
 ) -> str:
     digest = sha256()
     digest.update(b"article-v3-inference-timing-v1\0")
@@ -5744,10 +6132,17 @@ def _timing_contract_id(
     digest.update(analysis_id.encode())
     digest.update(str(INFERENCE_TIMING_WARMUPS).encode())
     digest.update(str(INFERENCE_TIMING_BATCHES).encode())
+    arrays: dict[str, np.ndarray] = {
+        "test_decisions": np.asarray(decisions, dtype="<f8"),
+        "test_influents": np.asarray(influents, dtype="<f8"),
+        "cached_raw": np.asarray(cached_raw, dtype="<f8"),
+    }
+    if cached_overflow_tss_closure is not None:
+        arrays["cached_overflow_tss_closure"] = np.asarray(
+            cached_overflow_tss_closure, dtype="<f8",
+        )
     digest.update(array_digest(
-        test_decisions=np.asarray(decisions, dtype="<f8"),
-        test_influents=np.asarray(influents, dtype="<f8"),
-        cached_raw=np.asarray(cached_raw, dtype="<f8"),
+        **arrays,
     ).encode())
     return digest.hexdigest()
 
@@ -5797,6 +6192,11 @@ def _run_inference_timing_benchmark(
     cached_raw = _load_cached_assessment_raw(
         run, analysis, (row_count, analysis.model.response_count),
     )
+    cached_overflow_tss_closure = (
+        None if analysis.overflow_closure is None else np.asarray(
+            analysis.overflow_closure.predict(decisions, influents), dtype=float,
+        )
+    )
     source_id = source_digest(source_files)
     contract = _timing_contract_id(
         source_id=source_id,
@@ -5804,6 +6204,7 @@ def _run_inference_timing_benchmark(
         decisions=decisions,
         influents=influents,
         cached_raw=cached_raw,
+        cached_overflow_tss_closure=cached_overflow_tss_closure,
     )
     marker_path = run / "metrics" / "inference_timing_complete.json"
     batches_path = run / "metrics" / "inference_timing_batches.csv"
@@ -5937,7 +6338,7 @@ def _run_inference_timing_benchmark(
         verification_was_warmup = False
         if verification is None:
             reproduced = _raw_inference_batch(
-                analysis.model, decisions, influents,
+                analysis.model, decisions, influents, analysis.overflow_closure,
             )
             if reproduced.shape != cached_raw.shape or not np.all(
                 np.isfinite(reproduced)
@@ -5965,12 +6366,16 @@ def _run_inference_timing_benchmark(
                 if verification_was_warmup else INFERENCE_TIMING_WARMUPS
             )
             for _ in range(remaining_warmups):
-                warm = _raw_inference_batch(analysis.model, decisions, influents)
+                warm = _raw_inference_batch(
+                    analysis.model, decisions, influents, analysis.overflow_closure,
+                )
                 if warm.shape != cached_raw.shape or not np.all(np.isfinite(warm)):
                     raise RuntimeError("raw inference warmup returned invalid output")
             for batch in missing_raw:
                 started = perf_counter_ns()
-                raw = _raw_inference_batch(analysis.model, decisions, influents)
+                raw = _raw_inference_batch(
+                    analysis.model, decisions, influents, analysis.overflow_closure,
+                )
                 elapsed_ns = perf_counter_ns() - started
                 if raw.shape != cached_raw.shape or not np.all(np.isfinite(raw)):
                     raise RuntimeError("timed raw inference returned invalid output")
@@ -5985,12 +6390,14 @@ def _run_inference_timing_benchmark(
                 _projection_inference_batch(
                     cached_raw, decisions, influents, projector,
                     analysis.surrogate_assets.layout,
+                    cached_overflow_tss_closure,
                 )
             for batch in missing_projection:
                 started = perf_counter_ns()
                 accepted = _projection_inference_batch(
                     cached_raw, decisions, influents, projector,
                     analysis.surrogate_assets.layout,
+                    cached_overflow_tss_closure,
                 )
                 elapsed_ns = perf_counter_ns() - started
                 publish(
@@ -6746,6 +7153,11 @@ def _physical_record(
         np.isfinite(response)
     ):
         return _unavailable_violation(method, case, "response unavailable or non-finite")
+    overflow_tss_closure = None
+    if analysis.overflow_closure is not None:
+        overflow_tss_closure = float(
+            analysis.overflow_closure.predict(theta, influent)
+        )
     record = violation_record(
         method,
         case,
@@ -6756,6 +7168,7 @@ def _physical_record(
         analysis.surrogate_assets.row_scales.equality,
         analysis.surrogate_assets.row_scales.inequality,
         analysis.model.response_scale,
+        overflow_tss_closure=overflow_tss_closure,
     )
     record["audit_available"] = True
     record["audit_unavailable_reason"] = None

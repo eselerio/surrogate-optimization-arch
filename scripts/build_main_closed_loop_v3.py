@@ -49,7 +49,7 @@ route uses one deterministic box-center start per case and
 searches only that basin without claiming global optimality. The surrogate
 route primarily runs the seven-variable exact-QP active-set optimizer. If
 exact active-set derivatives are unavailable, deterministic value-only COBYQA
-cold-solves the unchanged projection QP at every distinct fallback trial and
+cold-solves the same projection QP at every distinct fallback trial and
 retains the best feasible visited incumbent. A budget-limited or
 stationarity-unresolved incumbent is not called a local optimum. Each selected
 surrogate endpoint then receives a bounded two-scale exact-QP feasible poll;
@@ -65,8 +65,11 @@ while later stages are attempted without refitting. Non-finite or incomplete
 objects needed by a later stage and run-integrity failures remain fatal.
 
 Every projection retains the same strictly convex QP over the reduced response.
-Its 75 equalities exclude the former layer-endpoint identities; outlet TSS is
-derived from the outlet component flows. Ten particulate-densification rows and
+Its 76 equalities exclude the former layer-endpoint identities. Outlet TSS is
+derived from the outlet component flows, while one added equality sets overflow
+TSS to the positive prediction of a separately calibrated log-scale quadratic
+closure. This represents low-concentration settling without a fixed
+feed-fraction floor or post-prediction clipping. Ten particulate-densification rows and
 two tight, division-free inventory-envelope rows form its 12 physical
 inequalities. Its independent dual
 audit reconstructs multipliers with deterministic bounded-variable least
@@ -115,6 +118,7 @@ from scripts.run_article_v3_5000 import (
     DEFAULT_RUN_ID,
     LEGACY_RUN_ID,
     OPTIMIZATION_PROTOCOL,
+    PROJECTION_SCHEMA,
     RESPONSE_SCHEMA,
     RUN_ID_PATTERN,
     frozen_accepted_profile,
@@ -193,7 +197,7 @@ if profile["development_count"] + profile["test_count"] != expected_total:
 contract_config = json.loads(
     (ROOT / "config" / "params_manuscript_v3.json").read_text(encoding="utf-8")
 )
-if contract_config.get("schema_version") != 4:
+if contract_config.get("schema_version") != 5:
     raise RuntimeError("The reduced-response configuration schema is required.")
 surrogate_contract = contract_config["surrogate"]
 required_surrogate = {
@@ -211,10 +215,11 @@ for field, expected in required_surrogate.items():
 projection_contract = contract_config["projection"]
 required_projection = {
     "response_dimension": 161,
-    "equality_count": 75,
+    "equality_count": 76,
     "physical_inequality_count": 12,
     "inequality_count_including_nonnegativity": 173,
     "predicts_or_reconstructs_layer_profile": False,
+    "overflow_tss_closure_preserves_convex_projection": True,
 }
 for field, expected in required_projection.items():
     if projection_contract.get(field) != expected:
@@ -226,6 +231,13 @@ if contract_config.get("trust", {}).get("diagnostics") != [
     "correction", "regularized_leverage", "particulate_split", "reactor_residual",
 ]:
     raise RuntimeError("The revised four-diagnostic trust contract is required.")
+closure_contract = surrogate_contract.get("overflow_tss_closure", {})
+if (
+    closure_contract.get("target") != "log(X_E / X_ref)"
+    or closure_contract.get("post_prediction_clipping_used") is not False
+    or closure_contract.get("fixed_feed_fraction_floor_used") is not False
+):
+    raise RuntimeError("The log-overflow-TSS closure contract is required.")
 optimization = contract_config["optimization"]
 article_config = contract_config["profiles"][profile["name"]]
 required_optimization = {
@@ -319,6 +331,7 @@ display(pd.Series({
     "mechanistic_clarifier_layers": profile["layer_count"],
     "mechanistic_response_coordinates": surrogate_contract["mechanistic_target_dimension"],
     "surrogate_response_coordinates": surrogate_contract["response_dimension"],
+    "projection_schema": PROJECTION_SCHEMA,
     "surrogate_clarifier_coordinates": "M_cl only",
     "projection_equalities": projection_contract["equality_count"],
     "projection_physical_inequalities": projection_contract["physical_inequality_count"],
@@ -572,7 +585,7 @@ deterministic box-center start per case and search only that local basin. The
 surrogate route primarily uses the seven-variable exact-QP active-set solver
 with normalized constraints and no embedded-KKT IPOPT continuation. If its
 exact derivatives are unavailable, deterministic value-only COBYQA evaluates
-the same problem, cold-solving the unchanged projection QP at every distinct
+the same problem, cold-solving the same projection QP at every distinct
 trial. The best feasible visited point is cold-replayed; a budget-limited or
 stationarity-unresolved result remains an incumbent, not a claimed optimum.
 The direct route retains only its separate three-stage smoothing continuation.
