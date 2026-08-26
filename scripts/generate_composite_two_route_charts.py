@@ -13,6 +13,7 @@ if str(ROOT) not in sys.path:
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
+from matplotlib.colors import LogNorm
 import numpy as np
 import pandas as pd
 
@@ -72,6 +73,36 @@ def finite_score(truth: np.ndarray, prediction: np.ndarray) -> tuple[float, floa
         float(np.sqrt(np.mean(error**2)) / scale),
         float(np.mean(np.abs(error)) / scale),
         r2,
+    )
+
+
+def coordinate_normalized_score(
+    truth: np.ndarray,
+    prediction: np.ndarray,
+) -> tuple[float, float, float]:
+    """Score sample-by-coordinate data with every coordinate weighted equally."""
+
+    truth = np.asarray(truth, dtype=float)
+    prediction = np.asarray(prediction, dtype=float)
+    if (
+        truth.ndim != 2
+        or truth.shape != prediction.shape
+        or not np.all(np.isfinite(truth))
+        or not np.all(np.isfinite(prediction))
+    ):
+        raise ValueError("coordinate score received incompatible or non-finite arrays")
+    scales = np.ptp(truth, axis=0)
+    if np.any(scales <= 0.0):
+        raise ValueError("coordinate score requires a nonzero truth range per coordinate")
+    normalized_error = (prediction - truth) / scales[None, :]
+    coordinate_r2 = [
+        finite_score(truth[:, index], prediction[:, index])[2]
+        for index in range(truth.shape[1])
+    ]
+    return (
+        float(np.sqrt(np.mean(normalized_error**2))),
+        float(np.mean(np.abs(normalized_error))),
+        float(np.nanmean(coordinate_r2)),
     )
 
 
@@ -222,22 +253,15 @@ def main() -> None:
     if np.any(scales <= 0.0):
         raise RuntimeError("holdout composite truth contains a zero-range location/quantity")
     for method in ("raw", "projected"):
-        normalized_error = (
-            composite_predictions[method] - composite_predictions["mechanistic"]
-        ) / scales[None, :, :]
-        per_coordinate_r2 = []
-        for location in range(len(LOCATIONS)):
-            for component in range(len(COMPOSITES)):
-                _, _, r2 = finite_score(
-                    composite_predictions["mechanistic"][:, location, component],
-                    composite_predictions[method][:, location, component],
-                )
-                per_coordinate_r2.append(r2)
+        score = coordinate_normalized_score(
+            composite_predictions["mechanistic"].reshape(len(test_decisions), -1),
+            composite_predictions[method].reshape(len(test_decisions), -1),
+        )
         metric_rows.append({
             "method": method,
-            "nrmse": float(np.sqrt(np.mean(normalized_error**2))),
-            "nmae": float(np.mean(np.abs(normalized_error))),
-            "r2_mean": float(np.nanmean(per_coordinate_r2)),
+            "nrmse": score[0],
+            "nmae": score[1],
+            "r2_mean": score[2],
         })
     overall = pd.DataFrame(metric_rows).set_index("method")
     overall.reset_index().to_csv(output / "holdout_composite_metrics.csv", index=False)
@@ -272,15 +296,15 @@ def main() -> None:
     component_scores: dict[str, list[tuple[float, float, float]]] = {"raw": [], "projected": []}
     for method in component_scores:
         for component in range(len(COMPOSITES)):
-            component_scores[method].append(finite_score(
-                composite_predictions["mechanistic"][:, :, component].ravel(),
-                composite_predictions[method][:, :, component].ravel(),
+            component_scores[method].append(coordinate_normalized_score(
+                composite_predictions["mechanistic"][:, :, component],
+                composite_predictions[method][:, :, component],
             ))
     fig, axes = plt.subplots(2, 2, figsize=(10.8, 7.5))
     for axis, metric_index, ylabel, title in (
-        (axes[0, 0], 0, "nRMSE", "Range-normalized RMSE"),
-        (axes[0, 1], 1, "nMAE", "Range-normalized MAE"),
-        (axes[1, 0], 2, "R²", "Coefficient of determination"),
+        (axes[0, 0], 0, "nRMSE", "Location-normalized RMSE"),
+        (axes[0, 1], 1, "nMAE", "Location-normalized MAE"),
+        (axes[1, 0], 2, "Mean location R²", "Mean location coefficient of determination"),
     ):
         raw_values = [row[metric_index] for row in component_scores["raw"]]
         projected_values = [row[metric_index] for row in component_scores["projected"]]
@@ -292,6 +316,13 @@ def main() -> None:
     fig.suptitle("Q3. Holdout prediction accuracy by composite quantity", fontsize=14)
     fig.tight_layout(rect=(0, 0, 1, 0.95)); save(fig, output, "q03_holdout_component_accuracy")
     summary.append({"question": 3, "metric": "composites_improved_by_projection", "value": int(sum(component_scores["projected"][i][0] < component_scores["raw"][i][0] for i in range(4)))})
+    for method, scores in component_scores.items():
+        for component, (nrmse, nmae, mean_r2) in zip(COMPOSITES, scores, strict=True):
+            summary.extend((
+                {"question": 3, "metric": f"holdout_{method}_{component.lower()}_nrmse", "value": nrmse},
+                {"question": 3, "metric": f"holdout_{method}_{component.lower()}_nmae", "value": nmae},
+                {"question": 3, "metric": f"holdout_{method}_{component.lower()}_mean_location_r2", "value": mean_r2},
+            ))
 
     matrices = {}
     for method in ("raw", "projected"):
@@ -316,6 +347,78 @@ def main() -> None:
     fig.suptitle("Q4. Composite prediction accuracy by treatment location", fontsize=14)
     fig.tight_layout(rect=(0, 0, 1, 0.94)); save(fig, output, "q04_holdout_component_accuracy_by_stage")
     summary.append({"question": 4, "metric": "location_composite_cells_improved", "value": int(np.sum(delta < 0.0))})
+
+    # Q18: deployed projected-surrogate parity at every system location.
+    all_location_truth = composite_predictions["mechanistic"]
+    all_location_prediction = composite_predictions["projected"]
+    location_colors = plt.get_cmap("tab10")(np.arange(len(LOCATIONS)))
+    location_markers = ("o", "s", "^", "v", "D", "P", "X", "*")
+    fig, axes = plt.subplots(2, 2, figsize=(11.8, 9.2))
+    density_artists: list[object] = []
+    for component_index, (axis, component) in enumerate(zip(axes.flat, COMPOSITES, strict=True)):
+        truth_by_location = all_location_truth[:, :, component_index]
+        prediction_by_location = all_location_prediction[:, :, component_index]
+        truth = truth_by_location.ravel()
+        predicted = prediction_by_location.ravel()
+        nrmse, nmae, mean_r2 = coordinate_normalized_score(
+            truth_by_location, prediction_by_location,
+        )
+        low = float(min(np.min(truth), np.min(predicted)))
+        high = float(max(np.max(truth), np.max(predicted)))
+        if low <= 0.0:
+            raise RuntimeError(f"Q18 {component} requires positive values for logarithmic parity axes")
+        limits = (low / 1.15, high * 1.15)
+        density_artists.append(axis.hexbin(
+            truth, predicted, gridsize=48, mincnt=1, cmap="viridis",
+            xscale="log", yscale="log",
+        ))
+        axis.plot(limits, limits, color="#dc2626", lw=1.2, ls="--", label="Perfect match")
+        for location_index, (location, color, marker) in enumerate(zip(
+            LOCATION_LABELS, location_colors, location_markers, strict=True,
+        )):
+            axis.scatter(
+                np.median(truth_by_location[:, location_index]),
+                np.median(prediction_by_location[:, location_index]),
+                s=44 if marker != "*" else 64,
+                marker=marker,
+                color=color,
+                edgecolor="white",
+                linewidth=0.7,
+                zorder=4,
+                label=location,
+            )
+        axis.set(
+            xlim=limits, ylim=limits,
+            xlabel=f"Mechanistic {component} (mg/L)",
+            ylabel=f"Projected Extended-ICSOR {component} (mg/L)",
+            title=f"{component}: mean location R²={mean_r2:.3f}; nRMSE={nrmse:.3f}",
+        )
+        axis.set_aspect("equal", adjustable="box")
+        summary.extend((
+            {"question": 18, "metric": f"holdout_all_locations_{component.lower()}_mean_r2", "value": mean_r2},
+            {"question": 18, "metric": f"holdout_all_locations_{component.lower()}_nrmse", "value": nrmse},
+            {"question": 18, "metric": f"holdout_all_locations_{component.lower()}_nmae", "value": nmae},
+        ))
+    maximum_bin_count = max(
+        2.0,
+        *(float(np.max(artist.get_array())) for artist in density_artists),
+    )
+    density_norm = LogNorm(vmin=1.0, vmax=maximum_bin_count)
+    for artist in density_artists:
+        artist.set_norm(density_norm)
+        artist.set_clim(1.0, maximum_bin_count)
+    colorbar_axis = fig.add_axes((0.91, 0.14, 0.018, 0.68))
+    colorbar = fig.colorbar(density_artists[0], cax=colorbar_axis)
+    colorbar.set_label("Holdout location-observations per hexagon (log scale)")
+    handles, labels = axes.flat[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="lower center", bbox_to_anchor=(0.5, 0.005), ncol=5)
+    fig.suptitle(
+        f"Q18. Projected Extended-ICSOR parity across all eight system locations "
+        f"({len(all_location_truth):,} holdout rows)",
+        fontsize=14, y=0.99,
+    )
+    fig.subplots_adjust(left=0.08, right=0.87, bottom=0.13, top=0.91, wspace=0.30, hspace=0.30)
+    save(fig, output, "q18_holdout_effluent_composite_parity")
 
     quality_path = tables / "selected_quality.csv"
     if quality_path.is_file():
@@ -529,7 +632,8 @@ def main() -> None:
         11: "q11_optimal_operating_values", 12: "q12_primary_optimization_time",
         13: "q13_exact_objective_value_comparison", 14: "q14_cod_main_treatment_train_profiles",
         15: "q15_tn_main_treatment_train_profiles", 16: "q16_tp_main_treatment_train_profiles",
-        17: "q17_tss_main_treatment_train_profiles", "5R": "q05_surrogate_percent_removal_vs_mechanistic",
+        17: "q17_tss_main_treatment_train_profiles", 18: "q18_holdout_effluent_composite_parity",
+        "5R": "q05_surrogate_percent_removal_vs_mechanistic",
         "6R": "q06_smooth_nlp_percent_removal_vs_mechanistic",
     }
     pd.DataFrame([

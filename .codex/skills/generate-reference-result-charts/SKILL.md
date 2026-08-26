@@ -35,7 +35,7 @@ Inventory the reference directory recursively. Read `chart_index.csv` and `chart
 
 Search the repository for the generator and chart stems before writing new code. Reuse a compatible current generator when it follows this skill's composite-performance rules. Otherwise create or adapt a reusable command-line generator that accepts target run and output paths rather than hardcoding one run.
 
-The established package contains these 19 PNG/SVG pairs:
+The established package contains these 20 PNG/SVG pairs:
 
 1. `q01_holdout_composite_accuracy`
 2. `q02_holdout_accuracy_by_response_block`
@@ -54,8 +54,9 @@ The established package contains these 19 PNG/SVG pairs:
 15. `q15_tn_main_treatment_train_profiles`
 16. `q16_tp_main_treatment_train_profiles`
 17. `q17_tss_main_treatment_train_profiles`
-18. `q05_surrogate_percent_removal_vs_mechanistic` (`5R`)
-19. `q06_smooth_nlp_percent_removal_vs_mechanistic` (`6R`)
+18. `q18_holdout_effluent_composite_parity`
+19. `q05_surrogate_percent_removal_vs_mechanistic` (`5R`)
+20. `q06_smooth_nlp_percent_removal_vs_mechanistic` (`6R`)
 
 Preserve these stems even though Q2--Q4 now describe composite rather than individual ASM-component performance. This keeps references and article links stable.
 
@@ -85,7 +86,7 @@ Validate array shapes and finiteness before plotting. Treat Boolean CSV fields r
 
 ## Composite definitions are mandatory for prediction performance
 
-Q1--Q6 and 5R/6R must assess COD, TN, TP, and TSS composites, not the 20 individual state components and not a complete-response aggregate in raw coordinate units.
+Q1--Q6, Q18, and 5R/6R must assess COD, TN, TP, and TSS composites, not the 20 individual state components and not a complete-response aggregate in raw coordinate units.
 
 Import the repository's authoritative `COMPOSITE_MATRIX`, `NOMINAL_INFLUENT`, and `TSS_VECTOR`; do not duplicate their coefficients.
 
@@ -106,10 +107,11 @@ Use these performance-chart meanings:
 
 - Q1: raw versus projected aggregate nRMSE, nMAE, and mean R² across COD/TN/TP/TSS and all supported locations;
 - Q2: raw versus projected composite nRMSE by system location;
-- Q3: raw versus projected nRMSE, nMAE, and R² by COD/TN/TP/TSS;
+- Q3: raw versus projected nRMSE, nMAE, and mean location R² by COD/TN/TP/TSS. For each composite, normalize errors separately by each of the eight location-specific holdout truth ranges before aggregating; never pool raw concentrations across locations to calculate one range or R²;
 - Q4: raw, projected, and percentage-change heatmaps by location and COD/TN/TP/TSS;
 - Q5: Extended-ICSOR projected effluent composites versus exact mechanistic replay at its selected decisions;
 - Q6: smooth-NLP native effluent composites versus exact mechanistic replay at its selected decisions.
+- Q18: four-panel parity of projected Extended-ICSOR versus mechanistic COD, TN, TP, and TSS over every untouched holdout row at all eight system locations (mixer, reactors 1--5, clarifier overflow, and clarifier underflow). Pool the eight locations in each composite panel, use logarithmic parity axes so the lower-concentration overflow is visible beside the underflow and biological stages, and retain a 1:1 line. Use density-aware points such as hexbin with one shared logarithmic density normalization and a labeled color bar stating that color represents holdout location-observations per hexagon. Mark each location's median with a distinct labeled marker. Annotate coordinate-normalized nRMSE (normalize each location by its own holdout truth range) and mean location R² so every location has equal metric weight. Retain the legacy `q18_holdout_effluent_composite_parity` stem for stable article links even though the figure now covers all locations.
 
 ## Removal charts
 
@@ -174,9 +176,9 @@ Use clear route labels (`Extended ICSOR`, `Smooth NLP`), case annotations, units
 ## Verification before handoff
 
 1. Compare target and reference basenames. The only expected additional file is `holdout_composite_metrics.csv` unless the user requested otherwise.
-2. Confirm `chart_index.csv` has 19 rows and every indexed PNG/SVG exists and is nonempty.
+2. Confirm `chart_index.csv` has 20 rows and every indexed PNG/SVG exists and is nonempty.
 3. Confirm all numerical inputs came from the target run.
-4. Visually inspect at least Q1, Q4, Q5, and one of Q14--Q17 for clipping, unreadable legends, incorrect units, bad axes, and missing cases.
+4. Visually inspect at least Q1, Q4, Q5, Q18, and one of Q14--Q17 for clipping, unreadable legends, incorrect units, bad axes, and missing cases.
 5. Report the output folder and concise composite metrics. Mention any ineligible cases or intentionally unavailable charts.
 
 Do not claim success after merely creating a generator. Execute it, validate the artifacts, and leave the complete chart package in the target result folder.

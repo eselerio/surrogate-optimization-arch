@@ -14,7 +14,7 @@
 \affiliation[1]{organization={Engineering Research and Development for Technology},addressline={School of Engineering, University of San Carlos},country={Philippines}}
 
 \begin{abstract}
-This supplement specifies the mechanistic generator, sampling design, extended-ICSOR fit, system-wide invariant-constraint projection, optimization protocol, exact-reference replay, and reporting rules. The comparison contains two routes: extended ICSOR ($S$) and the unchanged smooth mechanistic nonlinear program ($M$). Extended ICSOR retains the second-order regression of the ICSOR surrogate of \citet{Selerio2026} and applies its invariant-constraint projection to the complete recycling-system response.
+This supplement specifies the mechanistic generator, sampling design, extended-ICSOR fit, system-wide invariant-constraint projection, optimization protocol, exact-reference replay, and reporting rules. The comparison contains two routes: extended ICSOR ($S$) and the unchanged smooth mechanistic nonlinear program ($M$). Extended ICSOR retains the second-order regression of the ICSOR surrogate of \citet{Selerio2026} and applies its invariant-constraint projection to the complete recycling-system response, including a feed-dependent non-settleable-solids floor on overflow TSS.
 \end{abstract}
 
 \begin{keywords}
@@ -50,6 +50,21 @@ A(c_i-c_{i-1})=d_i^{-1}A\xi_i(\vartheta).
 \end{equation}
 The Clarifier component balance and soluble pass-through are $q_Cc_N=g_E+g_U$ and $E_Sg_U=q_UE_Sc_N$. Particulate densification requires $E_Xg_U\ge q_UE_Xc_N$. Endpoint TSS is recovered from the outlet flows: $X_E=t_X^\top g_E/q_E$ and $X_U=t_X^\top g_U/q_U$.
 
+For solids concentration $s_\ell$ and Clarifier-feed TSS $X_{\rm feed}=t_X^\top c_N$, the exact Tak\'acs settling relation used by the generator has the form
+\begin{align}
+\Delta_\ell&=s_\ell-f_{\rm ns}X_{\rm feed},\notag\\
+v_s(s_\ell;X_{\rm feed})&=\max\!\left\{0,\min\!\left[v_{\max},v_0\left(e^{-r_h\Delta_\ell}-e^{-r_p\Delta_\ell}\right)\right]\right\},
+\label{eq:Ssettling}
+\end{align}
+where $r_p>r_h>0$. Thus the positive-part operation assigns zero settling velocity at and below $f_{\rm ns}X_{\rm feed}$. The reduced response does not contain the layers or their fluxes, so the projection declares the corresponding conservative endpoint closure
+\begin{equation}
+X_E\ge f_{\rm ns}X_{\rm feed},
+\quad\text{equivalently}\quad
+q_Ef_{\rm ns}t_X^\top c_N-t_X^\top g_E\le0.
+\label{eq:Sfloor}
+\end{equation}
+The case value is $f_{\rm ns}=0.00228$. Equation~\eqref{eq:Sfloor} rules out a zero or near-zero surrogate effluent-solids prediction when feed solids are positive; it does not reproduce Equation~\eqref{eq:Ssettling} or establish a valid layer profile \citep{Takacs1991}.
+
 The aggregate inventory is $M_{\rm cl}=\sum_{\ell=1}^L V_{{\rm cl},\ell}s_\ell$. Eliminating unreported layers gives
 \begin{align}
 M_{\rm cl}^{-}&=(V_{\rm cl}-V_{{\rm cl},L})X_E+V_{{\rm cl},L}X_U,\notag\\
@@ -81,7 +96,7 @@ The ridge grid is evaluated in plant-grouped five-fold cross-validation. All coo
 
 Extended ICSOR retains the second-order regression of the original ICSOR surrogate \citep{Selerio2026}. Its revision is the system-wide scope of the invariant-constraint projection: the projection operates after the complete response in Equation~\eqref{eq:Sresponse} has been predicted, rather than on an isolated response.
 
-Let $\mathcal H(\vartheta)\chi=\mathfrak b(\vartheta,x)$ collect Equation~\eqref{eq:Smixer}, all invariant transitions in Equation~\eqref{eq:Sinvariants}, the Clarifier component balance, and soluble pass-through. Let $\mathcal G(\vartheta)\chi\le0$ collect particulate densification and the division-free form of Equation~\eqref{eq:Sinventory}. At fixed $(\vartheta,x)$ the projected response is
+Let $\mathcal H(\vartheta)\chi=\mathfrak b(\vartheta,x)$ collect Equation~\eqref{eq:Smixer}, all invariant transitions in Equation~\eqref{eq:Sinvariants}, the Clarifier component balance, and soluble pass-through. Let $\mathcal G(\vartheta)\chi\le0$ collect particulate densification, Equation~\eqref{eq:Sfloor}, and the division-free form of Equation~\eqref{eq:Sinventory}. Therefore $n_g=F_X+3$ and, including response non-negativity, $n_q=n_\chi+n_g$. At fixed $(\vartheta,x)$ the projected response is
 \begin{align}
 \widehat u_S={}&\arg\min_u\ \tfrac12\|u\|_2^2\notag\\
 \text{subject to }&D_b^{-1}\{\mathcal H[\chi_{{\rm raw},S}+D_\chi u]-\mathfrak b\}=0,\notag\\
@@ -90,9 +105,9 @@ D_g^{-1}\mathcal G[\chi_{{\rm raw},S}+D_\chi u]\le0,\notag\\
 \widehat\chi_S={}&\chi_{{\rm raw},S}+D_\chi\widehat u_S.
 \label{eq:SQP}
 \end{align}
-The identity Hessian makes this projection unique whenever the feasible set is nonempty. $D_b$ and $D_g$ are positive development-frozen physical row scales; $D_\chi$ is the response scale used only for the projection metric. Thus the QP makes the smallest standardized response change while preserving the declared physical feasible set.
+The identity Hessian makes this projection unique whenever the feasible set is nonempty. $D_b$ and $D_g$ are positive development-frozen physical row scales; $D_\chi$ is the response scale used only for the projection metric. The new floor row uses the same development-frozen RMS term-scale convention as every other inequality row, so its scale improves conditioning without changing Equation~\eqref{eq:Sfloor}. Thus the QP makes the smallest standardized response change while preserving the declared physical feasible set.
 
-Every QP is cold-solved and independently audited for equality feasibility, inequality feasibility, non-negativity, dual feasibility, stationarity, complementarity, and primal--dual gap. The projection does not impose biological kinetics, nonlinear Clarifier settling fluxes, dynamic stability, or a layer profile. Those properties are assessed only in smooth-direct or exact reference states.
+Every QP is cold-solved and independently audited for equality feasibility, inequality feasibility, non-negativity, dual feasibility, stationarity, complementarity, and primal--dual gap. Apart from the scalar endpoint floor in Equation~\eqref{eq:Sfloor}, the projection does not impose biological kinetics, nonlinear Clarifier settling fluxes, dynamic stability, or a layer profile. Those properties are assessed only in smooth-direct or exact reference states.
 
 The development-frozen extended-ICSOR trust constraints limit standardized projection correction, whole-system regularized feature leverage, particulate-recovery deviation, and smooth reactor-balance residual. Their thresholds are nearest-rank 95th percentiles of the applicable grouped out-of-fold development diagnostics. The frozen admission gate also requires finite, audited out-of-fold projections and full-response and inventory-coordinate raw nRMSE below one.
 
@@ -102,11 +117,11 @@ The case controls are $\vartheta=(H,a_3,a_4,a_5,r_I,r_R,w)^\top$. Both routes us
 
 The smooth mechanistic NLP retains the full reactor and Clarifier state, smooth kinetic and settling regularizations, the same seven controls, and the same objective and engineering requirements. Its primary solve uses the unchanged three-stage smoothing continuation from the box center. If this primary solve fails, one conditional recovery may begin from the certified extended-ICSOR control. No recovery is made after a successful primary solve.
 
-Every available selected decision is replayed from two declared starts on the exact nonsmooth, layer-resolved mechanistic model. A replay must pass root-agreement, mass-conservation, non-negativity, layer-residual, domain, reduced-stability, and engineering audits to be eligible for the $S$--$M$ comparison. Exact objectives remain reported even for an engineering-infeasible replay, but such a replay cannot enter the paired comparison.
+Every available selected decision is replayed from two declared starts on the exact nonsmooth, layer-resolved mechanistic model. A replay must pass root-agreement, mass-conservation, non-negativity, non-settleable-floor, layer-residual, domain, reduced-stability, and engineering audits to be eligible for the $S$--$M$ comparison. Exact objectives remain reported even for an engineering-infeasible replay, but such a replay cannot enter the paired comparison.
 
 \section{Prediction, decision, timing, and reporting}
 
-For every reduced-response block, raw and projected extended-ICSOR nRMSE, nMAE, bias, and $R^2$ are reported on grouped out-of-fold development rows and on the descriptive holdout. Physical-unit reports include stage DO, COD, TN, TP, and TSS; Clarifier overflow and underflow quality; and $M_{\rm cl}$. Layer-TSS metrics are reported only for smooth-direct and exact mechanistic profiles.
+For every reduced-response block, raw and projected extended-ICSOR nRMSE, nMAE, bias, and $R^2$ are reported on grouped out-of-fold development rows and on the descriptive holdout. Physical-unit reports include stage DO, COD, TN, TP, and TSS; Clarifier overflow and underflow quality; and $M_{\rm cl}$. For Equation~\eqref{eq:Sfloor}, raw and projected violation counts, maximum violation, minimum slack, and projected active-row fraction are also reported. Layer-TSS metrics are reported only for smooth-direct and exact mechanistic profiles.
 
 At both selected decisions, extended-ICSOR raw and projected responses, the optimizer-native response, and the exact-reference reduced response are kept distinct. The signed exact-reference difference is
 \begin{equation}
@@ -118,7 +133,7 @@ Timing aggregation excludes the nominal case and holdout-wide inference. Robustn
 
 \section{Required reporting and failure accounting}
 
-The record contains the accepted/rejected generation ledger; grouped-fold and holdout prediction summaries; extended-ICSOR coefficient and projection audits; trust diagnostics; selected controls; raw, projected, optimizer-native, and exact responses; exact-reference validity and engineering-feasibility status; $S$--$M$ comparison eligibility; source-specific physical audits; solver and convergence records; and casewise timing summaries. Optimization failure, convergence qualification, exact-reference validity, engineering feasibility, and pairwise-comparison eligibility are distinct status fields. A finite result that fails a scientific threshold is retained as a diagnostic; missing or non-finite arrays, an undefined scale or feature map, a failed factorization, or an integrity/checkpoint inconsistency remains a hard computational failure.
+The record contains the accepted/rejected generation ledger; grouped-fold and holdout prediction summaries; extended-ICSOR coefficient and projection audits, including non-settleable-floor slack and activity; trust diagnostics; selected controls; raw, projected, optimizer-native, and exact responses; exact-reference validity and engineering-feasibility status; $S$--$M$ comparison eligibility; source-specific physical audits; solver and convergence records; and casewise timing summaries. Optimization failure, convergence qualification, exact-reference validity, engineering feasibility, and pairwise-comparison eligibility are distinct status fields. A finite result that fails a scientific threshold is retained as a diagnostic; missing or non-finite arrays, an undefined scale or feature map, a failed factorization, or an integrity/checkpoint inconsistency remains a hard computational failure.
 
 \begin{thebibliography}{00}
 \bibitem[Boyd and Vandenberghe(2004)]{Boyd2004}
@@ -129,5 +144,7 @@ Henze, M., Gujer, W., Mino, T., van Loosdrecht, M.C., 2006. Activated Sludge Mod
 McKay, M.D., Beckman, R.J., Conover, W.J., 1979. A comparison of three methods for selecting values of input variables in the analysis of output from a computer code. Technometrics 21, 239--245.
 \bibitem[Selerio(2026)]{Selerio2026}
 Selerio Jr., E.F., 2026. An interpretable statistical surrogate of activated sludge systems that preserves mass conservation and component non-negativity. Digital Chemical Engineering 20, 100329.
+\bibitem[Tak\'acs et~al.(1991)Tak\'acs, Patry, and Nolasco]{Takacs1991}
+Tak\'acs, I., Patry, G.G., Nolasco, D., 1991. A dynamic model of the clarification-thickening process. Water Research 25, 1263--1271.
 \end{thebibliography}
 \end{document}
