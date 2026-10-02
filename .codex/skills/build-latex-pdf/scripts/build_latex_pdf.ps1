@@ -393,7 +393,22 @@ function Invoke-LatexBuild {
     try {
         switch ($Engine.Name) {
             'tectonic' {
-                & $Engine.Path --keep-logs -o $workingDirectory $texLeaf
+                $previousFontConfigFile = $env:FONTCONFIG_FILE
+                $repoLocalFontConfig = Join-Path (Split-Path -Parent $Engine.Path) 'fonts.conf'
+                try {
+                    if (-not $previousFontConfigFile -and (Test-Path -LiteralPath $repoLocalFontConfig)) {
+                        $env:FONTCONFIG_FILE = $repoLocalFontConfig
+                    }
+                    & $Engine.Path --keep-logs -o $workingDirectory $texLeaf
+                }
+                finally {
+                    if ($null -eq $previousFontConfigFile) {
+                        Remove-Item Env:FONTCONFIG_FILE -ErrorAction SilentlyContinue
+                    }
+                    else {
+                        $env:FONTCONFIG_FILE = $previousFontConfigFile
+                    }
+                }
                 break
             }
             'latexmk' {

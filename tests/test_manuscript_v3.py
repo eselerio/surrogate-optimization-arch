@@ -1,5 +1,6 @@
 import unittest
 from pathlib import Path
+import re
 import tempfile
 from unittest.mock import patch
 
@@ -32,6 +33,40 @@ from closed_loop.projection import (
 
 
 class ManuscriptV3ContractTests(unittest.TestCase):
+    def test_every_citation_has_one_formatted_reference(self) -> None:
+        manuscript_path = (
+            Path(__file__).parents[1] / "article" / "wip_v3" / "manuscript.tex"
+        )
+        manuscript = manuscript_path.read_text(encoding="utf-8")
+        citation_groups = re.findall(
+            r"\\cite(?:t|p)?(?:\[[^\]]*\]){0,2}\{([^}]*)\}", manuscript
+        )
+        cited_keys = {
+            key.strip()
+            for group in citation_groups
+            for key in group.split(",")
+            if key.strip()
+        }
+        bibliography_keys = re.findall(
+            r"\\bibitem(?:\[[^\]]*\])?\{([^}]+)\}", manuscript
+        )
+        formatted_keys = set(re.findall(
+            r"\\bibitem\[[^\]]+\]\{([^}]+)\}", manuscript
+        ))
+
+        duplicate_keys = sorted({
+            key for key in bibliography_keys if bibliography_keys.count(key) > 1
+        })
+        missing_keys = sorted(cited_keys - set(bibliography_keys))
+        unformatted_keys = sorted(set(bibliography_keys) - formatted_keys)
+
+        self.assertFalse(duplicate_keys, f"duplicate bibliography keys: {duplicate_keys}")
+        self.assertFalse(missing_keys, f"citations without references: {missing_keys}")
+        self.assertFalse(
+            unformatted_keys,
+            f"bibliography entries without author-year labels: {unformatted_keys}",
+        )
+
     def test_log_overflow_cross_validation_is_complete_and_out_of_fold(self) -> None:
         layout = NetworkLayout(
             stage_count=1,
