@@ -124,7 +124,7 @@ $\varpi,\varpi_Q$ & Overall objective priorities and effluent-quality priorities
 
 Activated sludge treatment couples biological reactors with secondary clarification and sludge recirculation. Return activated sludge (RAS) carries settled biomass back to the reactors, whereas waste activated sludge (WAS) removes solids from the plant. Plants designed for biological nitrogen removal may also use mixed-liquor recycle (MLR) to return reactor liquor to upstream stages \citep{Henze2008}. Clarifier settling and thickening affect the solids returned to the reactors and the quality of the treated water \citep{HartelPopel1992}. Sludge age also influences oxygen-transfer efficiency, effluent particle concentrations, and removal of biodegradable organic matter \citep{Leu2012}. These coupled effects link recycle, aeration, and wasting decisions. Mathematical programming provides a framework for balancing treatment requirements, resource use, and constraints in wastewater treatment design \citep{PadronPaez2020,Aboagye2021}. Operational optimization applies this framework to the choice of plant settings.
 
-Activated Sludge Models describe the biological and chemical processes through coupled nonlinear dynamic mass-balance equations \citep{Henze2006}. Settling models describe clarification and thickening \citep{Takacs1991}. Time integration can provide an initial state for a steady-state calculation. In an activated sludge application, \citet{Selerio2026} used dynamic relaxation to improve this initial state when the algebraic solve did not converge. When optimization evaluates candidate operating conditions through simulation, the steady-state calculation must be repeated. This repeated evaluation motivates the use of less expensive surrogate models \citep{Bhosekar2018}.
+Activated Sludge Models describe the biological and chemical processes through coupled nonlinear dynamic mass-balance equations \citep{Henze2006}. Settling models describe clarification and thickening \citep{Takacs1991}. Time integration can approach a steady state and provide an initial state for a subsequent algebraic calculation \citep{KelleyKeyes1998,Selerio2026}. In an activated sludge application, \citet{Selerio2026} used dynamic relaxation to improve this initial state when the algebraic solve did not converge. When optimization evaluates candidate operating conditions through simulation, the steady-state calculation must be repeated. This repeated evaluation motivates the use of less expensive surrogate models \citep{Bhosekar2018}.
 
 Statistical surrogate modeling offers an alternative to repeatedly solving the mechanistic equations during optimization. Surrogates are fitted to input--output data from experiments, mechanistic simulations, or a combination of these sources \citep{McBride2019}. The fitted model predicts process responses at new inputs and can reduce the cost of repeated feasibility and optimization calculations \citep{Bhosekar2018}.
 
@@ -301,7 +301,7 @@ With development response mean $\bar\chi$, positive diagonal scale matrix $D_\ch
 \end{equation}
 The ridge parameter $\gamma_S$ controls a squared-coefficient penalty that stabilizes estimation when features are correlated \citep{Hastie2009}. Equation~\eqref{eq:raw} is still an unconstrained regression prediction. It does not enforce sign or balance requirements.
 
-Overflow TSS spans a strongly asymmetric range. Small absolute errors can be important when the treated-water concentration is low, yet contribute little to a fit over the full plant response. A separate logarithmic model gives this endpoint a relative-error scale without changing the raw multiresponse fit. Define the dimensionless development target
+Overflow TSS spans a strongly asymmetric range. Small absolute errors at low treated-water concentrations can correspond to large relative errors. A fit over the full plant response may give these errors little weight when other responses have much larger magnitudes. A separate logarithmic model therefore places the endpoint on a relative-error scale without changing the raw multiresponse fit \citep{Tofallis2015}. Define the dimensionless development target
 \begin{equation}
 \ell_E=\log\!\left(\frac{X_E}{X_\star}\right),
 \qquad X_\star=1\ {\rm mg\,L^{-1}},
@@ -367,7 +367,7 @@ The correction is measured after scaling each response by $D_\chi^{-1}$, so that
 \widehat\chi_S(\vartheta,x)={}&\chi_{{\rm raw},S}(\vartheta,x)+D_\chi\widehat u_S(\vartheta,x).
 \label{eq:projected}
 \end{align}
-$D_b$ and $D_g$ rescale the constraint rows without changing the feasible set. These scales are chosen to improve numerical conditioning. The overflow-closure row receives a positive scale fixed from development data, as do the other equality rows. At fixed inputs, the linear constraints define a closed convex set. If this set is nonempty, the strictly convex, coercive objective has a unique minimizer \citep{Boyd2004}. Because Equation~\eqref{eq:overflowclosure} is fitted rather than a physical identity, feasibility is not guaranteed throughout the operating box. It is checked for every grouped out-of-fold development row, optimization evaluation, and reported holdout or selected-decision evaluation. An infeasible closure is recorded as a failed projection and is not clipped or relaxed.
+$D_b$ and $D_g$ rescale the constraint rows without changing the feasible set. This scaling improves numerical conditioning \citep[Section~11.8.2]{Boyd2004}. The overflow-closure row receives a positive scale fixed from development data, as do the other equality rows. At fixed inputs, the linear constraints define a closed convex set. If this set is nonempty, the strictly convex, coercive objective has a unique minimizer \citep{Boyd2004}. Because Equation~\eqref{eq:overflowclosure} is fitted rather than a physical identity, feasibility is not guaranteed throughout the operating box. It is checked for every grouped out-of-fold development row, optimization evaluation, and reported holdout or selected-decision evaluation. An infeasible closure is recorded as a failed projection and is not clipped or relaxed.
 
 Enforcing constraints does not by itself establish greater prediction accuracy. Euclidean projection onto a nonempty closed convex set cannot increase the distance to a reference in that set \citep{Boyd2004}. Here, the distance is measured in the standardized response coordinates used in Equation~\eqref{eq:projection}. However, the mechanistic overflow TSS generally differs from the fitted value in Equation~\eqref{eq:overflowclosure}, so that guarantee is not presumed here. The error audit therefore accounts for the reference's distance to the set, as detailed in the Supplementary Material, Section~S4.2. The projection does not reconstruct a clarifier profile or enforce all kinetic and nonlinear settling equations. Those equations are checked separately by full mechanistic replay.
 
@@ -410,7 +410,7 @@ The whole-plant SRT, surface overflow rate (SOR), and clarifier solids loading r
 \end{align}
 The factor $10^{-3}$ converts grams to kilograms in SLR. Including $M_{\rm cl}$ in Equation~\eqref{eq:srt} accounts for solids stored outside the biological reactors. Omitting this inventory would underestimate whole-plant SRT for the same solids loss rate. Upper limits on SRT, SLR, and $X_U$, the feed-solids lower bound $X_N\ge X_F^{\min}>0$, and the positive external-solids-loss guard form $g_{\rm eng}(\vartheta,\chi)\le0$. SOR and effluent limits may be included when required by the case study. The retained limits and their values are specified in the methodology. The SRT upper limit is imposed in cross-multiplied form together with the positive-loss guard to avoid division by a small quantity. No minimum SRT is imposed. Finite SRT remains a descriptive operating metric, and the upper bound restricts excessive solids age.
 
-Network feasibility does not prevent an optimizer from selecting a response that needs an unusually large correction or is inconsistent with reaction kinetics. The additional constraints $g_{{\rm trust},S}$ restrict such behavior using four diagnostics calibrated on development data. The standardized correction $\kappa_{{\rm corr},S}=\|\widehat u_S\|_2/\sqrt{n_\chi}$ measures how far projection moves the raw response. Regularized feature leverage measures support from the fitted input features. Deviation from a common particulate recovery tests consistency with the mechanistic outlet-composition assumption. The scaled smooth reactor-balance residual measures disagreement with reactor kinetics. For example, a response that conserves inventories can still require an implausible reaction rate at the selected aeration setting. These diagnostics provide additional screening rather than a guarantee of mechanistic accuracy. Their formulas and thresholds are given in the Supplementary Material. Thresholds use grouped development calculations without holdout or optimization responses. Nonlinear clarifier behavior is checked only through the exact $L$-layer replay because the aggregate response cannot supply layer-flux residuals.
+Network feasibility does not prevent an optimizer from selecting a response that needs an unusually large correction or is inconsistent with reaction kinetics. The additional constraints $g_{{\rm trust},S}$ restrict such behavior using four diagnostics calibrated on development data. The standardized correction $\kappa_{{\rm corr},S}=\|\widehat u_S\|_2/\sqrt{n_\chi}$ measures how far projection moves the raw response. Feature leverage is commonly used to determine whether a prediction lies within the fitted input domain \citep{Sahigara2012}. The regularized form used here measures support from the fitted input features. Deviation from a common particulate recovery tests consistency with the mechanistic outlet-composition assumption. The scaled smooth reactor-balance residual measures disagreement with reactor kinetics. For example, a response that conserves inventories can still require an implausible reaction rate at the selected aeration setting. These diagnostics provide additional screening rather than a guarantee of mechanistic accuracy. Their formulas and thresholds are given in the Supplementary Material. Thresholds use grouped development calculations without holdout or optimization responses. Nonlinear clarifier behavior is checked only through the exact $L$-layer replay because the aggregate response cannot supply layer-flux residuals.
 
 The extended-ICSOR operational problem combines these requirements as
 \begin{equation}
@@ -423,7 +423,7 @@ The extended-ICSOR operational problem combines these requirements as
 \end{aligned}
 \label{eq:bilevel}
 \end{equation}
-Here $\mathcal V$ contains the declared bounds and any stage-allocation equalities. The projected response is unique whenever the lower problem is feasible, but the upper problem remains generally nonconvex and piecewise smooth. Accordingly, $\vartheta_S$ denotes the best feasible candidate retained by the search, together with its reported convergence tier. It is not a certified global minimizer.
+Here $\mathcal V$ contains the declared bounds and any stage-allocation equalities. The projected response is unique whenever the lower problem is feasible. The upper problem is generally nonconvex and piecewise smooth because the projection QP can change its active set \citep{Tondel2003,Colson2007}. Accordingly, $\vartheta_S$ denotes the best feasible candidate retained by the search, together with its reported convergence tier. It is not a certified global minimizer.
 
 \subsection{Direct smooth mechanistic comparator}
 
@@ -857,6 +857,9 @@ Boyd, S., Vandenberghe, L., 2004. Convex Optimization. Cambridge University Pres
 \bibitem[Buzzi-Ferraris and Manenti(2013)]{BuzziFerraris2013}
 Buzzi-Ferraris, G., Manenti, F., 2013. Nonlinear Systems and Optimization for the Chemical Engineer. Wiley-VCH, Weinheim.
 
+\bibitem[Colson et~al.(2007)Colson, Marcotte, and Savard]{Colson2007}
+Colson, B., Marcotte, P., Savard, G., 2007. An overview of bilevel optimization. Annals of Operations Research 153, 235--256.
+
 \bibitem[Curtiss and Hirschfelder(1952)]{CurtissHirschfelder1952}
 Curtiss, C.F., Hirschfelder, J.O., 1952. Integration of stiff equations. Proceedings of the National Academy of Sciences 38, 235--243.
 
@@ -884,6 +887,9 @@ Henze, M., van Loosdrecht, M.C.M., Ekama, G.A., Brdjanovic, D., 2008. Biological
 \bibitem[Jeppsson and Diehl(1996)]{JeppssonDiehl1996}
 Jeppsson, U., Diehl, S., 1996. On the modelling of the dynamic propagation of biological components in the secondary clarifier. Water Science and Technology 34, 85--92.
 
+\bibitem[Kelley and Keyes(1998)]{KelleyKeyes1998}
+Kelley, C.T., Keyes, D.E., 1998. Convergence analysis of pseudo-transient continuation. SIAM Journal on Numerical Analysis 35, 508--523.
+
 \bibitem[Leu et~al.(2012)Leu, Chan, and Stenstrom]{Leu2012}
 Leu, S.-Y., Chan, L., Stenstrom, M.K., 2012. Toward long solids retention time of activated sludge processes: Benefits in energy saving, effluent quality, and stability. Water Environment Research 84, 42--53.
 
@@ -902,6 +908,9 @@ Padr\'on-P\'aez, J.I., Almaraz, S.D.L., Rom\'an-Mart\'inez, A., 2020. Sustainabl
 \bibitem[Ruckstuhl et~al.(2021)Ruckstuhl, Janji\'c, and Rasp]{Ruckstuhl2021}
 Ruckstuhl, Y., Janji\'c, T., Rasp, S., 2021. Training a convolutional neural network to conserve mass in data assimilation. Nonlinear Processes in Geophysics 28, 111--119.
 
+\bibitem[Sahigara et~al.(2012)Sahigara, Mansouri, Ballabio, Mauri, Consonni, and Todeschini]{Sahigara2012}
+Sahigara, F., Mansouri, K., Ballabio, D., Mauri, A., Consonni, V., Todeschini, R., 2012. Comparison of different approaches to define the applicability domain of QSAR models. Molecules 17, 4791--4810.
+
 \bibitem[Selerio(2026)]{Selerio2026}
 Selerio Jr., E.F., 2026. An interpretable statistical surrogate of activated sludge systems that preserves mass conservation and component non-negativity. Digital Chemical Engineering 20, 100329.
 
@@ -919,6 +928,12 @@ Sturm, P.O., Wexler, A.S., 2022. Conservation laws in a neural network architect
 
 \bibitem[Tak\'acs et~al.(1991)Tak\'acs, Patry, and Nolasco]{Takacs1991}
 Tak\'acs, I., Patry, G.G., Nolasco, D., 1991. A dynamic model of the clarification-thickening process. Water Research 25, 1263--1271.
+
+\bibitem[Tofallis(2015)]{Tofallis2015}
+Tofallis, C., 2015. A better measure of relative prediction accuracy for model selection and model estimation. Journal of the Operational Research Society 66, 1352--1362.
+
+\bibitem[T{\o}ndel et~al.(2003)T{\o}ndel, Johansen, and Bemporad]{Tondel2003}
+T{\o}ndel, P., Johansen, T.A., Bemporad, A., 2003. An algorithm for multi-parametric quadratic programming and explicit model predictive control solutions. Automatica 39, 489--497.
 
 \bibitem[Valente et~al.(2025)Valente, Dias, Guerra, and Ventura]{Valente2025}
 Valente, M., Dias, T.C., Guerra, V., Ventura, R., 2025. Physics-consistent machine learning with output projection onto physical manifolds. Communications Physics 8, 433.
