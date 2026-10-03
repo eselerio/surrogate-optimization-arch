@@ -1,20 +1,23 @@
 \documentclass[a4paper,fleqn]{cas-sc}
-\usepackage[numbers]{natbib}
+\usepackage[authoryear,longnamesfirst]{natbib}
 \usepackage{amsmath,amssymb,booktabs}
 \newcommand{\R}{\mathbb{R}}
 \newcommand{\col}{\operatorname{col}}
 \newcommand{\vech}{\operatorname{vech}}
+\renewcommand{\thesection}{S\arabic{section}}
+\renewcommand{\theequation}{S\arabic{equation}}
+\renewcommand{\thetable}{S\arabic{table}}
 \begin{document}
 \let\WriteBookmarks\relax
 
-\shorttitle{Supplementary Material: Extended ICSOR Optimization}
+\shorttitle{Supplementary Material for Extended ICSOR Optimization}
 \shortauthors{Egberto F. Selerio Jr.}
-\title[mode=title]{Supplementary Material for ``Optimization of Activated Sludge Systems Using a Physically-Constrained Surrogate''}
+\title[mode=title]{Supplementary Material for ``Optimization of Activated Sludge Systems Using a Physically Constrained Surrogate''}
 \author[1]{Egberto F. Selerio Jr.}
 \affiliation[1]{organization={Engineering Research and Development for Technology},addressline={School of Engineering, University of San Carlos},country={Philippines}}
 
 \begin{abstract}
-This supplement specifies the mechanistic generator, sampling design, extended-ICSOR fit, system-wide invariant-constraint projection, optimization protocol, exact-reference replay, and reporting rules. The comparison contains two routes: extended ICSOR ($S$) and the unchanged smooth mechanistic nonlinear program ($M$). Extended ICSOR retains the second-order regression of the ICSOR surrogate of \citet{Selerio2026} and applies its invariant-constraint projection to the complete recycling-system response. A development-fitted log regression supplies one positive, input-dependent overflow-TSS equality within that projection; it is not a third route or a renamed method.
+This supplement specifies the mechanistic generator, sampling design, extended-ICSOR fit, system-wide invariant-constraint projection, optimization protocol, exact-reference replay, and reporting rules. The comparison contains extended ICSOR ($S$) and the smooth mechanistic optimization route ($M$). Extended ICSOR retains the second-order regression of the surrogate of \citet{Selerio2026} and applies its invariant-constraint projection to the complete recycling-system response. A development-fitted log regression supplies one positive, input-dependent overflow-TSS equality within that projection. It is part of route $S$, not a third optimization route.
 \end{abstract}
 
 \begin{keywords}
@@ -24,12 +27,23 @@ supplementary methods \sep activated sludge \sep ICSOR \sep log regression \sep 
 
 \section{Scope and coordinate contract}
 
-The plant contains $N$ completely mixed biological reactors and an $L$-layer mechanistic Clarifier. There are $F=F_S+F_X$ components and $K$ independent stoichiometric invariants. Extended ICSOR uses the reduced response
+Notation and acronyms follow the main article. The plant contains $N$ completely mixed biological reactors and an $L$-layer mechanistic clarifier. There are $F=F_S+F_X$ components and $K$ independent stoichiometric invariants. Extended ICSOR uses the reduced response
 \begin{equation}
 \chi=\col(m,c_1,\ldots,c_N,g_E,g_U,M_{\rm cl})\in\R^{n_\chi},\qquad n_\chi=(N+3)F+1,
 \label{eq:Sresponse}
 \end{equation}
-where $m$ is the mixer concentration, $c_i$ is the reactor-$i$ concentration, $g_E=q_Ec_E$ and $g_U=q_Uc_U$ are Clarifier outlet component flows on the fresh-flow basis, and $M_{\rm cl}$ is the aggregate Clarifier solids inventory. The full mechanistic state is $y=\col(c_1,\ldots,c_N,s_1,\ldots,s_L)\in\R_+^{NF+L}$. Internal Clarifier layers are retained by the mechanistic route and reference replay, but are not predicted by the surrogate.
+where $m$ is the mixer concentration, $c_i$ is the reactor-$i$ concentration, $g_E=q_Ec_E$ and $g_U=q_Uc_U$ are clarifier outlet component flows on the fresh-flow basis, and $M_{\rm cl}$ is the aggregate clarifier solids inventory. The full mechanistic state is $y=\col(c_1,\ldots,c_N,s_1,\ldots,s_L)\in\R_+^{NF+L}$. Internal clarifier layers are retained by the mechanistic route and reference replay, but are not predicted by the surrogate.
+
+For the case study, $d_z=d_\vartheta+F=27$, $n_{\phi,S}=406$, $n_\chi=161$, and $n_y=110$. The projection has $n_h=2F+NK+F_S+1=76$ equalities and $n_g=F_X+2=12$ physical inequalities. Including response non-negativity gives $n_q=n_\chi+n_g=173$ inequalities. The logarithmic overflow closure adds one equality but no response coordinate or inequality. These dimensions are not fixed architectural constants. Changing $N$ or the free-control set changes the surrogate problem and requires renewed validation. Changing $L$ changes $n_y$, the mechanistic discretization, and the construction of $M_{\rm cl}$, but not $n_\chi$. Mechanistic and response validation must still be repeated.
+
+For reproducibility, generation, fitting, and replay use the same ordered component vector,
+\begin{equation}
+\begin{split}
+(&S_O,S_F,S_A,S_{NH4},S_{NO2},S_{NO3},S_{N2},S_{PO4},S_I,S_{ALK},\\
+&X_I,X_S,X_H,X_{PAO},X_{PP},X_{PHA},X_{AOB},X_{NOB},X_{MeP},X_{MeOH}).
+\end{split}
+\label{eq:Scomponents}
+\end{equation}
 
 \section{Mechanistic generator and reduced response}
 
@@ -48,9 +62,9 @@ The invariant operator $A\in\R^{K\times F}$ satisfies $A\nu^\top=0$ and $Ae_{S_O
 A(c_i-c_{i-1})=d_i^{-1}A\xi_i(\vartheta).
 \label{eq:Sinvariants}
 \end{equation}
-The Clarifier component balance and soluble pass-through are $q_Cc_N=g_E+g_U$ and $E_Sg_U=q_UE_Sc_N$. Particulate densification requires $E_Xg_U\ge q_UE_Xc_N$. Endpoint TSS is recovered from the outlet flows: $X_E=t_X^\top g_E/q_E$ and $X_U=t_X^\top g_U/q_U$.
+The clarifier component balance and soluble pass-through are $q_Cc_N=g_E+g_U$ and $E_Sg_U=q_UE_Sc_N$. Particulate densification requires $E_Xg_U\ge q_UE_Xc_N$. Endpoint TSS is recovered from the outlet flows as $X_E=t_X^\top g_E/q_E$ and $X_U=t_X^\top g_U/q_U$.
 
-Mechanistic clarification retains a positive overflow-solids concentration because dispersed, slowly settling, and non-settleable material is not removed perfectly by the settling fluxes \citep{Takacs1991}. When $X_E$ is small relative to mixed-liquor TSS, ordinary concentration-scale regression errors are also strongly heteroscedastic in relative terms: a modest absolute error can represent a large fractional error and can drive an unconstrained quadratic prediction close to zero. A fixed fraction of Clarifier-feed TSS is not used here because it would assume a constant removal relationship across hydraulic, recycle, wasting, biological, and influent conditions. The fitted closure instead varies over all declared inputs, while exact layer-resolved replay remains responsible for judging the nonlinear settling physics.
+Mechanistic clarification retains a positive overflow-solids concentration because dispersed, slowly settling, and non-settleable material is not removed perfectly by the settling fluxes \citep{Takacs1991}. When $X_E$ is small relative to mixed-liquor TSS, a modest absolute regression error can represent a large fractional error. It can also drive an unconstrained quadratic prediction close to zero. A fixed fraction of clarifier-feed TSS is not used here because it would assume a constant removal relationship across hydraulic, recycle, wasting, biological, and influent conditions. The fitted closure instead varies over all declared inputs, while exact layer-resolved replay remains responsible for judging the nonlinear settling physics.
 
 The aggregate inventory is $M_{\rm cl}=\sum_{\ell=1}^L V_{{\rm cl},\ell}s_\ell$. Eliminating unreported layers gives
 \begin{align}
@@ -61,7 +75,7 @@ M_{\rm cl}^{-}\le M_{\rm cl}\le M_{\rm cl}^{+}.
 \end{align}
 This interval guarantees only a profile compatible with the endpoint envelope. The nonlinear settling-flux equations and detailed layer profile remain mechanistic quantities.
 
-The generator uses ASM2d with two-step nitrification, five named invariants, five equal-volume reactors, and ten 0.4-m Clarifier layers. A candidate is retained only after both declared steady-state starts satisfy finite-state, conservation, non-negativity, domain, layer-residual, and reduced-stability audits. The full state is then deterministically mapped to Equation~\eqref{eq:Sresponse}.
+The generator uses ASM2d-TSN, five named invariants, five equal-volume reactors, and ten 0.4-m clarifier layers. A candidate is retained only after both declared steady-state starts satisfy finite-state, conservation, non-negativity, domain, layer-residual, and reduced-stability audits. The full state is then deterministically mapped to Equation~\eqref{eq:Sresponse}.
 
 \section{Sampling, partitioning, and model fit}
 
@@ -77,7 +91,14 @@ With development response mean $\bar\chi$, positive response scale $D_\chi$, and
 \chi_{{\rm raw},S}(\vartheta,x)=\bar\chi+D_\chi\widehat C_{S,\gamma_S}\phi_S(\vartheta,x).
 \label{eq:Sraw}
 \end{equation}
-The ridge grid is evaluated in plant-grouped five-fold cross-validation. All coordinates from one mechanistic plant state remain in its assigned fold. The selected penalty is the largest candidate within one standard error of the lowest mean fold error. Final scales and coefficients are refit using all development rows. The holdout is used once for descriptive raw and projected error summaries and never changes features, scales, penalty selection, trust limits, or model fit.
+The development rows are partitioned reproducibly into five folds whose sizes differ by at most one. All coordinates from one mechanistic plant state remain in its assigned fold. For fitting index set $\mathcal I$, let $\Phi_{\mathcal I}$ contain feature rows and $\widetilde Y_{\mathcal I}$ contain standardized responses. The matrix $R_\phi=\operatorname{diag}(0,1,\ldots,1)$ leaves the intercept unpenalized. The raw surrogate fit solves
+\begin{equation}
+\widehat C_{S,\gamma_S}=\arg\min_C
+\left\{\frac{\|\widetilde Y_{\mathcal I}-\Phi_{\mathcal I}C^\top\|_F^2}
+{|\mathcal I|n_\chi}+\frac{\gamma_S}{n_\chi}\|CR_\phi\|_F^2\right\}.
+\label{eq:Sridge}
+\end{equation}
+Every center and scale is recomputed within the fitting fold. Positive candidate values of $\gamma_S$ give a unique coefficient solution and improve conditioning when features are nearly dependent. The score is the standardized RMSE of the full raw response. The one-standard-error rule selects the largest penalty whose mean score is within one standard error of the minimum \citep{Hastie2009}. Projection metrics are recorded but do not select $\gamma_S$. Replacing ten layers by one inventory changes response weighting, so ridge selection and out-of-fold predictions are recomputed. The selected model is refitted once on all development rows. Under the revised protocol, the holdout is used once for descriptive assessment and does not alter these fits.
 
 The raw multiresponse fit in Equation~\eqref{eq:Sraw} is not altered by the overflow revision. A separate scalar fit uses the dimensionless target
 \begin{equation}
@@ -96,18 +117,18 @@ Its back-transformed prediction is
 \exp\{\widehat\beta_{E,\gamma_E}^{\top}\phi_S(\vartheta,x)\}>0.
 \label{eq:Slogprediction}
 \end{equation}
-The same grouped folds, fold-local preprocessing, fixed penalty grid, and one-standard-error selection rule are used. Development projections use strictly out-of-fold values from Equation~\eqref{eq:Slogprediction}; the all-development refit is used only for holdout and subsequent optimization evaluations. Under squared log error, direct exponentiation targets a conditional geometric center, not an unbiased concentration-scale conditional mean; no post hoc smearing correction is applied. The logarithmic transform guarantees positivity after back-transformation but does not impose a fixed lower bound, fixed removal fraction, or clipping operation.
+The same grouped folds, fold-local preprocessing, fixed penalty grid, and one-standard-error selection rule are used. Development projections use strictly out-of-fold values from Equation~\eqref{eq:Slogprediction}. The all-development refit is used for holdout, optimization, and selected-decision evaluations. Integrity checks require positive mechanistic training targets, finite log predictions and back-transformations, and verified hashes of the closure coefficients and preprocessing state. Under squared log error, direct exponentiation targets a conditional geometric center rather than an unbiased concentration-scale conditional mean. No post hoc smearing correction is applied. The logarithmic transform guarantees positivity after back-transformation but does not impose a fixed lower bound, fixed removal fraction, or clipping operation.
 
 \section{Extended ICSOR system-wide invariant projection}
 
-Extended ICSOR retains the second-order regression of the original ICSOR surrogate \citep{Selerio2026}. Its revision is the system-wide scope of the invariant-constraint projection: the projection operates after the complete response in Equation~\eqref{eq:Sresponse} has been predicted, rather than on an isolated response.
+Extended ICSOR retains the second-order regression of the original ICSOR surrogate \citep{Selerio2026}. It extends the invariant-constraint projection to the complete response in Equation~\eqref{eq:Sresponse} rather than an isolated unit response.
 
-Let $\mathcal H(\vartheta)\chi=\mathfrak b(\vartheta,x)$ collect Equation~\eqref{eq:Smixer}, all invariant transitions in Equation~\eqref{eq:Sinvariants}, the Clarifier component balance, and soluble pass-through. The scalar closure is
+Let $\mathcal H(\vartheta)\chi=\mathfrak b(\vartheta,x)$ collect Equation~\eqref{eq:Smixer}, all invariant transitions in Equation~\eqref{eq:Sinvariants}, the clarifier component balance, and soluble pass-through. The scalar closure is
 \begin{equation}
 t_X^\top g_E=q_E\widehat X_{E,\log}(\vartheta,x).
 \label{eq:Slogclosure}
 \end{equation}
-Let $\mathcal H_{\log}(\vartheta)\chi=\mathfrak b_{\log}(\vartheta,x)$ append Equation~\eqref{eq:Slogclosure} to $\mathcal H\chi=\mathfrak b$, and let $\mathcal G(\vartheta)\chi\le0$ collect particulate densification and the division-free form of Equation~\eqref{eq:Sinventory}. For the case study, the closure increases the equality count from 75 to 76; $n_g=12$ and the 173 inequality rows including response non-negativity are unchanged. At fixed $(\vartheta,x)$, $q_E\widehat X_{E,\log}$ is known and Equation~\eqref{eq:Slogclosure} is affine in $\chi$, so the projected response remains the solution of the same strictly convex QP form:
+Let $\mathcal H_{\log}(\vartheta)\chi=\mathfrak b_{\log}(\vartheta,x)$ append Equation~\eqref{eq:Slogclosure} to $\mathcal H\chi=\mathfrak b$, and let $\mathcal G(\vartheta)\chi\le0$ collect particulate densification and the division-free form of Equation~\eqref{eq:Sinventory}. For the case study, the closure increases the equality count from 75 to 76. The 12 physical inequalities and 173 total inequalities are unchanged. At fixed $(\vartheta,x)$, $q_E\widehat X_{E,\log}$ is known and Equation~\eqref{eq:Slogclosure} is affine in $\chi$. The projected response therefore remains the solution of the strictly convex QP
 \begin{align}
 \widehat u_S={}&\arg\min_u\ \tfrac12\|u\|_2^2\notag\\
 \text{subject to }&D_b^{-1}\{\mathcal H_{\log}[\chi_{{\rm raw},S}+D_\chi u]-\mathfrak b_{\log}\}=0,\notag\\
@@ -116,45 +137,159 @@ D_g^{-1}\mathcal G[\chi_{{\rm raw},S}+D_\chi u]\le0,\notag\\
 \widehat\chi_S={}&\chi_{{\rm raw},S}+D_\chi\widehat u_S.
 \label{eq:SQP}
 \end{align}
-The identity Hessian makes this projection unique whenever the feasible set is nonempty. $D_b$ and $D_g$ are positive development-frozen constraint-row scales; the new equality uses the same RMS term-scale convention as the other equality rows. $D_\chi$ is the response scale used only for the projection metric. The QP therefore makes the smallest standardized response change while satisfying the declared network constraints and empirical endpoint closure. Equation~\eqref{eq:Slogclosure} fixes total overflow TSS but not its particulate composition, which is selected jointly through the nearest-response objective and the remaining constraints.
+The identity Hessian makes this projection unique whenever the feasible set is nonempty. $D_b$ and $D_g$ are positive development-frozen constraint-row scales. The new equality uses the same RMS term-scale convention as the other equality rows. $D_\chi$ defines the projection metric. The QP therefore makes the smallest standardized response change while satisfying the declared network constraints and empirical endpoint closure. Equation~\eqref{eq:Slogclosure} fixes total overflow TSS but not its particulate composition, which is selected jointly through the nearest-response objective and the remaining constraints.
 
-Every QP is cold-solved and independently audited for equality feasibility, including the unscaled residual of Equation~\eqref{eq:Slogclosure}, inequality feasibility, non-negativity, dual feasibility, stationarity, complementarity, and primal--dual gap. The added fitted equality means feasibility is no longer guaranteed by the simple no-addition construction. Every out-of-fold, holdout, optimization, and selected-decision projection must therefore demonstrate nonemptiness computationally. Failure is recorded rather than repaired by clipping or relaxation. Apart from the scalar empirical closure, the projection does not impose biological kinetics, nonlinear Clarifier settling fluxes, dynamic stability, or a layer profile. Those properties are assessed only in smooth-direct or exact reference states.
+Every QP is cold-solved and independently audited for equality feasibility, including the unscaled residual of Equation~\eqref{eq:Slogclosure}, inequality feasibility, non-negativity, dual feasibility, stationarity, complementarity, and primal--dual gap. The added fitted equality means feasibility is no longer guaranteed by the simple no-addition construction. Every out-of-fold, holdout, optimization, and selected-decision projection must therefore demonstrate nonemptiness computationally. Failure is recorded rather than repaired by clipping or relaxation. The projection does not impose biological kinetics, nonlinear clarifier settling fluxes, dynamic stability, or a layer profile. Those properties are assessed only in smooth-direct or exact reference states.
 
-The development-frozen extended-ICSOR trust constraints limit standardized projection correction, whole-system regularized feature leverage, particulate-recovery deviation, and smooth reactor-balance residual. Their thresholds are nearest-rank 95th percentiles of the applicable grouped out-of-fold development diagnostics. The frozen admission gate also requires finite, audited out-of-fold projections and full-response and inventory-coordinate raw nRMSE below one. The log closure is additionally assessed by concentration-scale RMSE, MAE, bias, normalized RMSE, and $R^2$; log-scale RMSE and bias; and strata fixed from development quantiles for the low-TSS operating range and high-TSS tail. These metrics expose whether better low-end prediction is purchased by compressing breakthrough events.
+The development-frozen extended-ICSOR trust constraints limit standardized projection correction, whole-system regularized feature leverage, particulate-recovery deviation, and smooth reactor-balance residual. Their thresholds are nearest-rank 95th percentiles of the applicable grouped out-of-fold development diagnostics. The frozen admission gate also requires finite, audited out-of-fold projections and full-response and inventory-coordinate raw nRMSE below one. Concentration-scale assessment of the log closure reports RMSE, MAE, bias, normalized RMSE, and $R^2$. Log-scale assessment reports RMSE and bias. Low-TSS and high-TSS strata are fixed from development quantiles. These metrics test whether improvements at low concentrations are accompanied by underprediction of breakthrough events.
+
+\subsection{Projection optimality certificate}
+\label{sec:Scertificate}
+
+For fixed $(\vartheta,x)$, the standardized projection can be written as
+\begin{equation}
+\min_u\tfrac12u^\top u\quad\text{subject to}\quad
+\mathsf E u=e,\qquad \mathsf G_u u\le g.
+\label{eq:Sstandardqp}
+\end{equation}
+The dimensions are $u\in\R^{n_\chi}$, $\mathsf E\in\R^{n_h\times n_\chi}$, and $\mathsf G_u\in\R^{n_q\times n_\chi}$ with $n_q=n_\chi+n_g$. Let $\lambda^{=}$ be the unrestricted equality multiplier and $\lambda^{\le}\ge0$ the inequality multiplier. The dual value at any dual-feasible pair is
+\begin{equation}
+d_{\rm QP}(\lambda^{=},\lambda^{\le})=
+-\tfrac12\|\mathsf E^\top\lambda^{=}+\mathsf G_u^\top\lambda^{\le}\|_2^2
+-e^\top\lambda^{=}-g^\top\lambda^{\le}.
+\label{eq:Sdualqp}
+\end{equation}
+For a primal-feasible $u$, weak duality makes the primal--dual gap non-negative. Using $\mathsf Eu=e$ gives
+\begin{align}
+\Gamma={}&\tfrac12u^\top u-d_{\rm QP}\notag\\
+={}&\tfrac12\|u+\mathsf E^\top\lambda^{=}+\mathsf G_u^\top\lambda^{\le}\|_2^2
++(\lambda^{\le})^\top(g-\mathsf G_u u)\ge0.
+\label{eq:Sgap}
+\end{align}
+For primal- and dual-feasible variables, $\Gamma=0$ is equivalent to stationarity and complementarity and certifies the unique projection solution. The gap expresses these conditions without introducing explicit slack variables \citep{Boyd2004}. Numerical acceptance checks primal feasibility, dual feasibility, and the gap against the declared tolerances rather than treating a small gap alone as an exact certificate. The gap is used to audit the projection and is not added as a constraint to the operating search.
+
+\subsection{Projection error bounds}
+\label{sec:Serrorbounds}
+
+If a reduced mechanistic reference $\chi_{\rm ref}$ satisfies the projection constraints exactly, Euclidean-projection geometry in standardized coordinates gives
+\begin{equation}
+\|D_\chi^{-1}(\widehat\chi_S-\chi_{\rm ref})\|_2^2
+\le \|D_\chi^{-1}(\chi_{{\rm raw},S}-\chi_{\rm ref})\|_2^2
+-\|\widehat u_S\|_2^2.
+\label{eq:Snonexpansive}
+\end{equation}
+The correction therefore cannot increase standardized squared error to a reference in the constraint set. The empirical closure can place a mechanistic target outside that set even when the physical balances hold. Small numerical infeasibility is also not treated as exact feasibility.
+
+For holdout row $i$, let $\mathcal C_{\log,i}$ be the projection polyhedron containing Equation~\eqref{eq:Slogclosure}. Let $P_{\mathcal C_{\log,i}}$ denote metric projection in the norm $\|v\|_{D_\chi^{-1}}=\|D_\chi^{-1}v\|_2$. The reported distance is $\delta_{{\rm feas},i}=\|P_{\mathcal C_{\log,i}}(\chi_i)-\chi_i\|_{D_\chi^{-1}}$, where $\chi_i$ is the numerical mechanistic target. This distance includes finite numerical feasibility tolerances. The general error bound checked for every target is
+\begin{equation}
+\|P_{\mathcal C_{\log,i}}(\chi_{{\rm raw},S,i})-\chi_i\|_{D_\chi^{-1}}
+\le \|\chi_{{\rm raw},S,i}-\chi_i\|_{D_\chi^{-1}}+\delta_{{\rm feas},i}.
+\label{eq:Sfinitefeasibility}
+\end{equation}
+Equation~\eqref{eq:Snonexpansive} applies only to an exactly feasible target. Satisfying every network identity is insufficient if Equation~\eqref{eq:Slogclosure} is not also satisfied. Neither bound reconstructs a clarifier profile or establishes satisfaction of all kinetic and nonlinear settling equations. Those equations are checked separately by full mechanistic replay.
 
 \section{Optimization and reference adjudication}
 
-The case controls are $\vartheta=(H,a_3,a_4,a_5,r_I,r_R,w)^\top$. Both routes use identical bounds, objective priorities, engineering constraints, and nominal influent. The retained engineering rows enforce maximum SRT, maximum SLR, maximum underflow TSS, minimum feed TSS, and a positive external-solids-loss boundary; no minimum SRT row is present. Extended ICSOR minimizes the shared engineering objective subject to the operating box, these engineering constraints, its frozen trust constraints, and Equation~\eqref{eq:SQP}. The QP is cold-solved at every distinct trial control. When active-set sensitivity passes rank, conditioning, strict-complementarity, and finite-difference checks, it supports the strong first-order KKT audit. The derivative chain includes $\partial[q_E\widehat X_{E,\log}]/\partial\vartheta$ through the standardized quadratic features and exponential back-transformation. Otherwise deterministic value-only COBYQA is used, followed by complete feasible no-descent polls at normalized radii $10^{-3}$ and $10^{-4}$. This finite-resolution result is not a local or global optimality certificate.
+The case controls are $\vartheta=(H,a_3,a_4,a_5,r_I,r_R,w)^\top$. Both routes use identical bounds, objective priorities, engineering constraints, and nominal influent. The retained engineering rows enforce maximum SRT, maximum SLR, maximum underflow TSS, minimum feed TSS, and a positive external-solids-loss boundary. No minimum SRT row is present. Each primary search starts at the center of the normalized operating box.
 
-The smooth mechanistic NLP retains the full reactor and Clarifier state, smooth kinetic and settling regularizations, the same seven controls, and the same objective and engineering requirements. Its primary solve uses the unchanged three-stage smoothing continuation from the box center. If this primary solve fails, one conditional recovery may begin from the certified extended-ICSOR control. No recovery is made after a successful primary solve.
+\subsection{Surrogate sensitivity and convergence protocol}
+\label{sec:Ssurrogatesearch}
 
-Every available selected decision is replayed from two declared starts on the exact nonsmooth, layer-resolved mechanistic model. A replay must pass root-agreement, mass-conservation, non-negativity, layer-residual, domain, reduced-stability, and the retained engineering audits to be eligible for the $S$--$M$ comparison. SRT is calculated and reported for every finite replay; a value below 8 d is descriptive and is not an exclusion. The maximum-SRT limit and all other engineering safeguards remain eligibility gates. Exact objectives remain reported even for a replay that violates one of those retained safeguards, but such a replay cannot enter the paired comparison.
+Extended ICSOR minimizes the shared objective subject to the operating box, engineering constraints, frozen trust constraints, and Equation~\eqref{eq:SQP}. Every upper constraint uses a fixed positive scale determined from development data, so scaling does not change feasibility. The projection is cold-solved and audited at each distinct trial using a convex-QP method \citep{Stellato2020}. The search does not execute the retired embedded-KKT IPOPT problem or its seven gap-continuation stages.
+
+The active set comprises the inequality constraints that hold at equality at the projection solution. With a stable active set, linearly independent equality and active-inequality rows, and strictly positive active-inequality multipliers, response derivatives follow by differentiating the KKT system. Rank, conditioning, strict-complementarity, and finite-difference derivative checks must pass. The derivative chain includes $\partial[q_E\widehat X_{E,\log}]/\partial\vartheta$ through the standardized quadratic features and exponential back-transformation. An active-set change triggers a fresh projection and derivative reconstruction.
+
+If the required derivatives cannot be constructed, deterministic value-only COBYQA continues within the normalized bounds. Each distinct fallback trial receives a new cold solve and complete audit of the same QP. The fallback uses neither an approximate projection nor finite-difference derivatives. Finite differences are used only for the independent derivative audit. The best feasible visited point is independently cold-projected again.
+
+A candidate receives the strong first-order tier only if its derivative chain and independent lower-QP and upper KKT audits pass. Otherwise, protocol v3 uses complete feasible no-descent polls at normalized radii $10^{-3}$ and $10^{-4}$. The coarse poll contains the 14 signed coordinate directions. The fine poll contains those axes, 84 signed pairwise diagonals, and eight Helmert-simplex directions. Coupled directions allow simultaneous control changes that a coordinate-only poll may miss near an operating limit. After an improving step, up to 16 search-only evaluations use multipliers $2,4,\ldots$ along that ray, with unchanged projection audits. These evaluations accelerate the search but cannot supply convergence evidence. Every accepted move requires a new complete poll.
+
+Each complete poll must contain a feasible nonzero displacement. Direction rank is diagnostic only because active constraints can restrict the feasible cone to fewer than seven dimensions. An accepted fine-scale move requires coarse-scale revalidation. Certification has a 10,000-evaluation safety budget. Absence of sufficient feasible decrease in both revalidated polls provides evidence only for the tested directions and resolutions. An incomplete, failed, or evaluation-limited poll leaves stationarity unresolved. First-order stationarity does not establish local minimality. A finite poll establishes neither KKT or Clarke stationarity nor a local or global optimum.
+
+\subsection{Direct recovery and exact-reference acceptance}
+\label{sec:Sreplay}
+
+The smooth mechanistic NLP retains the full reactor and clarifier state, smooth kinetic and settling regularizations, and the shared operating problem. Its primary solve uses IPOPT with three-stage smoothing continuation from the box center and a full-space endpoint audit. After a failed primary solve, one recovery may start from the same case's certified surrogate control using the unchanged sequence. No recovery follows a successful primary attempt or an uncertified surrogate candidate. This recovery depends on route $S$ and is not independent basin exploration. A validated feasible point remains reportable when its search budget is exhausted or stationarity is unresolved. If no validated candidate is obtained, the failure remains in the case denominator and execution proceeds.
+
+Every available selected decision is replayed from two declared starts on the exact nonsmooth, layer-resolved mechanistic model. The generation-scale and frozen-state-scale root discrepancies must each be at most $10^{-6}$. Branch assignments must agree except within the declared boundary-ambiguity band. A mismatch in that band qualifies the result but does not alone reject an otherwise agreeing root. Mass-conservation, non-negativity, layer-residual, domain, and reduced-stability audits must also pass. Near a branch boundary, differentiable stationarity or smooth/reference equivalence cannot be claimed without qualification. Whole-holdout smooth/reference validation is no longer used, and partial legacy equivalence results are excluded.
+
+A paired comparison requires both candidates to be available and feasible in their optimization models. Both exact replays must be valid, non-negative, compliant with the layer envelope, and feasible under the retained engineering safeguards. These safeguards cover maximum SRT, SLR, underflow TSS, feed TSS, and external solids loss. SRT is reported for every finite replay. A value below 8 d is descriptive and is not an exclusion. Exact objectives remain reported for valid, physically audited replays that violate an engineering safeguard, but those candidates cannot enter a paired comparison.
 
 \section{Prediction, decision, timing, and reporting}
 
-For every reduced-response block, raw and projected extended-ICSOR nRMSE, nMAE, bias, and $R^2$ are reported on grouped out-of-fold development rows and on the descriptive holdout. Physical-unit reports include stage DO, COD, TN, TP, and TSS; Clarifier overflow and underflow quality; and $M_{\rm cl}$. The independent $\widehat X_{E,\log}$ estimate is reported separately from raw and projected overflow TSS on both concentration and log scales. Projection reports include the maximum absolute and scaled residual of Equation~\eqref{eq:Slogclosure}, failure count, and correction magnitude. Layer-TSS metrics are reported only for smooth-direct and exact mechanistic profiles.
+For every reduced-response block, raw and projected extended-ICSOR nRMSE, normalized MAE, bias, and $R^2$ are reported on grouped out-of-fold development rows and on the descriptive holdout. Physical-unit reports include stage DO, COD, TN, TP, and TSS, clarifier overflow and underflow quality, and $M_{\rm cl}$. The separate $\widehat X_{E,\log}$ estimate is reported alongside raw and projected overflow TSS on both concentration and log scales. Projection reports include the maximum absolute and scaled residual of Equation~\eqref{eq:Slogclosure}, failure count, and correction magnitude. Layer-TSS metrics are reported only for smooth-direct and exact mechanistic profiles.
 
-At both selected decisions, extended-ICSOR raw and projected responses, the optimizer-native response, and the exact-reference reduced response are kept distinct. The signed exact-reference difference is
+At both selected decisions, extended-ICSOR raw and projected responses, the optimizer-native response, and the exact-reference reduced response are kept distinct. For $k\in\{S,M\}$, the standardized errors and native-to-reference objective difference are
+\begin{align}
+e_{{\rm raw},S|k}&=D_\chi^{-1}[\chi_{{\rm raw},S}(\vartheta_k,x)-\chi_{{\rm ref},k}],\notag\\
+e_{{\rm proj},S|k}&=D_\chi^{-1}[\widehat\chi_S(\vartheta_k,x)-\chi_{{\rm ref},k}],\notag\\
+e_{\rm nat,k}&=D_\chi^{-1}[\chi_{{\rm nat},k}-\chi_{{\rm ref},k}],\notag\\
+\Delta J_{{\rm nat-ref},k}&=J(\vartheta_k,\chi_{{\rm nat},k})-J(\vartheta_k,\chi_{{\rm ref},k}).
+\label{eq:Serrors}
+\end{align}
+Here $\chi_{{\rm nat},S}=\widehat\chi_S$ and $\chi_{{\rm nat},M}=\chi_{{\rm sm},M}$. The full replay state is mapped to $\chi_{{\rm ref},k}$ using the response and inventory definitions in Sections~S1 and S2. The signed exact-reference difference is
 \begin{equation}
 \Delta J_{S-M}=J(\vartheta_S,\chi_{{\rm ref},S})-J(\vartheta_M,\chi_{{\rm ref},M}).
 \end{equation}
 It is reported only when both candidates are available and natively feasible and both exact replays are valid and satisfy the retained engineering safeguards. No minimum SRT threshold is applied. The nominal case and each of the ten robustness cases retain a record for both routes, including failures and unresolved convergence tiers.
 
-Timing aggregation excludes the nominal case and holdout-wide inference. Robustness-case records report primary and complete solve time, QP evaluations, fallback and poll work, exact replay time, and the ratio $t_M/t_S$ when both complete route times are available. Failed attempts remain in the corresponding time and case denominators.
+Timing aggregation excludes the nominal case and holdout-wide inference. Robustness-case records report primary and complete solve time, QP evaluations, fallback and poll work, exact replay time, and the ratio $t_M/t_S$ when both complete route times are available. Failed attempts remain in the corresponding time and case denominators. Setup and solve times are accompanied by attempts, outcomes, iterations, fallback method, and evaluation-budget status. Poll directions, feasible-displacement counts, rank diagnostics, accepted moves, coarse revalidations, convergence tier, smoothing stages, and recovery outcomes are also retained. Both routes use the same processor allocation and thread count. These records distinguish a faster solution from an incomplete calculation.
 
 \section{Required reporting and failure accounting}
 
-The record contains the accepted/rejected generation ledger; grouped-fold and holdout prediction summaries; extended-ICSOR coefficients and projection audits; log-closure preprocessing, penalty grid and choice, coefficients, fold predictions, prediction metrics, and equality residuals; trust diagnostics; selected controls; raw, closure, projected, optimizer-native, and exact responses; reported SRT; exact-reference validity and retained-engineering-feasibility status; $S$--$M$ comparison eligibility; source-specific physical audits; solver and convergence records; and casewise timing summaries. Optimization failure, projection infeasibility, convergence qualification, exact-reference validity, retained engineering feasibility, and pairwise-comparison eligibility are distinct status fields. Below-8-d SRT is retained as a descriptive observation rather than encoded as a failure. A finite result that fails another scientific threshold is retained as a diagnostic; missing or non-finite arrays, an undefined scale or feature map, a failed factorization, or an integrity/checkpoint inconsistency remains a hard computational failure.
+The record retains the accepted and rejected generation ledger, grouped-fold and holdout summaries, fitted coefficients, projection audits, and trust diagnostics. The closure record includes preprocessing, the penalty grid and selected value, coefficients, fold predictions, prediction metrics, and equality residuals. Decision records contain the selected controls and the raw, closure, projected, optimizer-native, and exact responses. They also retain SRT, physical audits, solver and convergence records, and casewise timing summaries.
+
+Optimization failure, projection infeasibility, convergence qualification, exact-reference validity, retained engineering feasibility, and pairwise-comparison eligibility are distinct status fields. Below-8-d SRT is retained as a descriptive observation rather than encoded as a failure. A finite result that fails another scientific threshold is retained as a diagnostic. Missing or non-finite arrays, an undefined scale or feature map, a failed factorization, or an integrity/checkpoint inconsistency remains a hard computational failure.
+
+\section{Protocol revisions and excluded analyses}
+\label{sec:Shistory}
+
+This section retains the study history needed to distinguish prospective choices from revisions informed by observed outcomes. Earlier fitted models, solver results, and timings are not combined with the revised analysis.
+
+\subsection{Implementation check and sampling revisions}
+
+An earlier implementation check used 400 development inputs, 100 untouched test inputs, five fresh influent scenarios, and a five-layer clarifier. The independent seeds were 500042, 500043, and 500314159, respectively. This check could continue after a scientific acceptance failure to exercise checkpointing, failure accounting, optimization, and reporting. Its fitted quantities and results are excluded from article-scale analysis. It used the box-center start instead of the then-planned nine-start search and imposed a 600 s limit on each embedded-surrogate IPOPT continuation stage. This historical check does not define the current surrogate solver. The article-scale workflow also records failed scientific gates and attempts the remaining calculations without refitting or changing thresholds. Such continuation tests the implementation. Only a run that passes every frozen scientific gate can support the article's scientific conclusions.
+
+On 23 August 2026, before article-scale generation or response inspection, the planned workload increased from 800 development and 200 test inputs to 4,000 development and 1,000 test inputs. This prospective revision changed the sample counts and their dependent denominators. It retained the generators, seeds, 80/20 partition, model form, gates, ten scenarios, ten-layer geometry, and then-planned nine-start optimization. The completed 500-input implementation check remained separate.
+
+On 24 August 2026, after the 5,000-input workflow was completed, a new run targeted 50,000 accepted states with a 40,000/10,000 development/test split and ten influent cases. It retained the 80/20 partition, generators, seeds, replacement policy, model, gates, ten-layer geometry, and revised single-start and casewise validation protocols. Changing the Latin-hypercube sample count changes the design itself. The new run therefore used a separate result directory and did not reuse the previous 5,000 states.
+
+Generation was stopped later on 24 August 2026, and the available accepted checkpoints were frozen for analysis. Of 18,211 completed attempts, 16,714 passed the full two-start acceptance checks and 1,497 were rejected. No further replacement generation is performed. Accepted candidates are ordered by original candidate index and partitioned before fitting into 13,371 development rows and 3,343 holdout rows. This workload reduction occurred after generation outcomes were available. The holdout is a deterministic partition of the interrupted development stream, not the originally planned independent test stream. These limitations restrict the interpretation of its assessment results.
+
+The replacement policy had changed on 23 August 2026 after the initial 4,000-candidate development round was audited, but before fitting, test assessment, or optimization. A candidate-level failure no longer terminated generation. Each rejected attempt and its diagnostics remained in an immutable ledger, and a deterministic supplemental candidate was evaluated in its place. Accepted checkpoints were retained after verification of their calculation settings and content hashes. This change was informed by observed generation failures rather than specified prospectively. Replacement ceased when the accepted set was frozen on 24 August. The combined accepted set is not one global strength-one Latin hypercube. Rejected candidates retain stable identifiers, inputs, statuses, and numerical audits but never enter fitting, assessment, or optimization.
+
+\subsection{Solver and validation revisions}
+
+During the resumed calculation on 23 August, a development out-of-fold projection exposed premature termination of the trust-region-reflective bounded least-squares routine used to reconstruct projection multipliers. The primal QP had residuals near roundoff, so the failure was confined to the independent dual reconstruction. A deterministic bounded-variable least-squares active-set algorithm replaced that routine. The QP, data, ridge fit, and acceptance tolerances were unchanged. The run record retains this correction and all failed scientific gates. Continuing execution does not convert a failed gate into a pass.
+
+The approximately 450-variable embedded-KKT surrogate NLP and its seven continuation stages proved computationally impractical for the former layer-output response. On 23 August, that solver and the nine-start search were replaced by a single box-center start for each route and case. The surrogate then used the seven-variable exact-QP active-set calculation, with COBYQA when exact derivatives were unavailable. Both search methods evaluated the unchanged cold projection QP. The direct route retained its three-stage smoothing continuation. This revision was informed by observed computational cost and limited exploration to one local basin. The earlier fit, failures, budget-limited candidates, and unresolved audits remain archived but are excluded after the response revision described below.
+
+On 24 August, preliminary case results exposed unresolved surrogate stationarity and sensitivity to branch-boundary classification. The comparison protocol was revised after these outcomes were inspected. Whole-holdout smooth/reference equivalence was removed as an admission test, and partial legacy results were archived and excluded. Each available selected decision was instead replayed from both declared starts on the common nonsmooth reference. A branch-boundary ambiguity qualified the interpretation but did not alone reject a physically valid, reproducible result. Surrogate convergence used the strong-KKT and finite-resolution tiers. After a failed primary direct solve, one recovery could start from that case's certified surrogate control using the unchanged continuation. This dependency is not independent basin exploration. These layer-output results were subsequently superseded.
+
+The first feasible-poll protocol left all eleven surrogate cases unresolved. Three exhausted its 120-evaluation budget, and eight failed its rank criterion. The fine poll had limited coverage of tangent directions and required full rank in $\mathbb R^7$ even where active constraints restricted the feasible cone. A second protocol expanded the fine poll to 106 directions and raised the shared QP budget to 2,500. It required a feasible nonzero displacement in each complete poll, treated rank as diagnostic, and revalidated the coarse radius after each accepted fine-scale move. In that run, influent case 05 accepted 36 successive fine-scale moves but exhausted the budget before completing another sweep. Protocol v3 added ray acceleration to address this inefficient fixed-step search while retaining the final two-scale no-descent test. Both predecessor result sets are archived and excluded. The historical rerun used a separate result directory and provenance manifest. After the response reduction, only accepted mechanistic states and unchanged inputs may be inherited with verified hashes. Fits, assessments, surrogate searches, convergence records, replays at surrogate-selected controls, and timings must be recomputed. The v3 poll provides only finite-direction, finite-resolution evidence.
+
+After all eleven case calculations were complete, the repeated holdout inference benchmark was stopped on 24 August before completion and excluded from analysis. Timing under the former layer-output protocol was instead summarized from recorded durations for influent cases 1--10. These historical timings cannot represent the reduced-response surrogate.
+
+\subsection{Response and engineering revisions}
+
+On 25 August, the ten statistical layer outputs were replaced by the single inventory $M_{\rm cl}$ after layer-wise holdout summaries and results from the 170-coordinate surrogate had been inspected. This reduction retained the storage information needed for operational evaluation without fitting internal layers. Accepted full mechanistic states remained valid source data. The inventory mapping in Section~S2 defined the response in Equation~\eqref{eq:Sresponse} under a revised schema hash. The former response arrays, fits, scales, projection and trust thresholds, assessments, surrogate decisions, convergence records, replays at those decisions, and surrogate timings were excluded. Fitting and all downstream surrogate calculations must be repeated. The mechanistic generator, direct model, exact reference, accepted-row membership, nominal input, and scenario inputs were unchanged. Because earlier summaries informed this revision, the holdout and ten scenarios provide descriptive post-selection evidence only.
+
+On 26 August, low-overflow-TSS diagnostics motivated the addition of the scalar log regression in Equation~\eqref{eq:Slogclosure}. The 161-coordinate raw regression and response definition were retained. The revised projection requires repeated assessment, trust calibration, optimization, replay, and timing. It uses neither a fixed feed-ratio floor nor post-projection clipping. The holdout informed this choice and therefore remains descriptive, as do the scenario comparisons.
+
+On 27 August, the 8-d lower-SRT constraint was removed after the first log-closure run showed that it excluded otherwise valid exact replays. This outcome-informed change applies to both optimization routes and paired-comparison eligibility. SRT remains reported, and the 30-d upper bound remains enforced. All other native-feasibility, replay, engineering, non-negativity, and layer-envelope checks are unchanged. Revised results require either a new run identifier tied to the source version or an explicitly labeled post-processing reinterpretation. Earlier outputs and eligibility labels must remain intact.
 
 \begin{thebibliography}{00}
 \bibitem[Boyd and Vandenberghe(2004)]{Boyd2004}
 Boyd, S., Vandenberghe, L., 2004. Convex Optimization. Cambridge University Press.
+\bibitem[Hastie et~al.(2009)Hastie, Tibshirani, and Friedman]{Hastie2009}
+Hastie, T., Tibshirani, R., Friedman, J., 2009. The Elements of Statistical Learning, second ed. Springer.
 \bibitem[Henze et~al.(2006)Henze, Gujer, Mino, and van Loosdrecht]{Henze2006}
 Henze, M., Gujer, W., Mino, T., van Loosdrecht, M.C., 2006. Activated Sludge Models ASM1, ASM2, ASM2d and ASM3. IWA Publishing.
 \bibitem[McKay et~al.(1979)McKay, Beckman, and Conover]{McKay1979}
 McKay, M.D., Beckman, R.J., Conover, W.J., 1979. A comparison of three methods for selecting values of input variables in the analysis of output from a computer code. Technometrics 21, 239--245.
 \bibitem[Selerio(2026)]{Selerio2026}
 Selerio Jr., E.F., 2026. An interpretable statistical surrogate of activated sludge systems that preserves mass conservation and component non-negativity. Digital Chemical Engineering 20, 100329.
+\bibitem[Stellato et~al.(2020)Stellato, Banjac, Goulart, Bemporad, and Boyd]{Stellato2020}
+Stellato, B., Banjac, G., Goulart, P., Bemporad, A., Boyd, S., 2020. OSQP: An operator splitting solver for quadratic programs. Mathematical Programming Computation 12, 637--672.
 \bibitem[Tak\'acs et~al.(1991)Tak\'acs, Patry, and Nolasco]{Takacs1991}
 Tak\'acs, I., Patry, G.G., Nolasco, D., 1991. A dynamic model of the clarification-thickening process. Water Research 25, 1263--1271.
 \end{thebibliography}
