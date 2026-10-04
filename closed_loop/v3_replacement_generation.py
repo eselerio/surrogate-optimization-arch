@@ -8,7 +8,7 @@ Development and test blocks use independent SplitMix64 streams.
 
 from __future__ import annotations
 
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import asdict, dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -551,6 +551,12 @@ def _solve_candidates(
     if missing:
         progress_interval = max(1, len(candidates) // 100)
         completed_now = 0
+        batch_started = time.monotonic()
+        print(
+            f"[{label}] starting {len(missing)} candidate solves with "
+            f"{profile.parallel_workers} workers",
+            flush=True,
+        )
         with ProcessPoolExecutor(max_workers=profile.parallel_workers) as pool:
             futures = {
                 pool.submit(
@@ -564,37 +570,57 @@ def _solve_candidates(
                 ): candidate
                 for candidate in missing
             }
-            for future in as_completed(futures):
-                candidate = futures[future]
-                try:
-                    result = future.result()
-                    target = np.asarray(result["target"], dtype=float)
-                    first = np.asarray(result["state"], dtype=float)
-                    second = np.asarray(result["state_start_2"], dtype=float)
-                    record = _record_from_result(result, candidate)
-                except Exception as error:  # an individual candidate is auditable, not fatal
-                    target = np.full(profile.mechanistic_response_count, np.nan)
-                    first = np.full(state_size, np.nan)
-                    second = np.full(state_size, np.nan)
-                    record = _error_record(candidate, error)
-                _write_attempt(
-                    candidate, contract_hash=contract_hash, target=target,
-                    first=first, second=second, record=record,
+            pending = set(futures)
+            while pending:
+                done, pending = wait(
+                    pending, timeout=60.0, return_when=FIRST_COMPLETED,
                 )
-                loaded[candidate.candidate_id] = (
-                    candidate, target, first, second, record,
-                )
-                completed_now += 1
-                completed_total = len(candidates) - len(missing) + completed_now
-                if (
-                    completed_total % progress_interval == 0
-                    or completed_total == len(candidates)
-                ):
+                if not done:
+                    elapsed = time.monotonic() - batch_started
                     print(
-                        f"[{label}] immutable attempt checkpoints "
-                        f"{completed_total}/{len(candidates)}",
+                        f"[{label}] heartbeat: {completed_now}/{len(missing)} "
+                        f"new checkpoints after {elapsed / 60.0:.1f} min; "
+                        f"{len(pending)} pending",
                         flush=True,
                     )
+                    continue
+                for future in done:
+                    candidate = futures[future]
+                    try:
+                        result = future.result()
+                        target = np.asarray(result["target"], dtype=float)
+                        first = np.asarray(result["state"], dtype=float)
+                        second = np.asarray(result["state_start_2"], dtype=float)
+                        record = _record_from_result(result, candidate)
+                    except Exception as error:  # an individual candidate is auditable, not fatal
+                        target = np.full(profile.mechanistic_response_count, np.nan)
+                        first = np.full(state_size, np.nan)
+                        second = np.full(state_size, np.nan)
+                        record = _error_record(candidate, error)
+                    _write_attempt(
+                        candidate, contract_hash=contract_hash, target=target,
+                        first=first, second=second, record=record,
+                    )
+                    loaded[candidate.candidate_id] = (
+                        candidate, target, first, second, record,
+                    )
+                    completed_now += 1
+                    completed_total = len(candidates) - len(missing) + completed_now
+                    if (
+                        completed_total % progress_interval == 0
+                        or completed_total == len(candidates)
+                    ):
+                        elapsed = max(time.monotonic() - batch_started, 1.0e-9)
+                        rate = completed_now / elapsed
+                        remaining = len(missing) - completed_now
+                        eta = remaining / rate if rate > 0.0 else float("inf")
+                        print(
+                            f"[{label}] immutable attempt checkpoints "
+                            f"{completed_total}/{len(candidates)}; "
+                            f"elapsed {elapsed / 60.0:.1f} min; "
+                            f"ETA {eta / 60.0:.1f} min",
+                            flush=True,
+                        )
     return [loaded[candidate.candidate_id] for candidate in candidates]
 
 
