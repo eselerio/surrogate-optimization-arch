@@ -2101,10 +2101,6 @@ class ClosedLoopWorkflow:
         domain = np.asarray([1.0 - feed_tss, 1.0 - boundary])
         engineering = np.asarray(
             [
-                (8.0 * mechanism.CLARIFIER.fresh_flow * boundary - inventory) / inventory_scale,
-                (inventory - 30.0 * mechanism.CLARIFIER.fresh_flow * boundary) / inventory_scale,
-                (sor - 20.0) / 20.0,
-                (slr - 100.0) / 100.0,
                 (underflow_tss - underflow_limit) / 15_000.0,
             ]
         )
@@ -2515,7 +2511,7 @@ class ClosedLoopWorkflow:
             ("exact_effluent", "effluent_composites", ("cod", "tn", "tp", "tss")),
             ("exact_underflow", "underflow_composites", ("cod", "tn", "tp", "tss")),
             ("exact_domain", "domain_rows", ("feed_tss", "boundary_solids")),
-            ("exact_engineering_row", "engineering_rows", ("srt_min", "srt_max", "sor", "slr", "underflow_tss")),
+            ("exact_engineering_row", "engineering_rows", ("underflow_tss",)),
         ):
             values = engineering.get(key)
             for index, name in enumerate(names):
@@ -2735,17 +2731,13 @@ class ClosedLoopWorkflow:
         groups = (
             ("domain_feed_tss", 0),
             ("domain_boundary_solids", 1),
-            ("engineering_srt_min", 2),
-            ("engineering_srt_max", 3),
-            ("engineering_sor", 4),
-            ("engineering_slr", 5),
-            ("engineering_underflow_tss", 6),
-            ("trust_fidelity", 7),
-            ("trust_leverage", 8),
+            ("engineering_underflow_tss", 2),
+            ("trust_fidelity", 3),
+            ("trust_leverage", 4),
         )
         activity: dict[tuple[str, str], list[bool]] = {
             **{("combined_nlp", name): [] for name, _ in groups},
-            **{("exact_bdf", name): [] for name, _ in groups[:7]},
+            **{("exact_bdf", name): [] for name, _ in groups[:3]},
         }
         for row in robust.to_dict(orient="records"):
             selected = row.get("selected_start")
@@ -2761,7 +2753,7 @@ class ClosedLoopWorkflow:
                 exact = _load_json(exact_path).get("engineering")
                 if exact:
                     exact_rows = [*exact["domain_rows"], *exact["engineering_rows"]]
-                    for (name, _), value in zip(groups[:7], exact_rows, strict=True):
+                    for (name, _), value in zip(groups[:3], exact_rows, strict=True):
                         activity[("exact_bdf", name)].append(
                             bool(inequality_lower <= float(value) <= inequality_upper)
                         )

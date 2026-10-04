@@ -8,7 +8,6 @@ import numpy as np
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_RUN = ROOT / "results" / "article_v3" / "article_full_50000_reduced_001"
 SHARED_RESPONSE_COUNT = 160
 REDUCED_RESPONSE_COUNT = 161
 CLARIFIER_VOLUME_M3 = 6_000.0
@@ -54,7 +53,7 @@ def parity_axis(ax: plt.Axes, truth: np.ndarray, prediction: np.ndarray, groups:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("run", type=Path, nargs="?", default=DEFAULT_RUN)
+    parser.add_argument("run", type=Path)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     run = args.run.resolve()

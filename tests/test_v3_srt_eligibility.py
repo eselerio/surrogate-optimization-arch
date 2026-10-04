@@ -47,7 +47,7 @@ def _assets() -> DirectAssets:
         balance_scale=np.ones(state_count),
         quality_scale=np.ones(4),
         envelope_scale=np.ones(2 * (LAYER_COUNT - 2)),
-        engineering_scale=np.ones(4),
+        engineering_scale=np.ones(2),
         decision_center=(DECISION_LOWER + DECISION_UPPER) / 2.0,
         decision_scale=(DECISION_UPPER - DECISION_LOWER) / np.sqrt(12.0),
         influent_center=(INFLUENT_LOWER + INFLUENT_UPPER) / 2.0,
@@ -114,17 +114,24 @@ class MinimumSrtEligibilityTests(unittest.TestCase):
         self.assertIsNone(row["ineligibility_reasons"])
         self.assertTrue(row["minimum_srt_is_descriptive_not_eligibility_gate"])
 
-    def test_each_retained_engineering_violation_remains_ineligible(self) -> None:
-        cases = {
-            "maximum_srt": _response(
-                layers=(5.0, 15_000.0, 15_000.0, 15_000.0, 15_000.0),
-            ),
-            "solids_loading_rate": _response(
+    def test_srt_and_slr_are_descriptive_not_eligibility_gates(self) -> None:
+        responses = (
+            _response(layers=(5.0, 15_000.0, 15_000.0, 15_000.0, 15_000.0)),
+            _response(
                 reactor_tss=10_000.0,
                 effluent_tss=1_000.0,
                 underflow_tss=1_000.0,
                 layers=(1_000.0,) * LAYER_COUNT,
             ),
+        )
+        for response in responses:
+            quantities = engineering_quantities(CONTROLS, response, self.assets)
+            self.assertTrue(np.isfinite(quantities["srt_d"]))
+            self.assertTrue(np.isfinite(quantities["slr_kg_m2_d"]))
+            self.assertTrue(engineering_feasible(CONTROLS, response, self.assets))
+
+    def test_each_retained_engineering_violation_remains_ineligible(self) -> None:
+        cases = {
             "underflow_tss": _response(
                 underflow_tss=16_000.0,
                 layers=(5.0, 20.0, 50.0, 100.0, 16_000.0),

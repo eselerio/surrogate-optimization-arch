@@ -309,24 +309,18 @@ def _mock_timing(run: Path, *_args: object, **_kwargs: object) -> pd.DataFrame:
         {
             "case": f"robustness_{case:02d}",
             "route": route,
-            "primary_optimization_seconds": 1.0,
-            "certification_seconds": 0.5 if route == "surrogate" else np.nan,
-            "recovery_seconds": np.nan,
-            "complete_optimization_seconds": 1.5 if route == "surrogate" else 1.0,
-            "exact_reference_seconds": 0.25,
+            "metric": "Time",
+            "unit": "s",
+            "time_seconds": 1.0,
         }
         for case in range(1, 11)
         for route in ("surrogate", "direct")
     ])
     runner.atomic_dataframe(run / "metrics/robustness_case_timing.csv", frame)
-    runner.atomic_dataframe(run / "metrics/timing_events.csv", pd.DataFrame([{
-        "case": row.case,
-        "route": row.route,
-        "category": f"{row.route}_complete_optimization",
-        "elapsed_seconds": row.complete_optimization_seconds,
-    } for row in frame.itertuples()]))
     runner.atomic_json(run / "metrics/robustness_case_timing_summary.json", {
         "protocol": runner.TIMING_PROTOCOL,
+        "metric": "Time",
+        "unit": "s",
         "robustness_case_count": 10,
     })
     runner.atomic_json(run / "metrics/robustness_case_timing_complete.json", {
@@ -510,11 +504,6 @@ class ArticleV3OptimizationHookTests(unittest.TestCase):
                     runner.atomic_json(case / f"{route}_casewise_reference.json", {
                         "candidate_available": True,
                         "comparison_valid": True,
-                        "optimization_elapsed_seconds": (
-                            float(index) + 0.5
-                            if route == "surrogate" else float(index + 10)
-                        ),
-                        "reference_elapsed_seconds": 0.25,
                         "recovery": {"attempted": False},
                     })
                 comparison = case / "common_reference_comparison.json"
@@ -531,16 +520,18 @@ class ArticleV3OptimizationHookTests(unittest.TestCase):
                 run, source_files={"unit": "source"}, analysis_id="analysis",
             )
             self.assertEqual(len(frame), 20)
-            means = frame.groupby("route")[
-                "complete_optimization_seconds"
-            ].mean()
-            self.assertAlmostEqual(means["surrogate"], 6.0)
+            means = frame.groupby("route")["time_seconds"].mean()
+            self.assertAlmostEqual(means["surrogate"], 5.5)
             self.assertAlmostEqual(means["direct"], 15.5)
+            self.assertTrue(frame["metric"].eq("Time").all())
+            self.assertTrue(frame["unit"].eq("s").all())
+            self.assertNotIn("complete_optimization_seconds", frame)
             summary = json.loads((
                 run / "metrics/robustness_case_timing_summary.json"
             ).read_text())
             self.assertEqual(summary["robustness_case_count"], 10)
-            self.assertEqual(summary["repeated_test_batch_count"], 0)
+            self.assertEqual(summary["metric"], "Time")
+            self.assertEqual(summary["unit"], "s")
 
     def test_derivative_failure_retains_cross_evaluation_but_rejects_route(self) -> None:
         _, _, _, analysis = _fixture()
@@ -717,9 +708,9 @@ class ArticleV3OptimizationHookTests(unittest.TestCase):
                 "exact_reference_objective_components": np.full(6, 1.0 / 6.0).tolist(),
                 "local_convergence_certified": True,
                 "first_order_stationarity_certified": True,
-                "optimization_elapsed_seconds": route_payload["elapsed_seconds"],
-                "certification_elapsed_seconds": 0.01 if route == "surrogate" else None,
-                "reference_elapsed_seconds": 0.02,
+                "time_metric": "Time",
+                "time_unit": "s",
+                "time_seconds": route_payload["elapsed_seconds"],
                 "reference": {
                     "status": "valid_interior",
                     "branch_ambiguous": False,

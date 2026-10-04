@@ -63,7 +63,7 @@ def _audit_assets(layer_count: int) -> DirectAssets:
         balance_scale=np.ones(state_count),
         quality_scale=np.ones(4),
         envelope_scale=np.ones(2 * (layer_count - 2)),
-        engineering_scale=np.ones(4),
+        engineering_scale=np.ones(2),
         decision_center=(DECISION_LOWER + DECISION_UPPER) / 2.0,
         decision_scale=(DECISION_UPPER - DECISION_LOWER) / np.sqrt(12.0),
         influent_center=(INFLUENT_LOWER + INFLUENT_UPPER) / 2.0,

@@ -353,7 +353,9 @@ class StartAndStructureTests(unittest.TestCase):
         self.assertEqual(evaluated["state"].shape, (110,))
         self.assertEqual(evaluated["complete_state"].shape, (170,))
         self.assertEqual(evaluated["equality"].shape, (110,))
-        self.assertEqual(evaluated["inequality"].shape, (9,))
+        self.assertEqual(
+            evaluated["inequality"].shape, (COMBINED_INEQUALITY_COUNT,)
+        )
         parameter = case.parameter_vector()
         gradient = np.asarray(
             self.problem.gradient_function(point, parameter), dtype=float
@@ -366,7 +368,10 @@ class StartAndStructureTests(unittest.TestCase):
         )
         self.assertEqual(gradient.shape, (115, 1))
         self.assertEqual(equality_jacobian.shape, (110, 115))
-        self.assertEqual(inequality_jacobian.shape, (9, 115))
+        self.assertEqual(
+            inequality_jacobian.shape,
+            (COMBINED_INEQUALITY_COUNT, COMBINED_VARIABLE_COUNT),
+        )
         self.assertTrue(np.all(np.isfinite(gradient)))
         self.assertTrue(np.all(np.isfinite(equality_jacobian)))
         self.assertTrue(np.all(np.isfinite(inequality_jacobian)))
@@ -424,16 +429,10 @@ class StartAndStructureTests(unittest.TestCase):
         )
         expected_domain = np.array([1.0 - feed_tss, 1.0 - boundary])
         expected_engineering = np.array([
-            (8.0 * mechanism.CLARIFIER.fresh_flow * boundary - inventory)
-            / self.assets.inventory_scale,
-            (inventory - 30.0 * mechanism.CLARIFIER.fresh_flow * boundary)
-            / self.assets.inventory_scale,
-            (sor - 20.0) / 20.0,
-            (slr - 100.0) / 100.0,
             (underflow_tss - case.underflow_tss_limit) / 15_000.0,
         ])
         np.testing.assert_allclose(evaluated["inequality"][:2], expected_domain)
-        np.testing.assert_allclose(evaluated["inequality"][2:7], expected_engineering)
+        np.testing.assert_allclose(evaluated["inequality"][2:3], expected_engineering)
 
         effluent = overflow_mass / q_e
         composites = mechanism.COMPOSITE_MATRIX @ effluent

@@ -2,9 +2,9 @@
 
 This repository is the executable companion to the manuscript in
 `article/wip_v3`. The canonical study entry point is `main_closed_loop.ipynb`;
-the v3 contract is recorded in `config/params_manuscript_v3.json`.
+the study contract is recorded in `config/parameters.json`.
 
-The study compares two methods for the same recycling activated-sludge plant:
+The study compares two methods for the same recycling activated sludge plant:
 
 - extended ICSOR (route `S`), and
 - a smooth mechanistic nonlinear program (route `M`).
@@ -41,11 +41,12 @@ resolves the extended-ICSOR projection QPs. Result artifacts are written below
 
 ## Article calculation
 
-The article notebook freezes 16,714 accepted states from an interrupted
-50,000-target generation: 13,371 development rows and 3,343 post-selection
-holdout rows. Ten influent scenarios plus the nominal case use the deterministic
-robustness design seeded with 314159. The holdout and scenarios are descriptive
-post-selection evidence, not confirmatory validation data.
+The article notebook generates 10,000 accepted states directly. Independent
+seeded streams target 8,000 model-development rows and 2,000 descriptive
+holdout rows. Rejected candidates remain audited and are deterministically
+replaced until each accepted-row target is met. Ten influent scenarios plus the
+nominal case use the deterministic robustness design seeded with 314159. The
+holdout and scenarios provide descriptive post-selection evidence.
 
 Both methods use the same seven controls, operating bounds, objective,
 engineering requirements, and exact-reference comparison. The surrogate uses
@@ -53,17 +54,20 @@ active-set projection sensitivities where those audits pass; otherwise it uses
 deterministic value-only COBYQA and two-scale feasible no-descent polls.
 The smooth NLP retains its three-stage continuation and may use one conditional
 recovery from a certified route-S decision after a failed primary solve.
+SRT, SOR, and SLR remain descriptive quantities. The retained engineering
+safeguards cover underflow TSS, feed TSS, and positive external solids loss.
+The physical mass-conservation threshold is `1e-6`.
+
+Only the primary route search is measured. The metric is labeled `Time` and is
+reported in seconds. Certification, recovery, exact replay, fitting, and
+generation are excluded from Time.
 
 To execute a named resumable run:
 
 ```powershell
-$env:PYTHONPATH = "."
 uv run python -u scripts\run_article_v3_5000.py `
-  --run-id article_full_50000_reduced_001 `
-  --use-frozen-accepted-checkpoints `
-  --authorize-parallel-assessment-migration `
-  --assessment-workers 12 `
-  --assessment-batch-size 64 `
+  --run-id article_full_10000_001 `
+  --dataset-count 10000 `
   --through complete
 ```
 
@@ -73,6 +77,6 @@ interruption. Worker count may change on restart; changing batch size starts a
 new checkpoint geometry.
 
 An article result is releasable only when its artifact manifest verifies the
-frozen accepted-set provenance, mechanistic and projection audits, the two
+accepted-set provenance, mechanistic and projection audits, the two
 optimization routes in every case, exact-reference replay, physical-audit
-ledger, and required reporting tables.
+ledger, required reporting tables, and publication figures.

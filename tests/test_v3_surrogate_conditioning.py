@@ -107,13 +107,9 @@ class SurrogateConditioningTests(unittest.TestCase):
             fresh_flow_m3_d=100.0,
             clarifier_area_m2=10.0,
             clarifier_volume_m3=30.0,
-            srt_upper_d=5.0,
             external_loss_min_g_m3=2.0,
-            slr_upper_kg_m2_d=100.0,
             underflow_tss_upper_g_m3=1_000.0,
             feed_tss_min_g_m3=10.0,
-            sor_upper_m_d=20.0,
-            inventory_scale=100_000.0,
         )
         assets = SimpleNamespace(
             layout=layout,
@@ -134,23 +130,17 @@ class SurrogateConditioningTests(unittest.TestCase):
         inventory = 100.0 * 100.0 + 10.0 * 300.0
         expected = np.asarray(
             [
-                (inventory - 5.0 * 100.0 * external_loss) / 100_000.0,
                 (2.0 - external_loss) / 2.0,
-                (1.5 - 100.0) / 100.0,
                 (200.0 / 0.6 - 1_000.0) / 1_000.0,
                 (10.0 - 100.0) / 10.0,
-                (9.0 - 20.0) / 20.0,
             ]
         )
         self.assertEqual(
             names,
             (
-                "srt_upper",
                 "external_solids_loss_guard",
-                "slr_upper",
                 "underflow_tss_upper",
                 "feed_tss_lower",
-                "sor_upper",
             ),
         )
         np.testing.assert_allclose(np.asarray(constraints).reshape(-1), expected)

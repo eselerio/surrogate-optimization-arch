@@ -541,38 +541,22 @@ class ReportingSnapshotTests(unittest.TestCase):
                 {
                     "case": "robustness_01", "route": "surrogate",
                     "candidate_available": True,
-                    "primary_optimization_seconds": 10.0,
-                    "certification_seconds": 5.0,
-                    "recovery_seconds": np.nan,
-                    "complete_optimization_seconds": 15.0,
-                    "exact_reference_seconds": 7.0,
+                    "metric": "Time", "unit": "s", "time_seconds": 10.0,
                 },
                 {
                     "case": "robustness_02", "route": "surrogate",
                     "candidate_available": True,
-                    "primary_optimization_seconds": 20.0,
-                    "certification_seconds": 9.0,
-                    "recovery_seconds": np.nan,
-                    "complete_optimization_seconds": 29.0,
-                    "exact_reference_seconds": 11.0,
+                    "metric": "Time", "unit": "s", "time_seconds": 20.0,
                 },
                 {
                     "case": "robustness_01", "route": "direct",
                     "candidate_available": True,
-                    "primary_optimization_seconds": 12.0,
-                    "certification_seconds": np.nan,
-                    "recovery_seconds": np.nan,
-                    "complete_optimization_seconds": 12.0,
-                    "exact_reference_seconds": 8.0,
+                    "metric": "Time", "unit": "s", "time_seconds": 12.0,
                 },
                 {
                     "case": "robustness_02", "route": "direct",
                     "candidate_available": False,
-                    "primary_optimization_seconds": 18.0,
-                    "certification_seconds": np.nan,
-                    "recovery_seconds": np.nan,
-                    "complete_optimization_seconds": 18.0,
-                    "exact_reference_seconds": np.nan,
+                    "metric": "Time", "unit": "s", "time_seconds": 18.0,
                 },
             ]).to_csv(
                 run / "metrics" / "robustness_case_timing.csv",
@@ -580,27 +564,13 @@ class ReportingSnapshotTests(unittest.TestCase):
             )
 
             bundle = build_reporting_tables(run)
-            timing = bundle["timing_summary"].set_index("category")
-            self.assertEqual(
-                timing.loc["surrogate_complete_optimization", "unit"],
-                "seconds_per_robustness_case",
-            )
-            self.assertAlmostEqual(
-                timing.loc["surrogate_complete_optimization", "mean"], 22.0,
-            )
-            self.assertAlmostEqual(
-                timing.loc["direct_complete_optimization", "mean"], 15.0,
-            )
-            self.assertAlmostEqual(
-                timing.loc["surrogate_local_certification", "mean"], 7.0,
-            )
-            self.assertNotIn("raw_inference", timing.index)
-            self.assertNotIn("qp_deployment", timing.index)
+            timing = bundle["timing_summary"].set_index("route")
+            self.assertTrue(timing["metric"].eq("Time").all())
+            self.assertTrue(timing["unit"].eq("s").all())
+            self.assertAlmostEqual(timing.loc["surrogate", "mean"], 15.0)
+            self.assertAlmostEqual(timing.loc["direct", "mean"], 15.0)
             workload = bundle["timing_workload"].set_index("route")
-            self.assertAlmostEqual(
-                workload.loc["direct", "reference_validation_time_seconds"],
-                8.0,
-            )
+            self.assertEqual(workload.loc["direct", "candidate_available_count"], 1)
 
     def test_incomplete_cases_and_zero_count_failure_classes_are_retained(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
+import nbformat
 import pandas as pd
 
 from closed_loop.manuscript_v3 import (
@@ -551,32 +552,41 @@ TRUST_LIMITS = {
 
 
 class ArticleV3FiveThousandContractTests(unittest.TestCase):
-    def test_full_profile_is_exactly_four_thousand_plus_one_thousand(self) -> None:
+    def test_full_profile_is_exactly_eight_thousand_plus_two_thousand(self) -> None:
         runner.validate_authorized_profile(ARTICLE_FULL)
-        self.assertEqual(ARTICLE_FULL.development_count, 4_000)
-        self.assertEqual(ARTICLE_FULL.test_count, 1_000)
-        self.assertEqual(ARTICLE_FULL.development_count + ARTICLE_FULL.test_count, 5_000)
+        self.assertEqual(ARTICLE_FULL.development_count, 8_000)
+        self.assertEqual(ARTICLE_FULL.test_count, 2_000)
+        self.assertEqual(ARTICLE_FULL.development_count + ARTICLE_FULL.test_count, 10_000)
         self.assertEqual(ARTICLE_FULL.robustness_count, 10)
         self.assertEqual(ARTICLE_FULL.layer_count, 10)
         self.assertTrue(ARTICLE_FULL.article_eligible)
         self.assertTrue(ARTICLE_FULL.enforce_admission_gate)
+
+    def test_ten_thousand_profile_generates_fresh_accepted_rows(self) -> None:
+        profile = runner.profile_for_dataset_total(10_000)
+
+        runner.validate_authorized_profile(profile)
+        self.assertEqual(profile.name, "article_full_10000")
+        self.assertEqual(profile.development_count, 8_000)
+        self.assertEqual(profile.test_count, 2_000)
+        self.assertNotEqual(profile.name, runner.SAMPLED_PROFILE_NAME)
 
     def test_full_design_is_distinct_from_smoke_test(self) -> None:
         self.assertNotEqual(ARTICLE_FULL.development_seed, TEST_500.development_seed)
         self.assertNotEqual(ARTICLE_FULL.test_seed, TEST_500.test_seed)
         design = create_design(ARTICLE_FULL)
         runner.validate_design(design, ARTICLE_FULL)
-        self.assertEqual(design["development_decisions"].shape, (4_000, 7))
-        self.assertEqual(design["development_influents"].shape, (4_000, 20))
-        self.assertEqual(design["test_decisions"].shape, (1_000, 7))
-        self.assertEqual(design["test_influents"].shape, (1_000, 20))
+        self.assertEqual(design["development_decisions"].shape, (8_000, 7))
+        self.assertEqual(design["development_influents"].shape, (8_000, 20))
+        self.assertEqual(design["test_decisions"].shape, (2_000, 7))
+        self.assertEqual(design["test_influents"].shape, (2_000, 20))
         self.assertEqual(design["robustness_influents"].shape, (10, 20))
 
     def test_json_profile_matches_executable_profile(self) -> None:
-        payload = json.loads((ROOT / "config/params_manuscript_v3.json").read_text())
-        profile = payload["profiles"]["article_full"]
-        self.assertEqual(profile["development_count"], 4_000)
-        self.assertEqual(profile["test_count"], 1_000)
+        payload = json.loads((ROOT / "config/parameters.json").read_text())
+        profile = payload["profiles"]["article_full_10000"]
+        self.assertEqual(profile["development_count"], 8_000)
+        self.assertEqual(profile["test_count"], 2_000)
         self.assertTrue(profile["continue_after_article_admission_gate_failure"])
         self.assertEqual(runner.ASSESSMENT_GATE_EXECUTION_POLICY, "advisory_continue")
 
@@ -584,8 +594,13 @@ class ArticleV3FiveThousandContractTests(unittest.TestCase):
         required = {
             "scripts/run_article_v3_5000.py",
             "scripts/build_main_closed_loop_v3.py",
+            "scripts/generate_composite_two_route_charts.py",
+            "scripts/plot_surrogate_emulation_quality.py",
+            "scripts/plot_reporting_insights.py",
+            "scripts/plot_nominal_optimum_parity.py",
             "main_closed_loop.ipynb",
             "closed_loop/model.py",
+            "closed_loop/config.py",
             "closed_loop/manuscript_v3.py",
             "closed_loop/projection.py",
             "closed_loop/v3_smooth.py",
@@ -594,9 +609,7 @@ class ArticleV3FiveThousandContractTests(unittest.TestCase):
             "closed_loop/v3_trust.py",
             "closed_loop/v3_reporting.py",
             "closed_loop/v3_replacement_generation.py",
-            "config/params_manuscript_v3.json",
-            "article/wip_v3/manuscript.tex",
-            "article/wip_v3/supplementary_material.tex",
+            "config/parameters.json",
             "pyproject.toml",
             "uv.lock",
         }
@@ -605,14 +618,29 @@ class ArticleV3FiveThousandContractTests(unittest.TestCase):
         self.assertTrue(required.issubset(manifest))
         self.assertTrue(all(len(manifest[name]) == 64 for name in required))
 
+    def test_notebook_digest_ignores_outputs_but_binds_code(self) -> None:
+        source = nbformat.read(ROOT / "main_closed_loop.ipynb", as_version=4)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "copy.ipynb"
+            baseline = runner.notebook_code_digest(ROOT / "main_closed_loop.ipynb")
+            code_cell = next(cell for cell in source.cells if cell.cell_type == "code")
+            code_cell.execution_count = 1
+            code_cell.outputs = [nbformat.v4.new_output("stream", name="stdout", text="ok\n")]
+            nbformat.write(source, path)
+            self.assertEqual(runner.notebook_code_digest(path), baseline)
+
+            code_cell.source += "\nAUTOSAVE_CODE_CHANGE = True\n"
+            nbformat.write(source, path)
+            self.assertNotEqual(runner.notebook_code_digest(path), baseline)
+
     def test_run_directory_cannot_alias_preflight_or_escape_root(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            accepted = runner.resolve_run_directory("article_full_5000_trial1", root)
+            accepted = runner.resolve_run_directory("article_full_10000_trial1", root)
             self.assertEqual(accepted.parent, root.resolve())
             for value in (
                 "test_500_l5_revision_001", "article_v3_full_001",
-                "../article_full_5000_x", "article_full_5000_..", "C:\\temp",
+                "../article_full_10000_x", "article_full_10000_..", "C:\\temp",
             ):
                 with self.subTest(value=value), self.assertRaises(ValueError):
                     runner.resolve_run_directory(value, root)
@@ -1422,7 +1450,7 @@ class ArticleV3FiveThousandContractTests(unittest.TestCase):
                     patch.object(
                         runner, "run_optimization_stage", return_value=True,
                     ) as optimization:
-                runner.main("article_full_5000_unit", "complete")
+                runner.main("article_full_10000_unit", "complete")
             optimization.assert_called_once()
             state = json.loads((run / "run_state.json").read_text())
             self.assertEqual(state["status"], "complete_with_validation_failures")
@@ -1452,7 +1480,7 @@ class ArticleV3FiveThousandContractTests(unittest.TestCase):
                         runner, "run_assessment", side_effect=RuntimeError("numerical"),
                     ), patch.object(runner, "run_optimization_stage") as optimization:
                 with self.assertRaisesRegex(RuntimeError, "numerical"):
-                    runner.main("article_full_5000_unit", "complete")
+                    runner.main("article_full_10000_unit", "complete")
             optimization.assert_not_called()
             state = json.loads((run / "run_state.json").read_text())
             self.assertEqual(state["stage"], "assessment")

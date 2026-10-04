@@ -1,55 +1,44 @@
-"""Command-line entry point for the staged closed-loop article workflow."""
+"""Compatibility entry point for the canonical article workflow."""
 
 from __future__ import annotations
 
 import argparse
-import json
 import os
-from pathlib import Path
 import sys
+from pathlib import Path
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
-from closed_loop.workflow import ClosedLoopWorkflow, STAGES, WorkflowError  # noqa: E402
+from scripts.run_article_v3_5000 import (  # noqa: E402
+    AUTHORIZED_DATASET_TOTALS,
+    DEFAULT_RUN_ID,
+    main as run_article,
+    profile_for_dataset_total,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description=(
-            "Run or resume the development/calibration/assessment workflow and "
-            "the single combined physics-constrained statistical NLP study."
-        )
-    )
-    parser.add_argument(
-        "--config",
-        type=Path,
-        default=REPOSITORY_ROOT / "config" / "params_closed_loop.json",
-        help="Resolved closed-loop JSON configuration.",
-    )
-    parser.add_argument(
-        "--profile",
-        default=os.environ.get("CLOSED_LOOP_PROFILE"),
-        help="Independent-block execution profile (unit, test_2000, or full).",
+        description="Run or resume the canonical 10,000-accepted-state article study."
     )
     parser.add_argument(
         "--run-id",
-        default=os.environ.get("CLOSED_LOOP_RUN_ID"),
-        help="Immutable run identifier; may also use CLOSED_LOOP_RUN_ID.",
+        default=os.environ.get("ARTICLE_V3_RUN_ID", "article_full_10000_001"),
+        help="Immutable result identifier.",
     )
     parser.add_argument(
-        "--through",
-        choices=STAGES,
+        "--dataset-count",
+        type=int,
+        choices=AUTHORIZED_DATASET_TOTALS,
+        default=10_000,
+        help="Accepted development-plus-holdout state count.",
+    )
+    parser.add_argument(
+        "--through", choices=("generation", "assessment", "complete"),
         default="complete",
-        help="Stop after this immutable, independently verified stage.",
-    )
-    parser.add_argument(
-        "--results-root",
-        type=Path,
-        default=None,
-        help="Optional results-root override, primarily for isolated testing.",
     )
     return parser
 
@@ -57,32 +46,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     arguments = parser.parse_args(argv)
-    config = json.loads(arguments.config.read_text(encoding="utf-8"))
-    profile = arguments.profile or config["execution"]["default_profile"]
-    if not arguments.run_id:
-        parser.error("--run-id or CLOSED_LOOP_RUN_ID is required")
-    try:
-        workflow = ClosedLoopWorkflow(
-            config_path=arguments.config,
-            profile=profile,
-            run_id=arguments.run_id,
-            repository_root=REPOSITORY_ROOT,
-            results_root=arguments.results_root,
-        )
-        manifest = workflow.run(through=arguments.through)
-    except WorkflowError as exc:
-        print(f"closed-loop workflow stopped: {exc}", file=sys.stderr)
-        return 2
-    print(
-        json.dumps(
-            {
-                "run_id": manifest["run_id"],
-                "profile": manifest["profile"],
-                "status": manifest["status"],
-                "run_root": str(workflow.run_root),
-            },
-            indent=2,
-        )
+    profile = profile_for_dataset_total(arguments.dataset_count)
+    run_article(
+        arguments.run_id,
+        arguments.through,
+        profile=profile,
     )
     return 0
 

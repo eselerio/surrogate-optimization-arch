@@ -28,6 +28,7 @@ import numpy.typing as npt
 from scipy import linalg
 from scipy.optimize import Bounds, NonlinearConstraint, minimize
 
+from .config import engineering_parameters
 from .manuscript_v3 import DECISION_LOWER, DECISION_UPPER
 from .model import COMPOSITE_MATRIX, INVARIANT_MATRIX, TSS_VECTOR
 from .projection import (
@@ -46,6 +47,7 @@ from .projection import (
 
 FloatArray = npt.NDArray[np.float64]
 TrustRowCallback = Callable[[Any, Any, Any, Any], Any]
+_ENGINEERING_PARAMETERS = engineering_parameters()
 
 GAP_CONTINUATION: tuple[float, ...] = (
     1.0e-2,
@@ -134,54 +136,32 @@ def _safe_name(value: str) -> str:
 
 @dataclass(frozen=True)
 class EngineeringLimits:
-    """Physical constants and case-study engineering limits.
-
-    The maximum-SRT row is evaluated in cross-multiplied form. ``inventory_scale`` is
-    only a positive numerical row scale and cannot change feasibility.
-    """
+    """Physical constants and retained case-study engineering limits."""
 
     fresh_flow_m3_d: float = 10_000.0
     clarifier_area_m2: float = 1_500.0
     clarifier_volume_m3: float = 6_000.0
-    srt_upper_d: float = 30.0
-    external_loss_min_g_m3: float = 1.0
-    slr_upper_kg_m2_d: float = 100.0
-    underflow_tss_upper_g_m3: float = 15_000.0
-    feed_tss_min_g_m3: float = 1.0
-    sor_upper_m_d: float | None = None
-    inventory_scale: float | None = None
+    external_loss_min_g_m3: float = float(
+        _ENGINEERING_PARAMETERS["external_solids_loss_min_g_m3"]
+    )
+    underflow_tss_upper_g_m3: float = float(
+        _ENGINEERING_PARAMETERS["underflow_tss_max_g_m3"]
+    )
+    feed_tss_min_g_m3: float = float(
+        _ENGINEERING_PARAMETERS["feed_tss_min_g_m3"]
+    )
 
     def __post_init__(self) -> None:
         positive = (
             self.fresh_flow_m3_d,
             self.clarifier_area_m2,
             self.clarifier_volume_m3,
-            self.srt_upper_d,
             self.external_loss_min_g_m3,
-            self.slr_upper_kg_m2_d,
             self.underflow_tss_upper_g_m3,
             self.feed_tss_min_g_m3,
         )
         if not all(np.isfinite(value) and value > 0.0 for value in positive):
             raise ValueError("engineering constants and finite limits must be positive.")
-        if self.sor_upper_m_d is not None and (
-            not np.isfinite(self.sor_upper_m_d) or self.sor_upper_m_d <= 0.0
-        ):
-            raise ValueError("sor_upper_m_d must be positive when supplied.")
-        if self.inventory_scale is not None and (
-            not np.isfinite(self.inventory_scale) or self.inventory_scale <= 0.0
-        ):
-            raise ValueError("inventory_scale must be positive when supplied.")
-
-    @property
-    def resolved_inventory_scale(self) -> float:
-        if self.inventory_scale is not None:
-            return float(self.inventory_scale)
-        return float(
-            self.srt_upper_d
-            * self.fresh_flow_m3_d
-            * self.underflow_tss_upper_g_m3
-        )
 
 
 @dataclass(frozen=True)
@@ -733,19 +713,10 @@ def _engineering_expressions(
         * feed_tss
         / limits.clarifier_area_m2
     )
-    scale = limits.resolved_inventory_scale
     rows: list[Any] = [
-        _scaled_upper_residual(
-            inventory - limits.srt_upper_d * limits.fresh_flow_m3_d * external_loss,
-            scale,
-        ),
         _scaled_upper_residual(
             limits.external_loss_min_g_m3 - external_loss,
             limits.external_loss_min_g_m3,
-        ),
-        _scaled_upper_residual(
-            slr - limits.slr_upper_kg_m2_d,
-            limits.slr_upper_kg_m2_d,
         ),
         _scaled_upper_residual(
             underflow_tss - limits.underflow_tss_upper_g_m3,
@@ -757,20 +728,10 @@ def _engineering_expressions(
         ),
     ]
     names = [
-        "srt_upper",
         "external_solids_loss_guard",
-        "slr_upper",
         "underflow_tss_upper",
         "feed_tss_lower",
     ]
-    if limits.sor_upper_m_d is not None:
-        rows.append(
-            _scaled_upper_residual(
-                sor - limits.sor_upper_m_d,
-                limits.sor_upper_m_d,
-            )
-        )
-        names.append("sor_upper")
     # Reported quantities avoid division only where the constraint contract
     # requires it; q_U and external loss are positive on accepted points.
     srt = inventory / (limits.fresh_flow_m3_d * external_loss)

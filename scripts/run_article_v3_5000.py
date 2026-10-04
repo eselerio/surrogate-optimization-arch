@@ -33,6 +33,7 @@ from typing import Any, Mapping
 
 import casadi as ca
 import numpy as np
+import nbformat
 import pandas as pd
 from threadpoolctl import threadpool_limits
 
@@ -63,6 +64,7 @@ from closed_loop.model import (
     N_COMPONENTS,
     N_STAGES,
     TSS_VECTOR,
+    PHYSICAL_BALANCE_TOLERANCE,
     assemble_target,
     branch_classification,
     diagnostics as mechanistic_diagnostics,
@@ -85,6 +87,7 @@ from closed_loop.v3_replacement_generation import (
     MechanisticBlockResult,
     generate_mechanistic_block_with_replacements,
 )
+from closed_loop.config import article_profile_parameters
 from closed_loop import v3_replacement_generation as replacement_generation
 from closed_loop.v3_smooth import (
     CONTINUATION_SCHEDULE,
@@ -127,7 +130,7 @@ from closed_loop.v3_trust import calibrate_trust_diagnostics
 ROOT = Path(__file__).resolve().parents[1]
 RESULTS_ROOT = ROOT / "results" / "article_v3"
 LEGACY_RUN_ID = "article_full_5000_001"
-DEFAULT_RUN_ID = "article_full_5000_002"
+DEFAULT_RUN_ID = "article_full_10000_001"
 RUNNER_SCHEMA = 12
 RESPONSE_SCHEMA = "clarifier_inventory_v1"
 PROJECTION_SCHEMA = "system_wide_log_overflow_closure_v1"
@@ -135,11 +138,11 @@ ASSESSMENT_GATE_EXECUTION_POLICY = "advisory_continue"
 DIRECT_SINGLE_CENTER_PROTOCOL = "smooth_direct_single_center_v1"
 OPTIMIZATION_PROTOCOL = "single_center_local_exact_qp_no_minimum_srt_v2"
 COMPARISON_PROTOCOL = "casewise_exact_common_reference_no_minimum_srt_v4"
-TIMING_PROTOCOL = "robustness_casewise_aggregate_v1"
+TIMING_PROTOCOL = "primary_route_time_v1"
 RUN_ID_PATTERN = re.compile(
-    r"^article_full_(?:5000|10000|50000)_[A-Za-z0-9][A-Za-z0-9_-]*$"
+    r"^article_full_10000_[A-Za-z0-9][A-Za-z0-9_-]*$"
 )
-AUTHORIZED_DATASET_TOTALS = (5_000, 50_000)
+AUTHORIZED_DATASET_TOTALS = (10_000,)
 FROZEN_ACCEPTED_TOTAL = 16_714
 FROZEN_DEVELOPMENT_COUNT = 13_371
 FROZEN_TEST_COUNT = 3_343
@@ -162,8 +165,13 @@ FRESH_ROUTE_LOADER_FIX_PREDECESSOR_CONTRACT_DIGEST = (
 SOURCE_FILES = (
     "scripts/run_article_v3_5000.py",
     "scripts/build_main_closed_loop_v3.py",
+    "scripts/generate_composite_two_route_charts.py",
+    "scripts/plot_surrogate_emulation_quality.py",
+    "scripts/plot_reporting_insights.py",
+    "scripts/plot_nominal_optimum_parity.py",
     "main_closed_loop.ipynb",
     "closed_loop/model.py",
+    "closed_loop/config.py",
     "closed_loop/manuscript_v3.py",
     "closed_loop/projection.py",
     "closed_loop/v3_smooth.py",
@@ -173,9 +181,7 @@ SOURCE_FILES = (
     "closed_loop/v3_trust.py",
     "closed_loop/v3_reporting.py",
     "closed_loop/v3_replacement_generation.py",
-    "config/params_manuscript_v3.json",
-    "article/wip_v3/manuscript.tex",
-    "article/wip_v3/supplementary_material.tex",
+    "config/parameters.json",
     "pyproject.toml",
     "uv.lock",
 )
@@ -1006,13 +1012,30 @@ def file_digest(path: Path) -> str:
     return digest.hexdigest()
 
 
+def notebook_code_digest(path: Path) -> str:
+    """Hash executable notebook sources, excluding execution-only state."""
+
+    notebook = nbformat.read(path, as_version=4)
+    sources = [
+        str(cell.source).replace("\r\n", "\n")
+        for cell in notebook.cells
+        if cell.cell_type == "code"
+    ]
+    payload = json.dumps(
+        sources, ensure_ascii=True, separators=(",", ":"),
+    ).encode("utf-8")
+    return sha256(payload).hexdigest()
+
+
 def source_file_digests() -> dict[str, str]:
     result: dict[str, str] = {}
     for relative in SOURCE_FILES:
         path = ROOT / relative
         if not path.is_file():
             raise RuntimeError(f"required article source is missing: {path}")
-        result[relative] = file_digest(path)
+        result[relative] = (
+            notebook_code_digest(path) if path.suffix == ".ipynb" else file_digest(path)
+        )
     return result
 
 
@@ -1060,7 +1083,7 @@ def _runtime_versions() -> dict[str, str]:
 def resolve_run_directory(run_id: str, results_root: Path = RESULTS_ROOT) -> Path:
     if not RUN_ID_PATTERN.fullmatch(run_id) or ".." in run_id:
         raise ValueError(
-            "full-run id must match article_full_<5000-or-50000>_<identifier>; "
+            "full-run id must match article_full_10000_<identifier>; "
             "preflight names and path components are forbidden"
         )
     root = results_root.resolve()
@@ -1071,20 +1094,27 @@ def resolve_run_directory(run_id: str, results_root: Path = RESULTS_ROOT) -> Pat
 
 
 def profile_for_dataset_total(dataset_total: int) -> StudyProfile:
-    """Return the frozen 80/20 article profile for an authorized row count."""
+    """Return the configured fresh 80/20 article profile."""
 
     if dataset_total not in AUTHORIZED_DATASET_TOTALS:
         raise ValueError(
             f"dataset total must be one of {AUTHORIZED_DATASET_TOTALS}, "
             f"not {dataset_total}"
         )
-    if dataset_total == 5_000:
-        return ARTICLE_FULL
+    configured = article_profile_parameters()
     return replace(
         ARTICLE_FULL,
-        name=f"article_full_{dataset_total}",
-        development_count=dataset_total * 4 // 5,
-        test_count=dataset_total // 5,
+        development_count=int(configured["development_count"]),
+        test_count=int(configured["test_count"]),
+        robustness_count=int(configured["robustness_count"]),
+        layer_count=int(configured["clarifier_layer_count"]),
+        development_seed=int(configured["development_seed"]),
+        test_seed=int(configured["test_seed"]),
+        robustness_seed=int(configured["robustness_seed"]),
+        article_eligible=bool(configured["article_eligible"]),
+        enforce_admission_gate=bool(
+            configured["scientific_admission_gate_enforced_for_article_eligibility"]
+        ),
     )
 
 
@@ -1112,41 +1142,14 @@ def sampled_accepted_profile() -> StudyProfile:
 
 def validate_authorized_profile(profile: StudyProfile) -> None:
     dataset_total = profile.development_count + profile.test_count
-    frozen = profile.name == FROZEN_PROFILE_NAME
-    sampled = profile.name == SAMPLED_PROFILE_NAME
-    if dataset_total not in AUTHORIZED_DATASET_TOTALS and not frozen and not sampled:
+    if dataset_total not in AUTHORIZED_DATASET_TOTALS:
         raise RuntimeError(
             f"article profile requests unauthorized dataset total {dataset_total}"
         )
-    if frozen and (
-        dataset_total != FROZEN_ACCEPTED_TOTAL
-        or profile.development_count != FROZEN_DEVELOPMENT_COUNT
-        or profile.test_count != FROZEN_TEST_COUNT
-    ):
-        raise RuntimeError("frozen accepted profile violates its fixed 80/20 split")
-    if sampled and (
-        dataset_total != SAMPLED_ACCEPTED_TOTAL
-        or profile.development_count != SAMPLED_DEVELOPMENT_COUNT
-        or profile.test_count != SAMPLED_TEST_COUNT
-    ):
-        raise RuntimeError("sampled accepted profile violates its fixed 80/20 split")
     expected = {
-        "name": (
-            FROZEN_PROFILE_NAME if frozen
-            else SAMPLED_PROFILE_NAME if sampled
-            else "article_full" if dataset_total == 5_000
-            else f"article_full_{dataset_total}"
-        ),
-        "development_count": (
-            FROZEN_DEVELOPMENT_COUNT if frozen
-            else SAMPLED_DEVELOPMENT_COUNT if sampled
-            else dataset_total * 4 // 5
-        ),
-        "test_count": (
-            FROZEN_TEST_COUNT if frozen
-            else SAMPLED_TEST_COUNT if sampled
-            else dataset_total // 5
-        ),
+        "name": "article_full_10000",
+        "development_count": 8_000,
+        "test_count": 2_000,
         "robustness_count": 10,
         "layer_count": 10,
         "development_seed": 100_042,
@@ -4021,8 +4024,8 @@ def _validate_generation_block(
         raise RuntimeError(f"{block} mechanistic audits contain non-finite values")
     checks = (
         ("root_difference_inf", np.less_equal, 1.0e-6),
-        ("mass_residual_start_1", np.less_equal, 1.0e-8),
-        ("mass_residual_start_2", np.less_equal, 1.0e-8),
+        ("mass_residual_start_1", np.less_equal, PHYSICAL_BALANCE_TOLERANCE),
+        ("mass_residual_start_2", np.less_equal, PHYSICAL_BALANCE_TOLERANCE),
         ("state_negativity_start_1", np.less_equal, 1.0e-10),
         ("state_negativity_start_2", np.less_equal, 1.0e-10),
         ("rate_negativity_start_1", np.less_equal, 1.0e-12),
@@ -5656,7 +5659,9 @@ def evaluate_admission_gate(
         physical[method] = {
             "mass_conservation_violation_max": mass,
             "nonnegativity_violation_max": negative,
-            "passed": bool(mass <= 1.0e-8 and negative <= 1.0e-10),
+            "passed": bool(
+                mass <= PHYSICAL_BALANCE_TOLERANCE and negative <= 1.0e-10
+            ),
         }
     limits = {name: float(value) for name, value in trust_limits.items()}
     if set(limits) != {
@@ -6505,7 +6510,7 @@ def _run_robustness_case_timing_aggregation(
     source_files: Mapping[str, str],
     analysis_id: str,
 ) -> pd.DataFrame:
-    """Summarize existing optimization timings over the ten robustness cases."""
+    """Summarize primary route Time over the ten robustness cases."""
 
     source_id = source_digest(source_files)
     cases = tuple(f"robustness_{index:02d}" for index in range(1, 11))
@@ -6533,35 +6538,9 @@ def _run_robustness_case_timing_aggregation(
                 reference_path, description=f"{case_id} {route} reference timing",
             )
             input_paths.extend((route_path, reference_path))
-            primary_seconds = float(route_payload["elapsed_seconds"])
-            certification_seconds = 0.0
-            recovery_seconds = 0.0
-            if route == "surrogate":
-                certification_path = (
-                    case_directory / "surrogate_local_convergence.json"
-                )
-                certification = _load_json_object(
-                    certification_path,
-                    description=f"{case_id} surrogate certification timing",
-                )
-                input_paths.append(certification_path)
-                certificate = certification.get("certificate")
-                if not isinstance(certificate, Mapping):
-                    raise RuntimeError(f"{case_id} omits its certification timing")
-                certification_seconds = float(certificate["elapsed_seconds"])
-            else:
-                recovery = reference_payload.get("recovery")
-                if isinstance(recovery, Mapping) and recovery.get("attempted") is True:
-                    recovery_seconds = float(recovery["elapsed_seconds"])
-            complete_seconds = (
-                primary_seconds + certification_seconds + recovery_seconds
-            )
-            reported_complete = reference_payload.get("optimization_elapsed_seconds")
-            if reported_complete is not None and not np.isclose(
-                complete_seconds, float(reported_complete), rtol=1.0e-12, atol=1.0e-9,
-            ):
-                raise RuntimeError(f"{case_id} {route} timing components disagree")
-            reference_seconds = reference_payload.get("reference_elapsed_seconds")
+            time_seconds = float(route_payload["elapsed_seconds"])
+            if not np.isfinite(time_seconds) or time_seconds < 0.0:
+                raise RuntimeError(f"{case_id} {route} has invalid Time")
             rows.append({
                 "case": case_id,
                 "route": route,
@@ -6570,15 +6549,9 @@ def _run_robustness_case_timing_aggregation(
                     reference_payload.get("candidate_available")
                 ),
                 "comparison_valid": bool(reference_payload.get("comparison_valid")),
-                "primary_optimization_seconds": primary_seconds,
-                "certification_seconds": (
-                    certification_seconds if route == "surrogate" else None
-                ),
-                "recovery_seconds": recovery_seconds if recovery_seconds else None,
-                "complete_optimization_seconds": complete_seconds,
-                "exact_reference_seconds": (
-                    None if reference_seconds is None else float(reference_seconds)
-                ),
+                "metric": "Time",
+                "unit": "s",
+                "time_seconds": time_seconds,
             })
 
     input_digests = {
@@ -6593,7 +6566,6 @@ def _run_robustness_case_timing_aggregation(
         "inputs": input_digests,
     })
     ledger_path = run / "metrics" / "robustness_case_timing.csv"
-    events_path = run / "metrics" / "timing_events.csv"
     summary_path = run / "metrics" / "robustness_case_timing_summary.json"
     marker_path = run / "metrics" / "robustness_case_timing_complete.json"
     if marker_path.is_file():
@@ -6605,43 +6577,23 @@ def _run_robustness_case_timing_aggregation(
             return pd.read_csv(ledger_path)
 
     ledger = pd.DataFrame(rows)
-    event_rows: list[dict[str, Any]] = []
-    for row in rows:
-        route = str(row["route"])
-        values = {
-            f"{route}_primary_optimization": row["primary_optimization_seconds"],
-            f"{route}_complete_optimization": row["complete_optimization_seconds"],
-            f"{route}_exact_reference": row["exact_reference_seconds"],
-        }
-        if route == "surrogate":
-            values["surrogate_local_certification"] = row["certification_seconds"]
-        if row["recovery_seconds"] is not None:
-            values["direct_failure_recovery"] = row["recovery_seconds"]
-        for category, value in values.items():
-            if value is not None and np.isfinite(float(value)):
-                event_rows.append({
-                    "case": row["case"], "route": route,
-                    "category": category, "elapsed_seconds": float(value),
-                    "unit": "seconds_per_robustness_case",
-                })
-    events = pd.DataFrame(event_rows)
-    categories = {
-        str(category): _robustness_timing_summary(
-            pd.to_numeric(group["elapsed_seconds"], errors="coerce").tolist()
+    routes = {
+        str(route): _robustness_timing_summary(
+            pd.to_numeric(group["time_seconds"], errors="coerce").tolist()
         )
-        for category, group in events.groupby("category", sort=True)
+        for route, group in ledger.groupby("route", sort=True)
     }
     atomic_dataframe(ledger_path, ledger)
-    atomic_dataframe(events_path, events)
     atomic_json(summary_path, {
         "timing_contract": contract,
         "protocol": TIMING_PROTOCOL,
+        "metric": "Time",
+        "unit": "s",
+        "measurement": "primary route search only",
         "source": "completed robustness/sensitivity cases only",
         "nominal_case_included": False,
         "robustness_case_count": len(cases),
-        "warmup_count": 0,
-        "repeated_test_batch_count": 0,
-        "categories": categories,
+        "routes": routes,
     })
     atomic_json(marker_path, {
         "stage": "robustness_case_timing_aggregation",
@@ -6650,7 +6602,7 @@ def _run_robustness_case_timing_aggregation(
         "input_digest": analysis_id,
         "case_count": len(cases),
         "artifacts": _artifact_hashes(
-            run, (ledger_path, events_path, summary_path),
+            run, (ledger_path, summary_path),
         ),
     })
     return ledger
@@ -8464,24 +8416,7 @@ def _run_casewise_route_reference_evaluation(
         if route == "surrogate" and certification_payload is not None
         else bool(getattr(final, "stationary", False))
     )
-    primary_optimization_seconds = float(
-        route_payload.get("elapsed_seconds", np.nan)
-    )
-    recovery_seconds = (
-        float(recovery_payload.get("elapsed_seconds", 0.0))
-        if recovery_payload is not None and recovery_payload.get("attempted")
-        else 0.0
-    )
-    certification_seconds = (
-        float(certification_payload["certificate"].get("elapsed_seconds", 0.0))
-        if certification_payload is not None
-        and certification_payload.get("certificate") is not None
-        else 0.0
-    )
-    total_optimization_seconds = (
-        primary_optimization_seconds + recovery_seconds + certification_seconds
-        if np.isfinite(primary_optimization_seconds) else None
-    )
+    time_seconds = float(route_payload.get("elapsed_seconds", np.nan))
     payload = {
         "stage": "casewise_exact_common_reference",
         "reference_contract": contract,
@@ -8524,16 +8459,9 @@ def _run_casewise_route_reference_evaluation(
         "native_model_error": _scaled_response_errors(
             native_response, reference, response_scale,
         ),
-        "primary_optimization_elapsed_seconds": (
-            primary_optimization_seconds
-            if np.isfinite(primary_optimization_seconds) else None
-        ),
-        "recovery_elapsed_seconds": recovery_seconds if recovery_seconds else None,
-        "optimization_elapsed_seconds": total_optimization_seconds,
-        "certification_elapsed_seconds": (
-            certification_seconds if certification_seconds else None
-        ),
-        "reference_elapsed_seconds": reference_payload.get("elapsed_seconds"),
+        "time_metric": "Time",
+        "time_unit": "s",
+        "time_seconds": time_seconds if np.isfinite(time_seconds) else None,
         "recovery": recovery_payload,
     }
     atomic_json(payload_path, payload, nonfinite_to_none=True)
@@ -8660,17 +8588,8 @@ def _casewise_comparison_row(
         component_differences = (
             np.asarray(s_components, dtype=float) - np.asarray(d_components, dtype=float)
         ).tolist()
-    surrogate_seconds = surrogate.get("optimization_elapsed_seconds")
-    direct_seconds = direct.get("optimization_elapsed_seconds")
-    timing_ratio = (
-        float(direct_seconds) / float(surrogate_seconds)
-        if surrogate_seconds is not None
-        and direct_seconds is not None
-        and np.isfinite(float(surrogate_seconds))
-        and np.isfinite(float(direct_seconds))
-        and float(surrogate_seconds) > 0.0
-        else None
-    )
+    surrogate_seconds = surrogate.get("time_seconds")
+    direct_seconds = direct.get("time_seconds")
     row = {
         "case": case_id,
         "comparison_eligible": eligible,
@@ -8707,12 +8626,10 @@ def _casewise_comparison_row(
             None if control_difference is None else control_difference["maximum"]
         ),
         "objective_component_differences": component_differences,
-        "surrogate_optimization_seconds": surrogate_seconds,
-        "direct_optimization_seconds": direct_seconds,
-        "mechanistic_surrogate_time_ratio": timing_ratio,
-        "surrogate_certification_seconds": surrogate.get("certification_elapsed_seconds"),
-        "surrogate_reference_seconds": surrogate.get("reference_elapsed_seconds"),
-        "direct_reference_seconds": direct.get("reference_elapsed_seconds"),
+        "time_metric": "Time",
+        "time_unit": "s",
+        "surrogate_time_seconds": surrogate_seconds,
+        "direct_time_seconds": direct_seconds,
     }
     if component_differences is not None:
         row.update({
@@ -9143,25 +9060,9 @@ def run_optimization_stage(
                 "optimizer_native_reference_nrmse": native_error.get("nrmse"),
                 "optimizer_native_reference_nmae": native_error.get("nmae"),
                 "optimizer_native_reference_scaled_inf": native_error.get("scaled_inf"),
-                "optimization_elapsed_seconds": evaluation.get(
-                    "optimization_elapsed_seconds"
-                ),
-                "primary_optimization_elapsed_seconds": evaluation.get(
-                    "primary_optimization_elapsed_seconds"
-                ),
-                "recovery_elapsed_seconds": evaluation.get("recovery_elapsed_seconds"),
-                "certification_elapsed_seconds": evaluation.get(
-                    "certification_elapsed_seconds"
-                ),
-                "reference_elapsed_seconds": evaluation.get(
-                    "reference_elapsed_seconds"
-                ),
-                "reference_current_run_reuse_overhead_seconds": reference.get(
-                    "current_run_reuse_overhead_seconds"
-                ),
-                "reference_retained_original_solve_elapsed_seconds": reference.get(
-                    "retained_original_solve_elapsed_seconds"
-                ),
+                "time_metric": "Time",
+                "time_unit": "s",
+                "time_seconds": evaluation.get("time_seconds"),
             }
             if isinstance(normalized_controls, list) and len(normalized_controls) == 7:
                 row.update({
@@ -9429,7 +9330,6 @@ def run_optimization_stage(
         report_manifest,
         run / "metrics" / "robustness_case_timing_complete.json",
         run / "metrics" / "robustness_case_timing.csv",
-        run / "metrics" / "timing_events.csv",
         run / "metrics" / "robustness_case_timing_summary.json",
         *(run / "optimization" / case_id / "casewise_comparison_complete.json"
           for case_id, _ in case_inputs),
@@ -9639,32 +9539,8 @@ if __name__ == "__main__":
         "--dataset-count",
         type=int,
         choices=AUTHORIZED_DATASET_TOTALS,
-        default=int(os.environ.get("ARTICLE_V3_DATASET_COUNT", "5000")),
+        default=int(os.environ.get("ARTICLE_V3_DATASET_COUNT", "10000")),
         help="accepted development-plus-test rows; the split remains 80/20",
-    )
-    parser.add_argument(
-        "--use-frozen-accepted-checkpoints",
-        action="store_true",
-        help=(
-            "freeze the 16,714 accepted checkpoints in the interrupted 50k "
-            "run into a 13,371/3,343 development/holdout dataset"
-        ),
-    )
-    parser.add_argument(
-        "--use-random-sampled-accepted-checkpoints",
-        action="store_true",
-        help=(
-            "randomly sample 10,000 rows without replacement from the 16,714 "
-            "accepted frozen checkpoints, then use the fixed 8,000/2,000 split"
-        ),
-    )
-    parser.add_argument(
-        "--reuse-from-run-id",
-        default=os.environ.get("ARTICLE_V3_REUSE_FROM_RUN_ID"),
-        help=(
-            "create a new self-contained rerun directory by byte-copying the "
-            "validated upstream and primary-search artifacts from this run id"
-        ),
     )
     parser.add_argument(
         "--through", choices=("generation", "assessment", "complete"),
@@ -9727,43 +9603,12 @@ if __name__ == "__main__":
         ),
     )
     arguments = parser.parse_args()
-    if (
-        arguments.use_frozen_accepted_checkpoints
-        and arguments.use_random_sampled_accepted_checkpoints
-    ):
-        parser.error("only one accepted-checkpoint mode may be selected")
-    selected_profile = (
-        frozen_accepted_profile()
-        if arguments.use_frozen_accepted_checkpoints
-        else sampled_accepted_profile()
-        if arguments.use_random_sampled_accepted_checkpoints
-        else profile_for_dataset_total(arguments.dataset_count)
-    )
-    reuse_from_run_id = arguments.reuse_from_run_id
-    migration_requested = any((
-        arguments.authorize_generation_replacement_migration,
-        arguments.authorize_assessment_recovery_migration,
-        arguments.authorize_single_start_exact_qp_migration,
-        arguments.authorize_casewise_common_reference_migration,
-        arguments.authorize_convergence_poll_refinement_migration,
-        arguments.authorize_casewise_timing_migration,
-        arguments.authorize_fresh_route_loader_fix_migration,
-    ))
-    if (
-        reuse_from_run_id is None
-        and arguments.run_id == DEFAULT_RUN_ID
-        and not migration_requested
-    ):
-        reuse_from_run_id = LEGACY_RUN_ID
+    selected_profile = profile_for_dataset_total(arguments.dataset_count)
     main(
         arguments.run_id,
         arguments.through,
         profile=selected_profile,
-        use_frozen_accepted_checkpoints=arguments.use_frozen_accepted_checkpoints,
-        use_random_sampled_accepted_checkpoints=(
-            arguments.use_random_sampled_accepted_checkpoints
-        ),
-        reuse_from_run_id=reuse_from_run_id,
+        reuse_from_run_id=None,
         authorize_generation_replacement_migration=(
             arguments.authorize_generation_replacement_migration
         ),

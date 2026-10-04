@@ -15,8 +15,19 @@ from typing import Iterable, Mapping
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
+from .config import engineering_parameters, physical_balance_tolerance
+
 
 FloatArray = NDArray[np.float64]
+PHYSICAL_BALANCE_TOLERANCE = physical_balance_tolerance()
+_ENGINEERING_PARAMETERS = engineering_parameters()
+UNDERFLOW_TSS_MAX_G_M3 = float(
+    _ENGINEERING_PARAMETERS["underflow_tss_max_g_m3"]
+)
+FEED_TSS_MIN_G_M3 = float(_ENGINEERING_PARAMETERS["feed_tss_min_g_m3"])
+EXTERNAL_SOLIDS_LOSS_MIN_G_M3 = float(
+    _ENGINEERING_PARAMETERS["external_solids_loss_min_g_m3"]
+)
 
 COMPONENTS: tuple[str, ...] = (
     "S_O",
@@ -784,7 +795,7 @@ def mechanistic_balance_audit(
     influent: ArrayLike,
     clarifier: ClarifierParameters = CLARIFIER,
     *,
-    balance_tolerance: float = 1.0e-8,
+    balance_tolerance: float = PHYSICAL_BALANCE_TOLERANCE,
     state_tolerance: float = 1.0e-10,
     rate_tolerance: float = 1.0e-12,
 ) -> dict[str, object]:
@@ -896,7 +907,8 @@ def mechanistic_balance_audit(
         and maximum_rate_negativity <= rate_tolerance
         and maximum_envelope <= state_tolerance
         and feed_tss >= 1.0
-        and external_solids_loss >= 1.0
+        and feed_tss >= FEED_TSS_MIN_G_M3
+        and external_solids_loss >= EXTERNAL_SOLIDS_LOSS_MIN_G_M3
     )
     return {
         "passed": passed,
@@ -1005,6 +1017,7 @@ def diagnostics(
     influent: ArrayLike,
     *,
     residual_tolerance: float = 1e-8,
+    balance_tolerance: float = PHYSICAL_BALANCE_TOLERANCE,
     check_stability: bool = True,
     clarifier: ClarifierParameters = CLARIFIER,
     strict_v3: bool = False,
@@ -1061,7 +1074,7 @@ def diagnostics(
                           and np.all(layers[1:-1] <= layers[-1] + 1e-10))
     recovery_ok = bool(np.isnan(eta) or lower_recovery - 1e-10 <= eta <= 1.0 + 1e-10)
     v3_audit = mechanistic_balance_audit(
-        state, operating, x, clarifier, balance_tolerance=residual_tolerance,
+        state, operating, x, clarifier, balance_tolerance=balance_tolerance,
     )
     physical_pass = bool(
         np.min(state) >= -1e-10
@@ -1312,6 +1325,7 @@ def solve_steady_state(
     max_nfev: int = 5_000,
     tolerance: float = 1e-9,
     acceptance_tolerance: float = 1e-8,
+    balance_tolerance: float = PHYSICAL_BALANCE_TOLERANCE,
     starts: tuple[int, ...] = (1, 2),
     minimum_relaxation_days: float = 400.0,
     solids_turnovers: float = 50.0,
@@ -1343,6 +1357,7 @@ def solve_steady_state(
         y0 = initial_state(x, start, clarifier)
         initial_replay = diagnostics(
             y0, operating, x, residual_tolerance=acceptance_tolerance,
+            balance_tolerance=balance_tolerance,
             clarifier=clarifier, strict_v3=strict_v3,
         )
         if bool(initial_replay["passed"]):
@@ -1384,6 +1399,7 @@ def solve_steady_state(
             replay = diagnostics(
                 endpoint, operating, x,
                 residual_tolerance=acceptance_tolerance,
+                balance_tolerance=balance_tolerance,
                 clarifier=clarifier, strict_v3=strict_v3,
             )
             if bool(replay["passed"]):
@@ -1408,6 +1424,7 @@ def solve_steady_state(
         replay = diagnostics(
             result.x, operating, x,
             residual_tolerance=acceptance_tolerance,
+            balance_tolerance=balance_tolerance,
             clarifier=clarifier, strict_v3=strict_v3,
         )
         candidate = SteadyStateResult(

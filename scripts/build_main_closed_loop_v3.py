@@ -23,7 +23,7 @@ def markdown(source: str):
 
 cells = [
     markdown(r"""
-# Manuscript-v3 closed-loop article run
+# Closed-loop article run
 
 This notebook is the canonical, resumable interface to
 `scripts/run_article_v3_5000.py`. The production driver, rather than duplicated
@@ -33,13 +33,14 @@ post-selection-holdout surrogate assessment, scientific admission gates, paired 
 casewise exact-reference replay, convergence and physical audits, and
 Results/Discussion tables.
 
-The production interface supports the original **5,000 accepted-dataset**
-workload, the interrupted 50,000-target run, and its user-frozen set of
-**16,714 accepted datasets**. The frozen set contains 13,371 development and
-3,343 post-selection holdout rows; it is the default for the revised analysis,
-and no further mechanistic rows are generated. Rejected mechanistic candidates
-remain fully audited but are excluded and deterministically replaced. Each uses ten
-robustness cases plus the nominal case and a ten-layer
+The production study generates **10,000 accepted mechanistic states** directly.
+Independent seeded streams target 8,000 model-development states and 2,000
+descriptive holdout states. Each stream begins with a strength-one Latin
+hypercube. Rejected mechanistic candidates remain fully audited, are excluded,
+and are deterministically replaced until the accepted-row target is met. The
+final accepted set is therefore conditioned on mechanistic acceptance and is
+not one global Latin hypercube. The analysis uses ten robustness cases plus the
+nominal case and a ten-layer
 Clarifier in the mechanistic model. Each retained 170-coordinate mechanistic
 response is deterministically reduced to 161 operational coordinates: mixer and
 reactor states, Clarifier outlet component flows, and the scalar
@@ -58,7 +59,10 @@ qualification without claiming differentiable KKT stationarity. The surrogate
 route does not execute the retired embedded-KKT IPOPT problem or any of its
 seven gap-continuation stages. The direct smooth-mechanistic route retains its
 separate three-stage smoothing continuation. There is no wall-time ceiling in
-the full article run. The revised scientific admission thresholds are frozen
+the full article run. SRT, SOR, and SLR are reported as descriptive quantities
+and are not optimization or replay guardrails. The physical mass-conservation
+threshold is $10^{-6}$. Other numerical tolerances and retained engineering
+safeguards remain separate. Scientific admission thresholds are frozen
 and determine whether results are article-eligible. For this model-function
 exercise they are advisory for execution: failures are recorded and propagated
 while later stages are attempted without refitting. Non-finite or incomplete
@@ -76,52 +80,53 @@ audit reconstructs multipliers with deterministic bounded-variable least
 squares (BVLS); a failed cold numerical attempt may use the two declared cold
 OSQP retry settings, without regularizing or otherwise changing the problem.
 
-The separate, already-completed 500-input preflight record used 400 development
-inputs, 100 test inputs, five robustness cases, and five Clarifier
-layers. Under the then-current protocol, its limited optimization smoke used
-one center start and a 600-second (10-minute) ceiling for each embedded-surrogate
-IPOPT continuation stage. That historical solver path and every preflight
-artifact are excluded from the revised full article optimization.
+Only the primary route search is measured. The reported metric is labeled
+``Time`` and uses seconds. Certification, recovery, exact replay, fitting, and
+generation are excluded from this metric but still execute and remain subject
+to their scientific checks.
 """),
     markdown(r"""
-## Immutable-source execution
+## Resumable execution
 
-The production contract hashes this notebook byte-for-byte. For a robust
-article execution, keep `main_closed_loop.ipynb` unmodified while the run is in
-progress. The safest command is to execute it into a different output file:
+The production contract hashes executable notebook sources while ignoring
+outputs, execution counts, cell identifiers, and transient interface metadata.
+VS Code autosave and normal Run All execution therefore do not invalidate
+verified checkpoints. Changing executable code or scientific parameters does.
+
+The equivalent headless command writes execution state to a separate notebook:
 
 ```powershell
 uv run jupyter nbconvert --to notebook --execute main_closed_loop.ipynb `
   --output main_closed_loop.executed.ipynb --ExecutePreprocessor.timeout=-1
 ```
 
-For interactive work, open a copy of the notebook or disable autosave; do not
-save execution counts or outputs back into this source notebook until the run
-has finished. All scientific checkpoints live under the selected result
-directory, so rerunning a stage resumes verified work rather than starting
-over.
+All scientific checkpoints live under the selected result directory. Rerunning
+a stage with the same validated contract resumes verified work rather than
+starting over. Incompatible source, parameter, input, or checkpoint changes
+stop with an integrity error.
 """),
     code(r"""
 from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 from dataclasses import asdict
 from pathlib import Path
 
 import pandas as pd
 from IPython.display import display
 
+from closed_loop.config import load_parameters
 from closed_loop.manuscript_v3 import ARTICLE_FULL
 from scripts.run_article_v3_5000 import (
     AUTHORIZED_DATASET_TOTALS,
     DEFAULT_RUN_ID,
-    LEGACY_RUN_ID,
     OPTIMIZATION_PROTOCOL,
     PROJECTION_SCHEMA,
     RESPONSE_SCHEMA,
     RUN_ID_PATTERN,
-    frozen_accepted_profile,
     main as run_article,
     profile_for_dataset_total,
     resolve_run_directory,
@@ -133,52 +138,32 @@ if not (ROOT / "scripts" / "run_article_v3_5000.py").is_file():
         "Run this notebook from the surrogate-optimization-arch repository root."
     )
 
-# Every rerun gets its own directory. Configure the target and optional source
-# with environment variables before starting, or edit these assignments.
-DATASET_COUNT = int(os.environ.get("ARTICLE_V3_DATASET_COUNT", "50000"))
-USE_FROZEN_ACCEPTED = os.environ.get(
-    "ARTICLE_V3_USE_FROZEN_ACCEPTED_CHECKPOINTS", "1"
-).strip().lower() in {"1", "true", "yes"}
+# Every rerun gets its own directory. Configure the target with environment
+# variables before starting, or edit these assignments.
+DATASET_COUNT = int(os.environ.get("ARTICLE_V3_DATASET_COUNT", "10000"))
 if DATASET_COUNT not in AUTHORIZED_DATASET_TOTALS:
     raise ValueError(
         f"ARTICLE_V3_DATASET_COUNT must be one of {AUTHORIZED_DATASET_TOTALS}."
     )
-PROFILE = (
-    frozen_accepted_profile()
-    if USE_FROZEN_ACCEPTED
-    else profile_for_dataset_total(DATASET_COUNT)
-)
-default_run_id = (
-    "article_full_50000_reduced_001" if USE_FROZEN_ACCEPTED
-    else DEFAULT_RUN_ID if DATASET_COUNT == 5_000
-    else f"article_full_{DATASET_COUNT}_001"
-)
-RUN_ID = os.environ.get("ARTICLE_V3_RUN_ID", default_run_id)
+PROFILE = profile_for_dataset_total(DATASET_COUNT)
+RUN_ID = os.environ.get("ARTICLE_V3_RUN_ID", DEFAULT_RUN_ID)
 if RUN_ID_PATTERN.fullmatch(RUN_ID) is None or ".." in RUN_ID:
     raise ValueError(
-        "ARTICLE_V3_RUN_ID must match article_full_<5000-or-50000>_<identifier>."
+        "ARTICLE_V3_RUN_ID must match article_full_10000_<identifier>."
     )
 RUN_ROOT = resolve_run_directory(RUN_ID)
 REUSE_FROM_RUN_ID = os.environ.get(
     "ARTICLE_V3_REUSE_FROM_RUN_ID",
-    (
-        "article_full_50000_003" if USE_FROZEN_ACCEPTED
-        else LEGACY_RUN_ID if DATASET_COUNT == 5_000
-        else None
-    ),
+    None,
 )
 if REUSE_FROM_RUN_ID == RUN_ID:
     raise ValueError("The rerun source and target run IDs must differ.")
 
 profile = asdict(PROFILE)
 expected_profile = {
-    "name": (
-        "article_frozen_16714" if USE_FROZEN_ACCEPTED
-        else "article_full" if DATASET_COUNT == 5_000
-        else f"article_full_{DATASET_COUNT}"
-    ),
-    "development_count": 13_371 if USE_FROZEN_ACCEPTED else DATASET_COUNT * 4 // 5,
-    "test_count": 3_343 if USE_FROZEN_ACCEPTED else DATASET_COUNT // 5,
+    "name": "article_full_10000",
+    "development_count": 8_000,
+    "test_count": 2_000,
     "robustness_count": 10,
     "layer_count": 10,
     "article_eligible": True,
@@ -190,13 +175,11 @@ for field, expected in expected_profile.items():
             f"ARTICLE_FULL contract mismatch for {field}: "
             f"{profile.get(field)!r} != {expected!r}"
         )
-expected_total = 16_714 if USE_FROZEN_ACCEPTED else DATASET_COUNT
+expected_total = DATASET_COUNT
 if profile["development_count"] + profile["test_count"] != expected_total:
     raise RuntimeError("The article profile does not match ARTICLE_V3_DATASET_COUNT.")
 
-contract_config = json.loads(
-    (ROOT / "config" / "params_manuscript_v3.json").read_text(encoding="utf-8")
-)
+contract_config = load_parameters(ROOT / "config" / "parameters.json")
 if contract_config.get("schema_version") != 5:
     raise RuntimeError("The reduced-response configuration schema is required.")
 surrogate_contract = contract_config["surrogate"]
@@ -310,8 +293,8 @@ if reporting_contract.get("untouched_test_smooth_reference_equivalence_executed"
     raise RuntimeError("Test-set-wide smooth/reference equivalence must remain retired.")
 if reporting_contract.get("common_reference_start_count_per_decision") != 2:
     raise RuntimeError("Every selected decision requires a two-start exact replay.")
-if reporting_contract.get("timing_protocol") != "robustness_casewise_aggregate_v1":
-    raise RuntimeError("Timing must be aggregated from the ten robustness cases.")
+if reporting_contract.get("timing_protocol") != "primary_route_time_v1":
+    raise RuntimeError("Only primary route Time may be aggregated.")
 if reporting_contract.get("untouched_test_repeated_inference_benchmark_executed") is not False:
     raise RuntimeError("Repeated untouched-test timing must remain retired.")
 
@@ -322,10 +305,7 @@ display(pd.Series({
     "accepted_dataset_target": expected_total,
     "accepted_development_target": profile["development_count"],
     "accepted_post_selection_holdout_target": profile["test_count"],
-    "candidate_attempt_count": (
-        "frozen at 18,211" if USE_FROZEN_ACCEPTED
-        else f"reported after generation; may exceed {expected_total:,}"
-    ),
+    "candidate_attempt_count": f"reported after generation; may exceed {expected_total:,}",
     "candidate_replacement_policy": "audit, exclude, deterministically replace",
     "robustness_cases": profile["robustness_count"],
     "mechanistic_clarifier_layers": profile["layer_count"],
@@ -469,7 +449,6 @@ def invoke_stage(through: str) -> None:
             run_id=RUN_ID,
             through=through,
             profile=PROFILE,
-            use_frozen_accepted_checkpoints=USE_FROZEN_ACCEPTED,
             reuse_from_run_id=(None if RUN_ROOT.exists() else REUSE_FROM_RUN_ID),
         )
     finally:
@@ -615,6 +594,19 @@ this phase.
     code(r"""
 invoke_stage("complete")
 
+figure_commands = (
+    ("scripts/generate_composite_two_route_charts.py", str(RUN_ROOT)),
+    ("scripts/plot_surrogate_emulation_quality.py", str(RUN_ROOT)),
+    ("scripts/plot_reporting_insights.py", str(RUN_ROOT)),
+    ("scripts/plot_nominal_optimum_parity.py", str(RUN_ROOT)),
+)
+for script, run_directory in figure_commands:
+    subprocess.run(
+        [sys.executable, script, run_directory],
+        cwd=ROOT,
+        check=True,
+    )
+
 all_physical_path = RUN_ROOT / "metrics" / "physical_violations_all_analysis.csv"
 if all_physical_path.is_file():
     all_physical = pd.read_csv(all_physical_path)
@@ -644,6 +636,21 @@ report_rows = [
 display(pd.DataFrame(
     report_rows,
     columns=("report_artifact", "bytes", "absolute_path"),
+))
+
+figure_directory = RUN_ROOT / "report" / "figures"
+figure_rows = [
+    {
+        "figure_artifact": path.relative_to(figure_directory).as_posix(),
+        "bytes": path.stat().st_size,
+        "absolute_path": str(path),
+    }
+    for path in sorted(figure_directory.rglob("*"))
+    if path.is_file()
+]
+display(pd.DataFrame(
+    figure_rows,
+    columns=("figure_artifact", "bytes", "absolute_path"),
 ))
 """),
     markdown(r"""
@@ -685,7 +692,7 @@ def build_notebook():
             },
             "surrogate_optimization_arch": {
                 "interface": "scripts/run_article_v3_5000.py",
-                "profile": "article_frozen_16714",
+                "profile": "article_full_10000",
                 "response_schema": "clarifier_inventory_v1",
                 "schema": 6,
             },

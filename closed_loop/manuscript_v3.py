@@ -25,6 +25,7 @@ from scipy import linalg
 from scipy.optimize import minimize
 from threadpoolctl import threadpool_limits
 
+from .config import load_parameters
 from .design import SplitMix64, affine_map, unit_latin_hypercube
 from .model import (
     ArticleOperatingPoint,
@@ -37,6 +38,7 @@ from .model import (
     N_COMPONENTS,
     N_STAGES,
     TSS_VECTOR,
+    PHYSICAL_BALANCE_TOLERANCE,
     assemble_target,
     branch_classification,
     generation_scale,
@@ -56,12 +58,22 @@ from .projection import (
 from .v3_parallel import BatchProgress, run_resumable_batches
 
 
+_PARAMETERS = load_parameters()
+_MECHANISTIC_GENERATION = _PARAMETERS["mechanistic_generation"]
 DECISION_NAMES = ("H", "a_3", "a_4", "a_5", "r_I", "r_R", "w")
 DECISION_LOWER = np.asarray([6.0, 0.0, 0.0, 0.0, 0.0, 0.25, 0.001])
 DECISION_UPPER = np.asarray([36.0, 1.0, 1.0, 1.0, 4.0, 1.25, 0.05])
-RIDGE_GRID = np.logspace(-8, 2, 11)
-OVERFLOW_TSS_LOW_QUANTILE = 0.25
-OVERFLOW_TSS_HIGH_QUANTILE = 0.90
+RIDGE_GRID = np.asarray(_PARAMETERS["surrogate"]["ridge_grid"], dtype=float)
+OVERFLOW_TSS_LOW_QUANTILE = float(
+    _PARAMETERS["surrogate"]["overflow_tss_closure"]["reported_strata"][
+        "low_tss_quantile"
+    ]
+)
+OVERFLOW_TSS_HIGH_QUANTILE = float(
+    _PARAMETERS["surrogate"]["overflow_tss_closure"]["reported_strata"][
+        "upper_tail_quantile"
+    ]
+)
 
 
 @dataclass(frozen=True)
@@ -181,7 +193,7 @@ TEST_500 = StudyProfile(
     article_eligible=False, enforce_admission_gate=False,
 )
 ARTICLE_FULL = StudyProfile(
-    name="article_full", development_count=4_000, test_count=1_000,
+    name="article_full_10000", development_count=8_000, test_count=2_000,
     robustness_count=10, layer_count=10, development_seed=100_042,
     test_seed=100_043, robustness_seed=314_159,
     parallel_workers=max(1, min(12, (os.cpu_count() or 2) - 1)),
@@ -265,10 +277,28 @@ def _solve_design_row(payload: tuple[int, np.ndarray, np.ndarray, int]) -> dict[
     with threadpool_limits(limits=1):
         first = solve_steady_state(
             operating, influent, starts=(1,), clarifier=clarifier,
+            max_nfev=int(_MECHANISTIC_GENERATION["polish_maximum_evaluations"]),
+            tolerance=float(_MECHANISTIC_GENERATION["polish_xtol"]),
+            balance_tolerance=float(_MECHANISTIC_GENERATION["balance_tolerance"]),
+            minimum_relaxation_days=float(_MECHANISTIC_GENERATION["minimum_horizon_d"]),
+            solids_turnovers=float(_MECHANISTIC_GENERATION["waste_turnovers"]),
+            integration_rtol=float(_MECHANISTIC_GENERATION["relative_tolerance"]),
+            integration_atol=float(
+                _MECHANISTIC_GENERATION["dimensionless_absolute_tolerance"]
+            ),
             logarithmic_only=True, strict_v3=True,
         )
         second = solve_steady_state(
             operating, influent, starts=(2,), clarifier=clarifier,
+            max_nfev=int(_MECHANISTIC_GENERATION["polish_maximum_evaluations"]),
+            tolerance=float(_MECHANISTIC_GENERATION["polish_xtol"]),
+            balance_tolerance=float(_MECHANISTIC_GENERATION["balance_tolerance"]),
+            minimum_relaxation_days=float(_MECHANISTIC_GENERATION["minimum_horizon_d"]),
+            solids_turnovers=float(_MECHANISTIC_GENERATION["waste_turnovers"]),
+            integration_rtol=float(_MECHANISTIC_GENERATION["relative_tolerance"]),
+            integration_atol=float(
+                _MECHANISTIC_GENERATION["dimensionless_absolute_tolerance"]
+            ),
             logarithmic_only=True, strict_v3=True,
         )
     first_reactors, _ = unpack_state(first.state, clarifier)
@@ -278,7 +308,10 @@ def _solve_design_row(payload: tuple[int, np.ndarray, np.ndarray, int]) -> dict[
     second_branches = branch_classification(second.state, clarifier)
     branch_agreement = first_branches == second_branches
     accepted = bool(
-        first.accepted and second.accepted and root_difference <= 1.0e-6
+        first.accepted and second.accepted
+        and root_difference <= float(
+            _MECHANISTIC_GENERATION["two_start_scaled_tolerance"]
+        )
         and branch_agreement
     )
     return {
@@ -531,7 +564,11 @@ def cross_validate_log_overflow_closure(
     targets: np.ndarray,
     *,
     layout: NetworkLayout | None = None,
-    reference_concentration: float = 1.0,
+    reference_concentration: float = float(
+        _PARAMETERS["surrogate"]["overflow_tss_closure"][
+            "reference_concentration_mg_L"
+        ]
+    ),
 ) -> LogOverflowClosureSelectionResult:
     """Select and refit the development-only quadratic log-overflow closure."""
 
@@ -693,7 +730,9 @@ def violation_record(
     return {
         "case": case, "method": method,
         "mass_conservation_violation_max": float(np.max(combined_mass)),
-        "mass_conservation_violation_count": int(np.count_nonzero(combined_mass > 1e-8)),
+        "mass_conservation_violation_count": int(
+            np.count_nonzero(combined_mass > PHYSICAL_BALANCE_TOLERANCE)
+        ),
         **{f"mass_{name}_max": value for name, value in family_maxima.items()},
         "mass_physical_residual_max": float(np.max(np.abs(equality_physical))),
         "network_inequality_violation_max": float(np.max(np.maximum(inequality, 0.0))),

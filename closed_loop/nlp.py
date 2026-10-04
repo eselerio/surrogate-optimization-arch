@@ -45,7 +45,7 @@ DECISION_SPAN = DECISION_UPPER - DECISION_LOWER
 
 COMBINED_VARIABLE_COUNT = 115
 COMBINED_EQUALITY_COUNT = 110
-COMBINED_INEQUALITY_COUNT = 9
+COMBINED_INEQUALITY_COUNT = 5
 CASE_PARAMETER_COUNT = 27
 ACCEPTED_STATUSES = frozenset(("Solve_Succeeded", "Solved_To_Acceptable_Level"))
 
@@ -860,7 +860,7 @@ def fit_mechanistic_state_scaling(development_targets: ArrayLike) -> tuple[Float
 
 
 def fit_inventory_scale(development_decisions: ArrayLike, development_targets: ArrayLike) -> float:
-    """Fit S_M from complete development targets using the cross-multiplied SRT terms."""
+    """Fit a positive solids-inventory scale from development targets."""
 
     decisions = np.asarray(development_decisions, dtype=np.float64)
     targets = np.asarray(development_targets, dtype=np.float64)
@@ -868,14 +868,10 @@ def fit_inventory_scale(development_decisions: ArrayLike, development_targets: A
         raise NLPValidationError("development decisions and targets have inconsistent shapes.")
     reactor = targets[:, 20:120].reshape(-1, N_STAGES, N_COMPONENTS)
     layers = targets[:, 160:170]
-    g_e, g_u = targets[:, 120:140], targets[:, 140:160]
-    q_u = decisions[:, 3] + decisions[:, 4]
-    c_u = g_u / q_u[:, None]
-    boundary = g_e @ TSS_VECTOR + decisions[:, 4] * (c_u @ TSS_VECTOR)
     stage_volume = CLARIFIER.fresh_flow * decisions[:, 0] / (24.0 * N_STAGES)
     inventory = stage_volume * np.sum(reactor @ TSS_VECTOR, axis=1)
     inventory += CLARIFIER.layer_volume * np.sum(layers, axis=1)
-    return max(1.0, float(np.max(np.maximum(inventory, 30.0 * CLARIFIER.fresh_flow * boundary))))
+    return max(1.0, float(np.max(inventory)))
 
 
 def fit_quality_scale(
@@ -949,10 +945,6 @@ def _physical_quantities(
     objective = ca.dot(weights, components)
     domain = ca.vertcat(1.0 - feed_tss, 1.0 - boundary_solids)
     engineering = ca.vertcat(
-        (8.0 * CLARIFIER.fresh_flow * boundary_solids - inventory) / inventory_scale,
-        (inventory - 30.0 * CLARIFIER.fresh_flow * boundary_solids) / inventory_scale,
-        (surface_overflow_rate - 20.0) / 20.0,
-        (solids_loading_rate - 100.0) / 100.0,
         (underflow_tss - underflow_limit) / 15_000.0,
     )
     details = ca.vertcat(

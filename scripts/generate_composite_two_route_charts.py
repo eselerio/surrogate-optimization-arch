@@ -580,12 +580,12 @@ def main() -> None:
     fig.suptitle("Q11. Selected operating decisions across robustness cases", fontsize=14)
     fig.tight_layout(rect=(0, 0, 1, .96)); save(fig, output, "q11_optimal_operating_values")
 
-    timing = pd.read_csv(run / "metrics/robustness_case_timing.csv").pivot(index="case", columns="route", values="primary_optimization_seconds").reindex(index=robust_cases, columns=ROUTES)
+    timing = pd.read_csv(run / "metrics/robustness_case_timing.csv").pivot(index="case", columns="route", values="time_seconds").reindex(index=robust_cases, columns=ROUTES)
     fig, axis = plt.subplots(figsize=(12, 5.7))
     axis.bar(x-width/2, timing["surrogate"], width, color=EXTENDED, label=f"{ROUTE_LABEL['surrogate']} primary")
     axis.bar(x+width/2, timing["direct"], width, color=DIRECT, label=f"{ROUTE_LABEL['direct']} primary")
-    axis.set_yscale("log"); axis.set(xticks=x, xticklabels=[case_labels[c] for c in robust_cases], ylabel="Primary optimization time (s, log scale)", title="Q12. Primary optimization time across robustness cases")
-    axis.legend(ncol=2); fig.tight_layout(); save(fig, output, "q12_primary_optimization_time")
+    axis.set_yscale("log"); axis.set(xticks=x, xticklabels=[case_labels[c] for c in robust_cases], ylabel="Time (s, log scale)", title="Q12. Time across robustness cases")
+    axis.legend(ncol=2); fig.tight_layout(); save(fig, output, "q12_time")
     summary.extend((
         {"question": 12, "metric": "extended_icsor_mean_seconds", "value": float(timing.surrogate.mean())},
         {"question": 12, "metric": "smooth_nlp_mean_seconds", "value": float(timing.direct.mean())},
@@ -636,7 +636,7 @@ def main() -> None:
         5: "q05_surrogate_effluent_prediction_vs_mechanistic", 6: "q06_smooth_nlp_effluent_prediction_vs_mechanistic",
         7: "q07_exact_optimal_objective", 8: "q08_exact_water_quality_component",
         9: "q09_exact_effluent_composites", 10: "q10_exact_economic_component",
-        11: "q11_optimal_operating_values", 12: "q12_primary_optimization_time",
+        11: "q11_optimal_operating_values", 12: "q12_time",
         13: "q13_exact_objective_value_comparison", 14: "q14_cod_main_treatment_train_profiles",
         15: "q15_tn_main_treatment_train_profiles", 16: "q16_tp_main_treatment_train_profiles",
         17: "q17_tss_main_treatment_train_profiles", 18: "q18_holdout_effluent_composite_parity",

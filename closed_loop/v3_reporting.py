@@ -49,6 +49,7 @@ from .model import (
     N_STAGES,
     NOMINAL_INFLUENT,
     TSS_VECTOR,
+    PHYSICAL_BALANCE_TOLERANCE,
     mechanistic_balance_audit,
     stability_audit,
 )
@@ -826,8 +827,7 @@ def _active_constraint_table(snapshots: Sequence[RouteSnapshot]) -> pd.DataFrame
     """Retain every named upper row plus lower/direct active-set counts."""
 
     engineering_names = (
-        "srt_upper", "external_solids_loss_guard", "slr_upper",
-        "underflow_tss_upper", "feed_tss_lower", "sor_upper",
+        "external_solids_loss_guard", "underflow_tss_upper", "feed_tss_lower",
     )
     trust_names = (
         "correction", "regularized_leverage", "particulate_split",
@@ -1586,7 +1586,7 @@ def _physical_summary(detail: pd.DataFrame) -> pd.DataFrame:
                 "audited_record_count": audited_count,
                 "unavailable_record_count": unavailable_count,
                 "audit_coverage_fraction": coverage,
-                "mass_conservation_tolerance": 1.0e-8,
+                "mass_conservation_tolerance": PHYSICAL_BALANCE_TOLERANCE,
                 "mass_conservation_violation_max": _maximum(
                     audited, "mass_conservation_violation_max"
                 ),
@@ -1636,7 +1636,7 @@ def _physical_summary(detail: pd.DataFrame) -> pd.DataFrame:
             "audited_record_count": audited_count,
             "unavailable_record_count": unavailable_count,
             "audit_coverage_fraction": coverage,
-            "mass_conservation_tolerance": 1.0e-8,
+            "mass_conservation_tolerance": PHYSICAL_BALANCE_TOLERANCE,
             "mass_conservation_violation_max": _maximum(
                 audited, "mass_conservation_violation_max"
             ),
@@ -1680,7 +1680,7 @@ def _physical_summary(detail: pd.DataFrame) -> pd.DataFrame:
 
 
 _LAYER_ENVELOPE_TOLERANCE = 1.0e-10
-_LAYER_BALANCE_TOLERANCE = 1.0e-8
+_LAYER_BALANCE_TOLERANCE = PHYSICAL_BALANCE_TOLERANCE
 _STABILITY_MARGIN = 1.0e-8
 _STABILITY_AGREEMENT_TOLERANCE = 1.0e-6
 
@@ -2480,8 +2480,7 @@ def _timing_tables(
         run_directory / "metrics" / "robustness_case_timing.csv", warnings,
     )
     required = {
-        "case", "route", "primary_optimization_seconds",
-        "complete_optimization_seconds", "exact_reference_seconds",
+        "case", "route", "metric", "unit", "time_seconds",
     }
     if not required.issubset(ledger.columns):
         warnings.append(
@@ -2492,54 +2491,31 @@ def _timing_tables(
     ledger = ledger.loc[
         ledger["case"].astype(str).str.startswith("robustness_")
     ].copy()
-    categories: dict[str, list[float]] = {}
-    category_columns = {
-        "surrogate_primary_optimization": ("surrogate", "primary_optimization_seconds"),
-        "surrogate_complete_optimization": ("surrogate", "complete_optimization_seconds"),
-        "surrogate_local_certification": ("surrogate", "certification_seconds"),
-        "surrogate_exact_reference": ("surrogate", "exact_reference_seconds"),
-        "direct_primary_optimization": ("direct", "primary_optimization_seconds"),
-        "direct_complete_optimization": ("direct", "complete_optimization_seconds"),
-        "direct_failure_recovery": ("direct", "recovery_seconds"),
-        "direct_exact_reference": ("direct", "exact_reference_seconds"),
-    }
-    for category, (route, column) in category_columns.items():
-        if column not in ledger:
-            categories[category] = []
-            continue
-        values = pd.to_numeric(
-            ledger.loc[ledger["route"].eq(route), column], errors="coerce",
-        )
-        categories[category] = values[np.isfinite(values)].tolist()
+    if not ledger["metric"].eq("Time").all() or not ledger["unit"].eq("s").all():
+        warnings.append("Robustness-case timing ledger has an invalid Time label or unit.")
+        return pd.DataFrame(), pd.DataFrame()
     summary = pd.DataFrame([
         {
-            "category": category,
-            "unit": "seconds_per_robustness_case",
+            "route": route,
+            "metric": "Time",
+            "unit": "s",
             "source_scope": "robustness_01 through robustness_10",
-            **_finite_summary(values),
+            **_finite_summary(
+                pd.to_numeric(group["time_seconds"], errors="coerce").tolist()
+            ),
         }
-        for category, values in categories.items()
+        for route, group in ledger.groupby("route", sort=True)
     ])
     workload: list[dict[str, Any]] = []
     for route in ("surrogate", "direct"):
         route_rows = ledger.loc[ledger["route"].eq(route)]
-        complete = pd.to_numeric(
-            route_rows["complete_optimization_seconds"], errors="coerce",
-        )
-        reference = pd.to_numeric(
-            route_rows["exact_reference_seconds"], errors="coerce",
-        )
         workload.append({
             "route": route,
             "robustness_case_count": int(len(route_rows)),
-            "mean_complete_case_time_seconds": _finite_summary(complete.tolist())["mean"],
-            "median_complete_case_time_seconds": _finite_summary(complete.tolist())["median"],
-            "p95_complete_case_time_seconds": _finite_summary(complete.tolist())["p95_nearest_rank"],
             "candidate_available_count": int(
                 route_rows.get("candidate_available", pd.Series(dtype=bool))
                 .fillna(False).astype(bool).sum()
             ),
-            "reference_validation_time_seconds": _finite_summary(reference.tolist())["total"],
         })
     return summary, pd.DataFrame(workload)
 

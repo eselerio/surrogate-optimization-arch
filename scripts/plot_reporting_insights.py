@@ -70,19 +70,18 @@ def main() -> None:
     output = (args.output or run / "report" / "decision_insights").resolve()
     output.mkdir(parents=True, exist_ok=True); style()
 
-    # 1. Timing: distinguish the primary solve from the end-to-end route cost.
+    # 1. Time for the primary route search.
     timing = pd.read_csv(tables / "timing_summary.csv")
-    wanted = ["surrogate_primary_optimization", "surrogate_complete_optimization",
-              "direct_primary_optimization", "direct_complete_optimization", "surrogate_exact_reference", "direct_exact_reference"]
-    t = timing.set_index("category").loc[wanted].reset_index()
-    labels = ["Surrogate\nprimary", "Surrogate\ncomplete", "Smooth NLP\nprimary", "Smooth NLP\ncomplete", "Surrogate\nreference replay", "Smooth NLP\nreference replay"]
-    colors = [ORANGE, ORANGE, BLUE, BLUE, "#94a3b8", "#94a3b8"]
-    fig, ax = plt.subplots(figsize=(10.8, 5.2), constrained_layout=True)
-    bars = ax.bar(np.arange(len(t)), t["median"], yerr=[t["median"] - (t["median"] - t["iqr"] / 2).clip(lower=0), t["iqr"] / 2], color=colors, capsize=3)
+    t = timing.set_index("route").loc[["surrogate", "direct"]].reset_index()
+    if not t["metric"].eq("Time").all() or not t["unit"].eq("s").all():
+        raise ValueError("timing_summary.csv must report only Time in seconds")
+    labels = ["Surrogate", "Smooth NLP"]
+    colors = [ORANGE, BLUE]
+    fig, ax = plt.subplots(figsize=(6.8, 4.8), constrained_layout=True)
+    bars = ax.bar(np.arange(len(t)), t["median"], yerr=t["iqr"] / 2, color=colors, capsize=3)
     for bar, row in zip(bars, t.itertuples(), strict=True): ax.text(bar.get_x()+bar.get_width()/2, bar.get_height()+.35, f"{row.median:.1f}s", ha="center", va="bottom")
-    ax.set(xticks=np.arange(len(t)), xticklabels=labels, ylabel="Median seconds per robustness case", title="Computational duration by optimization route and validation step")
-    ax.text(.01, .97, "Primary optimization: surrogate is faster; complete route includes surrogate local certification.", transform=ax.transAxes, va="top", fontsize=8)
-    save(fig, output, "01_computational_timing")
+    ax.set(xticks=np.arange(len(t)), xticklabels=labels, ylabel="Time (s)", title="Time across robustness cases")
+    save(fig, output, "01_time")
 
     # Derive the objective's effluent composites directly from the shared
     # response coordinates; raw/projected rows intentionally have no layers.

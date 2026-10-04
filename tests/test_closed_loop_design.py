@@ -313,93 +313,39 @@ class PhysicalDesignTests(unittest.TestCase):
             generate_design(10, ("x", "y"), {"x": (0.0, 1.0)}, seed=1)
 
 
-class SchemaThreeProfileTests(unittest.TestCase):
+class UnifiedArticleProfileTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        path = Path(__file__).resolve().parents[1] / "config" / "params_closed_loop.json"
+        path = Path(__file__).resolve().parents[1] / "config" / "parameters.json"
         cls.config = json.loads(path.read_text(encoding="utf-8"))
 
-    def test_profiles_freeze_independent_blocks_and_distinct_streams(self) -> None:
-        self.assertEqual(self.config["schema_version"], 3)
+    def test_article_profile_freezes_independent_accepted_count_streams(self) -> None:
+        self.assertEqual(self.config["schema_version"], 5)
         self.assertEqual(
-            self.config["article"]["title"],
-            "Optimization of a Recycling Mixer-Reactor-Clarifier Activated Sludge System Using a Physically-Constrained Statistical Surrogate",
+            self.config["execution"]["default_profile"], "article_full_10000"
         )
-        expected = {
-            "full": ((14000, 42), (2000, 43), (4000, 44), (100, 314159)),
-            "test_2000": (
-                (1400, 200042), (200, 200043), (400, 200044), (10, 2000314159)
-            ),
-            "unit": ((420, 60042), (60, 60043), (120, 60044), (1, 600314159)),
-        }
-        profiles = self.config["design"]["profiles"]
-        all_seeds: list[int] = []
-        for profile_name, values in expected.items():
-            profile = profiles[profile_name]
-            for block_name, (count, seed) in zip(
-                ("development", "calibration", "assessment"), values[:3], strict=True
-            ):
-                block = profile["blocks"][block_name]
-                self.assertEqual((block["count"], block["seed"]), (count, seed))
-                all_seeds.append(seed)
-            self.assertEqual(
-                (profile["robustness"]["count"], profile["robustness"]["seed"]),
-                values[3],
-            )
-            all_seeds.append(values[3][1])
-        self.assertEqual(len(all_seeds), len(set(all_seeds)))
+        profile = self.config["profiles"]["article_full_10000"]
+        self.assertEqual(
+            (profile["development_count"], profile["test_count"]), (8_000, 2_000)
+        )
+        self.assertEqual(
+            (profile["development_seed"], profile["test_seed"]), (100_042, 100_043)
+        )
+        self.assertTrue(profile["counts_are_accepted_rows"])
+        self.assertTrue(profile["replace_rejected_mechanistic_candidates"])
 
-    def test_workloads_and_nlp_settings_match_the_frozen_contract(self) -> None:
-        workloads = self.config["workloads"]
+    def test_removed_guardrails_and_primary_time_are_explicit(self) -> None:
+        engineering = self.config["engineering"]
+        for key in ("srt_min_d", "srt_max_d", "sor_max_m_d", "slr_max_kg_m2_d"):
+            self.assertNotIn(key, engineering)
         self.assertEqual(
-            (
-                workloads["full"]["bdf_routes_max"],
-                workloads["full"]["combined_nlp_starts"],
-            ),
-            (20113, 1017),
+            engineering["descriptive_quantities"],
+            ["srt_d", "sor_m_d", "slr_kg_m2_d"],
         )
-        self.assertEqual(
-            (
-                workloads["test_2000"]["bdf_routes_max"],
-                workloads["test_2000"]["combined_nlp_starts"],
-            ),
-            (2023, 207),
-        )
-        self.assertEqual(
-            (
-                workloads["unit"]["bdf_routes_max"],
-                workloads["unit"]["combined_nlp_starts"],
-            ),
-            (614, 126),
-        )
-        for workload in workloads.values():
-            self.assertEqual(workload["qp_evaluations"], 0)
-            self.assertEqual(workload["direct_evaluations"], 0)
-
-        feasibility = self.config["execution"]["computational_feasibility"]
-        self.assertEqual(feasibility["maximum_projected_resident_memory_gib"], 25.0)
-        nlp = self.config["optimization"]["nlp"]
-        self.assertEqual(nlp["solver"], "IPOPT")
-        self.assertEqual(nlp["linear_solver"], "MUMPS")
-        self.assertEqual(nlp["maximum_iterations"], 2500)
-        self.assertEqual(nlp["bound_relax_factor"], 0.0)
-        self.assertEqual(
-            nlp["combined_dimensions"],
-            {"variables": 115, "equalities": 110, "general_inequalities": 9},
-        )
-        self.assertEqual(self.config["optimization"]["multistart"]["count"], 9)
-        self.assertEqual(self.config["optimization"]["smoothing"]["epsilon"], 1e-8)
-        self.assertEqual(
-            self.config["optimization"]["combined_nlp"]["trust_families"],
-            ["conformal fidelity", "development leverage"],
-        )
-
-    def test_obsolete_projection_and_direct_configuration_is_not_active(self) -> None:
-        self.assertNotIn("deployment_qp", self.config["surrogate"])
-        self.assertNotIn("surrogate_full", self.config["optimization"])
-        self.assertNotIn("direct_epsilon", self.config["optimization"])
-        self.assertNotIn("surrogate_nlp", self.config["optimization"])
-        self.assertNotIn("mechanistic_nlp", self.config["optimization"])
+        reporting = self.config["reporting"]
+        self.assertEqual(reporting["timing_metric"], "Time")
+        self.assertEqual(reporting["timing_unit"], "s")
+        self.assertEqual(reporting["timing_protocol"], "primary_route_time_v1")
 
 
 if __name__ == "__main__":

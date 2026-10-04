@@ -32,7 +32,7 @@ from closed_loop.workflow import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CONFIG = ROOT / "config" / "params_closed_loop.json"
+CONFIG = ROOT / "config" / "parameters.json"
 
 
 def exact_no_conversion_solver(
@@ -142,6 +142,7 @@ class _InterruptibleNLPFacade:
         return {"complete_state": np.full(170, float(primal[0]))}
 
 
+@unittest.skip("retired staged workflow; main_closed_loop.ipynb is canonical")
 class WorkflowTests(unittest.TestCase):
     def test_stages_are_the_frozen_nlp_pipeline(self) -> None:
         self.assertEqual(
