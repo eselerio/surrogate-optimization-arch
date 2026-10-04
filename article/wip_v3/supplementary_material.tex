@@ -7,8 +7,46 @@
 \renewcommand{\thesection}{S\arabic{section}}
 \renewcommand{\theequation}{S\arabic{equation}}
 \renewcommand{\thetable}{S\arabic{table}}
+
+\def\tsc#1{\csdef{#1}{\textsc{\lowercase{#1}}\xspace}}
+\tsc{WGM}
+\tsc{QE}
+
+\ExplSyntaxOn
+\keys_set:nn { stm / mktitle } { nologo }
+\cs_set:Npn \__first_footerline:
+{
+		\group_begin:
+		\small
+		\sffamily
+		\ifnum\theblind>0\relax
+		\else
+				\__short_authors:
+		\fi
+		\group_end:
+}
+\ExplSyntaxOff
+
 \begin{document}
 \let\WriteBookmarks\relax
+
+\shorttitle{Supplementary Material for Plant-wide Optimization}
+\shortauthors{Egberto F. Selerio Jr.}
+
+\title[mode=title,size=\Large]{Supplementary Material for ``Plant-wide Optimization of Activated Sludge Systems Using a Physically Constrained Statistical Surrogate''}
+
+\author[1]{Egberto F. Selerio Jr.}
+\cormark[1]
+\ead{egbertoselerio@gmail.com}
+
+\affiliation[1]{
+	organization={Engineering Research and Development for Technology},
+	addressline={School of Engineering, University of San Carlos},
+	country={Philippines}}
+
+\cortext[cor1]{Corresponding author}
+
+\maketitle
 
 \section{Supplementary scope and coordinate contract}
 
@@ -328,7 +366,7 @@ The identity Hessian makes this projection unique whenever the feasible set is n
 
 Every QP is cold-solved and independently audited for equality feasibility, inequality feasibility, non-negativity, dual feasibility, stationarity, and complementarity. The overflow-closure residual is also a reporting diagnostic. The added fitted equality means feasibility is no longer guaranteed by the simple no-addition construction. Every out-of-fold, holdout, optimization, and selected-decision projection must therefore demonstrate nonemptiness computationally. Failure is recorded rather than repaired by clipping or relaxation. The projection does not impose biological kinetics, nonlinear clarifier settling fluxes, dynamic stability, or a layer profile. Those properties are assessed only in smooth-direct or exact reference states.
 
-The extended-ICSOR trust constraints limit standardized projection correction, whole-system regularized feature leverage, particulate-recovery deviation, and smooth reactor-balance residual. Their limits are computed from the model-development set and fixed before optimization. Correction, recovery, and reactor thresholds are nearest-rank 95th percentiles of grouped out-of-fold diagnostics. The leverage limit is the maximum leverage among model-development rows in the final fitted feature map. Section~S4.3 defines these quantities. The admission gate also requires finite, audited out-of-fold projections and full-response and inventory-coordinate raw nRMSE below one. Concentration-scale assessment of the log closure reports RMSE, MAE, bias, normalized RMSE, and $R^2$. Log-scale assessment reports RMSE and bias. The strata are defined in Section~S3.
+The extended-ICSOR trust constraints limit standardized projection correction, whole-system regularized feature leverage, particulate-recovery deviation, and smooth reactor-balance residual. Their limits are computed from the model-development set and fixed before optimization. Correction, recovery, and reactor thresholds are nearest-rank 95th percentiles of grouped out-of-fold diagnostics. The leverage limit is the maximum leverage among model-development rows in the final fitted feature map. These limits are empirical guardrails rather than probabilistic confidence bounds. Section~S4.3 defines these quantities. The admission gate also requires finite, audited out-of-fold projections and full-response and inventory-coordinate raw nRMSE below one. This study-specific cutoff requires aggregate error below one model-development response-scale unit. Concentration-scale assessment of the log closure reports RMSE, MAE, bias, normalized RMSE, and $R^2$. Log-scale assessment reports RMSE and bias. The strata are defined in Section~S3.
 
 \subsection{Projection optimality certificate}
 \label{sec:Scertificate}
@@ -395,26 +433,26 @@ Let $\Phi$ contain the final model-development feature rows and set $M_R=\Phi^\t
 \end{align}
 The split-row scale applies Equation~\eqref{eq:Srowscale} to its two terms on mechanistic model-development states. $D_{\rm bal}$ is the smooth reactor-balance scale computed from the model-development set and fixed before optimization. It treats net hydraulic transport and net reaction as separate terms and adds oxygen transfer as a third term for the oxygen coordinate in aerated reactors. The smooth reactor residual uses $\epsilon=10^{-8}$.
 
-For correction, split, and reactor diagnostics, sort the $n$ out-of-fold values and take entry $\lceil0.95n\rceil$. For leverage, take $\max_i\phi_{S,i}^{\top}M_R^{-1}\phi_{S,i}$ on the model-development rows of the final fit. Each diagnostic must not exceed its limit. An upper row is divided by its positive limit, or by one if the limit is zero. The resulting limits and scale arrays are required to reproduce the optimization and cannot be recovered from the comparison table alone.
+For correction, split, and reactor diagnostics, sort the $n$ out-of-fold values and take entry $\lceil0.95n\rceil$. These quantiles retain the range observed for most development rows while screening the upper tail. For leverage, take $\max_i\phi_{S,i}^{\top}M_R^{-1}\phi_{S,i}$ on the model-development rows of the final fit. This maximum covers the observed development leverage range. Each diagnostic must not exceed its limit. An upper row is divided by its positive limit, or by one if the limit is zero. The resulting limits and scale arrays are required to reproduce the optimization and cannot be recovered from the comparison table alone.
 
 The cold projection uses absolute and relative solver tolerances of $10^{-12}$ and polishing. Its initial iteration limit is 100,000. Two numerical retries use $\rho=0.01$ and $\rho=10$, respectively, with adaptive $\rho$ disabled and 200,000 iterations each. These retries leave the QP unchanged. Independently reconstructed bounded-variable least-squares multipliers are used for the audit. Equality, inequality, dual-feasibility, stationarity, and complementarity residuals must be at most $10^{-8}$. Physical non-negativity uses $10^{-10}$ and active-set identification uses $10^{-7}$. Section~S4.1 gives the gap identity; a small gap cannot replace these separate feasibility checks.
 
 \section{Optimization and exact-replay settings}
 
-The case controls are $\vartheta=(H,a_3,a_4,a_5,r_I,r_R,w)^\top$. Both routes share the operating bounds, objective priorities, and nominal influent. Each primary search starts at the center of the normalized operating box. The selected decisions were obtained from optimization problems that imposed an 8-d minimum SRT. The paired comparison evaluates those decisions using retained engineering checks for maximum SRT, maximum SLR, maximum underflow TSS, minimum feed TSS, and positive external solids loss. It does not use a minimum-SRT eligibility threshold. The selected decisions must therefore not be interpreted as solutions to optimization problems without the 8-d lower bound.
+The case controls are $\vartheta=(H,a_3,a_4,a_5,r_I,r_R,w)^\top$. Both routes share the operating bounds, objective priorities, and nominal influent. The engineering limits are case-specific screening choices rather than universal activated sludge design criteria. Each primary search starts at the center of the normalized operating box. The selected decisions were obtained from optimization problems that imposed an 8-d minimum SRT. The paired comparison evaluates those decisions using retained engineering checks for maximum SRT, maximum SLR, maximum underflow TSS, minimum feed TSS, and positive external solids loss. It does not use a minimum-SRT eligibility threshold. The selected decisions must therefore not be interpreted as solutions to optimization problems without the 8-d lower bound.
 
 \subsection{Surrogate sensitivity and convergence protocol}
 \label{sec:Ssurrogatesearch}
 
-Extended ICSOR minimizes its native objective subject to the operating box, engineering constraints, fixed trust constraints, and Equation~\eqref{eq:SQP}. Section~S6 distinguishes native quality normalization from the common exact-reference normalization. Every upper constraint uses a fixed positive scale determined from the model-development set, so scaling does not change feasibility. The projection is cold-solved and audited at each distinct trial using a convex-QP method \citep{Stellato2020}.
+Extended ICSOR minimizes its native objective subject to the operating box, engineering constraints, fixed trust constraints, and Equation~\eqref{eq:SQP}. Section~S6 distinguishes native quality normalization from the common exact-reference normalization. Every upper constraint uses a fixed positive scale determined from the model-development set, so scaling does not change feasibility. The projection is cold-solved and audited at each distinct trial using a convex-QP method \citep{Stellato2020}. The primary outer method is SLSQP \citep{Kraft1988}.
 
-The active set comprises the inequality constraints that hold at equality at the projection solution. With a stable active set, linearly independent equality and active-inequality rows, and strictly positive active-inequality multipliers, response derivatives follow by differentiating the KKT system. Rank, conditioning, strict-complementarity, and finite-difference derivative checks must pass. The derivative chain includes $\partial[q_E\widehat X_{E,\log}]/\partial\vartheta$ through the standardized quadratic features and exponential back-transformation. An active-set change triggers a fresh projection and derivative reconstruction.
+The active set comprises the inequality constraints that hold at equality at the projection solution. With a stable active set, linearly independent equality and active-inequality rows, and strictly positive active-inequality multipliers, response derivatives follow by differentiating the KKT system \citep{Tondel2003}. Rank, conditioning, strict-complementarity, and finite-difference derivative checks must pass. The derivative chain includes $\partial[q_E\widehat X_{E,\log}]/\partial\vartheta$ through the standardized quadratic features and exponential back-transformation. An active-set change triggers a fresh projection and derivative reconstruction.
 
-If the required derivatives cannot be constructed, deterministic value-only COBYQA continues within the normalized bounds. Each distinct fallback trial receives a new cold solve and complete audit of the same QP. The fallback uses neither an approximate projection nor finite-difference derivatives. Finite differences are used only for the independent derivative audit. The best feasible visited point is independently cold-projected again.
+If the required derivatives cannot be constructed, deterministic value-only COBYQA continues within the normalized bounds \citep{Ragonneau2022}. Each distinct fallback trial receives a new cold solve and complete audit of the same QP. The fallback uses neither an approximate projection nor finite-difference derivatives. Finite differences are used only for the independent derivative audit. The best feasible visited point is independently cold-projected again.
 
 A candidate receives the strong first-order tier only if its derivative chain and independent lower-QP and upper KKT audits pass. Otherwise, the finite-resolution convergence procedure uses complete feasible no-descent polls at normalized radii $10^{-3}$ and $10^{-4}$. The coarse poll contains the 14 signed coordinate directions. The fine poll contains those axes, 84 signed pairwise diagonals, and eight Helmert-simplex directions. Coupled directions allow simultaneous control changes that a coordinate-only poll may miss near an operating limit. After an improving step, up to 16 search-only evaluations use multipliers $2,4,\ldots$ along that ray, with unchanged projection audits. These evaluations accelerate the search but cannot supply convergence evidence. Every accepted move requires a new complete poll.
 
-Each complete poll must contain a feasible nonzero displacement. Direction rank is diagnostic only because active constraints can restrict the feasible cone to fewer than seven dimensions. An accepted fine-scale move requires coarse-scale revalidation. Certification has a 10,000-evaluation safety budget. Absence of sufficient feasible decrease in both revalidated polls provides evidence only for the tested directions and resolutions. An incomplete, failed, or evaluation-limited poll leaves stationarity unresolved. First-order stationarity does not establish local minimality. A finite poll establishes neither KKT or Clarke stationarity nor a local or global optimum.
+Each complete poll must contain a feasible nonzero displacement. Direction rank is diagnostic only because active constraints can restrict the feasible cone to fewer than seven dimensions. An accepted fine-scale move requires coarse-scale revalidation. Certification has a 10,000-evaluation safety budget. Absence of sufficient feasible decrease in both revalidated polls provides evidence only for the tested directions and resolutions. An incomplete, failed, or evaluation-limited poll leaves stationarity unresolved. First-order stationarity does not establish local minimality. A finite poll establishes neither KKT or Clarke stationarity nor a local or global optimum because direct-search stationarity results require limiting behavior and suitable refining directions \citep{AudetDennis2006}.
 
 \begin{longtable}{p{0.62\linewidth}p{0.26\linewidth}}
 \caption{Surrogate search and sensitivity settings used in the study.}\label{tab:Ssearch}\\
@@ -452,7 +490,7 @@ Objective relative tie tolerance & $10^{-10}$\\
 \subsection{Direct recovery and exact-reference acceptance}
 \label{sec:Sreplay}
 
-The smooth mechanistic NLP retains the full reactor and clarifier state, smooth kinetic and settling regularizations, and the common operating domain. Its primary solve uses IPOPT with three-stage smoothing continuation from the box center and a full-space endpoint audit. After a failed primary solve, one recovery may start from the same case's certified surrogate control using the unchanged sequence. No recovery follows a successful primary attempt or an uncertified surrogate candidate. This recovery depends on route $S$ and is not independent basin exploration. A validated feasible point remains reportable when its search budget is exhausted or stationarity is unresolved. If no validated candidate is obtained, the failure remains in the case denominator and execution proceeds.
+The smooth mechanistic NLP retains the full reactor and clarifier state, smooth kinetic and settling regularizations, and the common operating domain. Its primary solve uses IPOPT \citep{WachterBiegler2006} with three-stage smoothing continuation from the box center and a full-space endpoint audit. After a failed primary solve, one recovery may start from the same case's certified surrogate control using the unchanged sequence. No recovery follows a successful primary attempt or an uncertified surrogate candidate. This recovery depends on route $S$ and is not independent basin exploration. A validated feasible point remains reportable when its search budget is exhausted or stationarity is unresolved. If no validated candidate is obtained, the failure remains in the case denominator and execution proceeds.
 
 Every available selected decision is replayed from the two starts in Section~S2.4 on the exact nonsmooth, layer-resolved mechanistic model. The generation-scale and fixed-state-scale maximum coordinate discrepancies must each be at most $10^{-6}$. Fixed state scales are coordinatewise median absolute deviations computed from the model-development set, with a floor of one. Categorical branch agreement is required unless either replay start is flagged as boundary-ambiguous. This is a state-level qualification, not a proof that each mismatching branch is itself inside its ambiguity band. Mass-conservation, non-negativity, layer-residual, domain, and reduced-stability audits must still pass using Section~S2.4. Near a branch boundary, differentiable stationarity or smooth/reference equivalence cannot be claimed without qualification.
 
@@ -529,7 +567,7 @@ Optimization failure, projection infeasibility, convergence qualification, exact
 
 The analysis sample was selected from the 16,714 mechanistic states that passed the two-start acceptance checks. It combines accepted initial candidates and deterministic replacements for rejected candidates. The resulting sample is therefore not one global strength-one Latin hypercube. Regions with frequent mechanistic failure may be underrepresented. Conclusions apply to the accepted region rather than the complete operating box.
 
-The 2,000-state holdout is a deterministic partition of the same accepted simulation stream used to form the model-development set. The final response definition, logarithmic overflow closure, numerical procedures, and engineering eligibility rules were not specified independently of all inspected data. The holdout and ten influent scenarios therefore provide descriptive post-selection evidence. They do not provide independent confirmation or population-level reliability estimates.
+The 2,000-state holdout is a deterministic partition of the same accepted simulation stream used to form the model-development set. Separating model development from prediction assessment reduces leakage of information into reported predictive performance \citep{Kaufman2012}. However, the final response definition, logarithmic overflow closure, numerical procedures, and engineering eligibility rules were not specified independently of all inspected data. The holdout and ten influent scenarios therefore provide descriptive post-selection evidence. They do not provide independent confirmation or population-level reliability estimates.
 
 The surrogate predicts aggregate clarifier inventory rather than internal layer concentrations. Exact mechanistic replay is therefore required to assess layer profiles, nonlinear settling behavior, stability, and engineering feasibility at selected controls. The projection constraints establish only the physical relations imposed in Equation~\eqref{eq:SQP}. They do not establish agreement with all mechanistic equations.
 
@@ -538,19 +576,31 @@ Each optimization route starts from the center of the operating box and explores
 The selected decisions were obtained from optimization problems that imposed an 8-d minimum SRT. The paired comparison does not use this minimum as an eligibility threshold, but it does not constitute optimization without the lower bound. A comparison based on optimization without a minimum SRT would require new decisions, exact replay states, convergence assessments, and timing measurements.
 
 \begin{thebibliography}{00}
-\bibitem[Boyd et~al.(2004)]{Boyd2004}
+\bibitem[Audet and Dennis(2006)]{AudetDennis2006}
+Audet, C., Dennis Jr., J.E., 2006. Mesh adaptive direct search algorithms for constrained optimization. SIAM Journal on Optimization 17, 188--217.
+\bibitem[Boyd and Vandenberghe(2004)]{Boyd2004}
 Boyd, S., Vandenberghe, L., 2004. Convex Optimization. Cambridge University Press.
 \bibitem[Hastie et~al.(2009)Hastie, Tibshirani, and Friedman]{Hastie2009}
 Hastie, T., Tibshirani, R., Friedman, J., 2009. The Elements of Statistical Learning, second ed. Springer.
 \bibitem[Henze et~al.(2006)Henze, Gujer, Mino, and van Loosdrecht]{Henze2006}
 Henze, M., Gujer, W., Mino, T., van Loosdrecht, M.C., 2006. Activated Sludge Models ASM1, ASM2, ASM2d and ASM3. IWA Publishing.
+\bibitem[Kaufman et~al.(2012)Kaufman, Rosset, Perlich, and Stitelman]{Kaufman2012}
+Kaufman, S., Rosset, S., Perlich, C., Stitelman, O., 2012. Leakage in data mining: Formulation, detection, and avoidance. ACM Transactions on Knowledge Discovery from Data 6, 1--21.
+\bibitem[Kraft(1988)]{Kraft1988}
+Kraft, D., 1988. A Software Package for Sequential Quadratic Programming. Technical Report DFVLR-FB 88-28, German Aerospace Center, Cologne.
 \bibitem[McKay et~al.(1979)McKay, Beckman, and Conover]{McKay1979}
 McKay, M.D., Beckman, R.J., Conover, W.J., 1979. A comparison of three methods for selecting values of input variables in the analysis of output from a computer code. Technometrics 21, 239--245.
+\bibitem[Ragonneau(2022)]{Ragonneau2022}
+Ragonneau, T.M., 2022. Model-Based Derivative-Free Optimization Methods and Software. Ph.D. thesis, Department of Applied Mathematics, The Hong Kong Polytechnic University, Hong Kong.
 \bibitem[Selerio(2026)]{Selerio2026}
 Selerio Jr., E.F., 2026. An interpretable statistical surrogate of activated sludge systems that preserves mass conservation and component non-negativity. Digital Chemical Engineering 20, 100329.
 \bibitem[Stellato et~al.(2020)Stellato, Banjac, Goulart, Bemporad, and Boyd]{Stellato2020}
 Stellato, B., Banjac, G., Goulart, P., Bemporad, A., Boyd, S., 2020. OSQP: An operator splitting solver for quadratic programs. Mathematical Programming Computation 12, 637--672.
 \bibitem[Tak\'acs et~al.(1991)Tak\'acs, Patry, and Nolasco]{Takacs1991}
 Tak\'acs, I., Patry, G.G., Nolasco, D., 1991. A dynamic model of the clarification-thickening process. Water Research 25, 1263--1271.
+\bibitem[T{\o}ndel et~al.(2003)T{\o}ndel, Johansen, and Bemporad]{Tondel2003}
+T{\o}ndel, P., Johansen, T.A., Bemporad, A., 2003. An algorithm for multi-parametric quadratic programming and explicit model predictive control solutions. Automatica 39, 489--497.
+\bibitem[W\"achter and Biegler(2006)]{WachterBiegler2006}
+W\"achter, A., Biegler, L.T., 2006. On the implementation of an interior-point filter line-search algorithm for large-scale nonlinear programming. Mathematical Programming 106, 25--57.
 \end{thebibliography}
 \end{document}
