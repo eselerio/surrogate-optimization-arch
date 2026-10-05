@@ -1,4 +1,4 @@
-%% Elsevier single-column submission format for Computers & Chemical Engineering.
+%% Elsevier single-column submission format for Water Research.
 \documentclass[a4paper,fleqn]{cas-sc}
 
 \usepackage[authoryear]{natbib}
@@ -70,16 +70,8 @@
 Operational optimization of activated sludge plants requires repeated solutions of coupled biological, recycle, and settling equations. Statistical surrogates can reduce this computational cost, but their predictions must respect the physical connections among treatment units. This study develops a plant-wide, physically constrained statistical surrogate that combines second-order ridge regression with joint quadratic projection. The model predicts mixer and reactor concentrations, clarifier outlet component flows, and stored solids. Projection enforces the specified component and inventory balances, separation requirements, inventory bounds, and non-negativity. A simulated plant with five reactors and a ten-layer clarifier provides 7,386 accepted development states and 1,845 accepted holdout states. Projection reduces aggregate normalized root mean square error by 8.19\% and normalized mean absolute error by 15.65\%. Root mean square error improves in 30 of the 32 combinations of treatment location and water-quality measure. Surrogate-based operating searches are compared with direct smooth mechanistic optimization for a nominal influent and ten additional influent scenarios. Retained decisions are evaluated by independently solving the original mechanistic equations at the selected controls. Direct optimization gives a lower reference-model objective in all eleven retained comparisons. Across the ten influent scenarios, mean optimization times are 1.726~s for the surrogate and 5.236~s for the direct route. These times exclude model development and subsequent verification. The contribution is a connected plant surrogate that enforces specified physical relations and supports faster operating searches. The results also show that physical consistency and favorable average accuracy do not establish decision quality, which requires mechanistic evaluation.
 \end{abstract}
 
-\begin{highlights}
-\item Joint projection enforces the stated plant-wide physical relations.
-\item Projection lowers aggregate holdout errors across the treatment plant.
-\item Selected decisions retain errors that require mechanistic evaluation.
-\item Direct optimization gives lower objectives in all tested scenarios.
-\item Surrogate optimization takes less time in all tested scenarios.
-\end{highlights}
-
 \begin{keywords}
-activated sludge \sep process optimization \sep recycle \sep invariant constraints \sep constrained surrogate \sep quadratic projection
+activated sludge \sep process optimization \sep process systems engineering \sep wastewater treatment \sep machine learning \sep statistical surrogates \sep physically constrained regression
 \end{keywords}
 
 \maketitle
@@ -747,8 +739,6 @@ Extended ICSOR has the shorter optimization time in the nominal scenario and eve
 The surrogate search varies seven controls and obtains the response through regression and projection. Smooth NLP optimizes the controls together with mechanistic states through the smoothing sequence. These differences are consistent with the observed times, but the timing comparison alone does not identify which calculation dominates either search.
 
 Both routes complete the measured optimization within seconds. Extended ICSOR uses less optimization time, whereas the retained Smooth NLP decisions have lower reference-model objectives. This result separates computational efficiency from the quality of the selected decisions.
-
-Optimization time excludes data generation, fitting, convergence certification, additional recovery calculations, and evaluation with the original mechanistic model. A failed initial direct attempt remains in the time record even when a later calculation supplies a retained decision. The plotted time therefore measures the specified optimization interval and does not include every calculation needed to obtain and verify the decision.
 
 The time and objective panels report different aspects of performance. Together they show faster surrogate optimization and lower reference-model objectives for the retained Smooth NLP decisions. They do not establish equal decision quality or a reduction in the time of the complete calculation \citep{Bliek2023}.
 

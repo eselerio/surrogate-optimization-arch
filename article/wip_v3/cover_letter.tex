@@ -1,0 +1,42 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=24mm]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage[hidelinks]{hyperref}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.7em}
+\pagestyle{empty}
+
+\begin{document}
+
+\begin{flushright}
+6 October 2026
+\end{flushright}
+
+Professor Ana Deletic\\
+Editor-in-Chief, \textit{Water Research}\\
+University of Wollongong\\
+Wollongong, Australia
+
+Dear Professor Deletic,
+
+Please consider my manuscript, ``Plant-wide Optimization of Activated Sludge Systems Using a Physically Constrained Statistical Surrogate,'' for publication as an original research article in \textit{Water Research}. The study addresses the computational cost of optimizing a coupled treatment plant. It evaluates whether a physically constrained statistical surrogate can support faster searches for plant operation settings that balance effluent quality and resource use.
+
+The contribution is a novel physically constrained statistical model of the connected treatment plant. It models recycle mixing, a biological reactor train, clarifier outlet flows, and stored solids within one response. Second-order ridge regression supplies the initial predictions and a clever quadratic projection method simultaneously enforces mass conservation and non-negativity on those predictions.
+
+In a simulated plant with five reactors and a ten-layer clarifier, the projection method reduces aggregate normalized root mean square error by 8.19\% and normalized mean absolute error by 15.65\% across 1,845 accepted holdout states. Operating searches are compared with direct smooth mechanistic optimization for a nominal influent and ten additional influent scenarios. Every retained decision is independently evaluated with the original mechanistic equations. Across the ten additional scenarios, mean optimization times are 1.726~s for the surrogate and 5.236~s for the direct mechanistic route. Direct mechanistic optimization nevertheless produces a slightly lower reference-model objective in all eleven comparisons.
+
+These findings provide a useful basis for assessing surrogates used in wastewater treatment optimization. Physical consistency and favorable average prediction error do not by themselves establish the quality of a selected operating decision. The study shows how connected plant modeling and mechanistic verification can assess both treatment outcomes and computational efficiency. Its contribution directly links mathematical modeling and systems analysis to biological wastewater treatment and water-quality management, in line with the applied and interdisciplinary scope of \textit{Water Research}.
+
+Thank you for considering this manuscript for peer review.
+
+Sincerely,
+
+Egberto F. Selerio Jr.\\
+Engineering Research and Development for Technology\\
+School of Engineering, University of San Carlos\\
+Philippines\\
+\href{mailto:egbertoselerio@gmail.com}{egbertoselerio@gmail.com}
+
+\end{document}
