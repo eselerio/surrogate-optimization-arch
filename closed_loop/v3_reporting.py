@@ -2266,7 +2266,7 @@ def _generation_tables(
     run_directory: Path,
     warnings: list[str],
 ) -> dict[str, pd.DataFrame]:
-    """Summarize accepted-row replacement without hiding failed attempts."""
+    """Summarize fixed LHS attempts without hiding rejected candidates."""
 
     summary_rows: list[dict[str, Any]] = []
     disposition_rows: list[dict[str, Any]] = []
@@ -2283,16 +2283,18 @@ def _generation_tables(
         directory = run_directory / "datasets" / block
         attempts = _safe_csv(directory / "all_attempts.csv", warnings)
         provenance = _safe_csv(directory / "accepted_provenance.csv", warnings)
-        migration = _safe_csv(directory / "base_checkpoint_migration.csv", warnings)
+        migration = _safe_csv(
+            directory / "candidate_checkpoint_summary.csv", warnings,
+        )
         accepted_inputs = _safe_npz(directory / "accepted_inputs.npz", warnings)
-        summary = _safe_json(directory / "replacement_summary.json", warnings) or {}
+        summary = _safe_json(directory / "generation_summary.json", warnings) or {}
         available = any(
             path.is_file()
             for path in (
                 directory / "all_attempts.csv",
                 directory / "accepted_provenance.csv",
                 directory / "accepted_inputs.npz",
-                directory / "replacement_summary.json",
+                directory / "generation_summary.json",
             )
         )
 
@@ -2305,53 +2307,40 @@ def _generation_tables(
             if len(provenance)
             else (_as_int(summary.get("accepted_count")) or 0)
         )
-        required_count = _as_int(summary.get("requested_accepted_count"))
-        if required_count is None:
-            required_count = accepted_count
+        candidate_count = _as_int(summary.get("candidate_count"))
+        if candidate_count is None:
+            candidate_count = attempted_count
         slots = (
             pd.to_numeric(provenance["accepted_slot"], errors="coerce")
             if "accepted_slot" in provenance
             else pd.Series(dtype=float)
         )
         traced = bool(
-            required_count >= 0
-            and len(provenance) == required_count
+            accepted_count >= 0
+            and len(provenance) == accepted_count
             and slots.notna().all()
-            and set(slots.astype(int).tolist()) == set(range(required_count))
+            and set(slots.astype(int).tolist()) == set(range(accepted_count))
             and (
                 "source_candidate_id" in provenance
                 and provenance["source_candidate_id"].astype(str).is_unique
             )
         )
-        supplemental_attempts = _as_int(summary.get("supplemental_attempt_count"))
-        if supplemental_attempts is None and "candidate_round" in attempts:
-            rounds = pd.to_numeric(attempts["candidate_round"], errors="coerce")
-            supplemental_attempts = int((rounds > 0).sum())
-        supplemental_attempts = supplemental_attempts or 0
         summary_rows.append({
             "block": block,
             "availability": "available" if available else "not_available",
             "candidate_attempt_denominator": attempted_count,
             "accepted_row_denominator": accepted_count,
-            "required_accepted_rows": required_count,
+            "configured_candidate_rows": candidate_count,
             "rejected_candidate_count": rejected_count,
             "attempt_acceptance_fraction": (
                 accepted_attempt_count / attempted_count
                 if attempted_count else math.nan
             ),
-            "base_attempt_count": _as_int(summary.get("base_attempt_count")),
-            "base_accepted_count": _as_int(summary.get("base_accepted_count")),
-            "supplemental_attempt_count": supplemental_attempts,
-            "supplemental_accepted_count": _as_int(
-                summary.get("supplemental_accepted_count")
-            ),
-            "supplemental_round_count": _as_int(
-                summary.get("supplemental_round_count")
-            ),
             "accepted_slots_fully_traced": traced,
-            "single_global_strength_one_lhs": (
-                bool(supplemental_attempts == 0) if available else None
+            "candidate_design_is_single_strength_one_lhs": (
+                True if available else None
             ),
+            "rejected_candidates_replaced": False if available else None,
             "accepted_set_conditioned_on_mechanistic_acceptance": (
                 True if available else None
             ),

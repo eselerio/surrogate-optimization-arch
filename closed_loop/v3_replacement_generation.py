@@ -1,10 +1,4 @@
-"""Deterministic, resumable replacement generation for the v3 study.
-
-The original candidate design remains immutable.  Candidates that fail the
-two-start mechanistic acceptance contract are retained as audited attempts,
-while deterministic supplemental candidates fill their vacated output slots.
-Development and test blocks use independent SplitMix64 streams.
-"""
+"""Deterministic, resumable fixed-design generation for the study."""
 
 from __future__ import annotations
 
@@ -21,14 +15,11 @@ import time
 import numpy as np
 import pandas as pd
 
-from .design import SplitMix64
 from . import manuscript_v3 as core
 from .model import INFLUENT_LOWER, INFLUENT_UPPER, N_COMPONENTS, N_STAGES
 
 
-REPLACEMENT_SCHEMA = "article-v3-replacement-generation-v1"
-_DIMENSION_COUNT = 27
-_FLOAT53_DENOMINATOR = float(1 << 53)
+GENERATION_SCHEMA = "fixed-lhs-generation-v1"
 
 
 def _replace_with_retry(source: Path, destination: Path) -> None:
@@ -184,18 +175,6 @@ def _base_contract_hash(
         json.dumps(asdict(profile), sort_keys=True).encode("utf-8")
         + np.ascontiguousarray(decisions, dtype="<f8").tobytes()
         + np.ascontiguousarray(influents, dtype="<f8").tobytes()
-        + Path(core.__file__).read_bytes()
-        + Path(core.__file__).with_name("model.py").read_bytes()
-    )
-    return sha256(payload).hexdigest()
-
-
-def _replacement_contract_hash(profile: core.StudyProfile, block: str) -> str:
-    payload = (
-        REPLACEMENT_SCHEMA.encode("utf-8")
-        + block.encode("utf-8")
-        + json.dumps(asdict(profile), sort_keys=True).encode("utf-8")
-        + Path(__file__).read_bytes()
         + Path(core.__file__).read_bytes()
         + Path(core.__file__).with_name("model.py").read_bytes()
     )
@@ -414,32 +393,6 @@ def _error_record(candidate: _Candidate, error: BaseException) -> dict[str, obje
     return _annotate_rejection(record)
 
 
-def _supplemental_coordinates(
-    count: int, starting_state: int,
-) -> tuple[np.ndarray, int, int]:
-    """Draw a row-major open-unit block from a continued SplitMix64 state."""
-
-    stream = SplitMix64(starting_state)
-    unit = np.empty((count, _DIMENSION_COUNT), dtype=float)
-    for row in range(count):
-        for dimension in range(_DIMENSION_COUNT):
-            unit[row, dimension] = (
-                float(stream.next_uint64() >> 11) + 0.5
-            ) / _FLOAT53_DENOMINATOR
-    return unit, stream.state, stream.draw_count
-
-
-def _physical_supplemental(
-    count: int, starting_state: int,
-) -> tuple[np.ndarray, np.ndarray, int, int]:
-    unit, final_state, draws = _supplemental_coordinates(count, starting_state)
-    lower = np.concatenate((core.DECISION_LOWER, INFLUENT_LOWER))
-    upper = np.concatenate((core.DECISION_UPPER, INFLUENT_UPPER))
-    physical = lower + unit * (upper - lower)
-    physical = np.minimum(physical, np.nextafter(upper, lower))
-    return physical[:, :7], physical[:, 7:], final_state, draws
-
-
 def _load_attempt(
     candidate: _Candidate,
     *,
@@ -624,44 +577,7 @@ def _solve_candidates(
     return [loaded[candidate.candidate_id] for candidate in candidates]
 
 
-def _round_manifest(
-    path: Path,
-    *,
-    block: str,
-    round_index: int,
-    count: int,
-    starting_state: int,
-    final_state: int,
-    starting_draw_count: int,
-    draw_count: int,
-    decisions: np.ndarray,
-    influents: np.ndarray,
-) -> dict[str, object]:
-    payload = {
-        "schema": REPLACEMENT_SCHEMA,
-        "block": block,
-        "round": round_index,
-        "candidate_count": count,
-        "starting_state": int(starting_state),
-        "final_state": int(final_state),
-        "starting_draw_count": int(starting_draw_count),
-        "draw_count": int(draw_count),
-        "ending_draw_count": int(starting_draw_count + draw_count),
-        "design_digest": sha256(
-            np.ascontiguousarray(decisions, dtype="<f8").tobytes()
-            + np.ascontiguousarray(influents, dtype="<f8").tobytes()
-        ).hexdigest(),
-    }
-    if path.is_file():
-        existing = json.loads(path.read_text(encoding="utf-8"))
-        if existing != payload:
-            raise RuntimeError(f"supplemental round manifest differs: {path}")
-    else:
-        _atomic_json(path, payload)
-    return payload
-
-
-def generate_mechanistic_block_with_replacements(
+def generate_mechanistic_block_from_fixed_design(
     decisions: np.ndarray,
     influents: np.ndarray,
     profile: core.StudyProfile,
@@ -669,14 +585,7 @@ def generate_mechanistic_block_with_replacements(
     *,
     block: str | None = None,
 ) -> MechanisticBlockResult:
-    """Return exactly the requested number of accepted mechanistic rows.
-
-    Accepted base rows retain their original slots.  Each rejected base row is
-    immutable, and accepted supplemental candidates fill the rejected slots in
-    ascending order.  Supplemental rounds contain exactly the remaining
-    deficit and continue the block's SplitMix64 stream; they never draw from or
-    promote candidates across the development/test boundary.
-    """
+    """Solve one fixed LHS candidate block and retain its accepted rows."""
 
     decisions = np.asarray(decisions, dtype=float)
     influents = np.asarray(influents, dtype=float)
@@ -691,8 +600,7 @@ def generate_mechanistic_block_with_replacements(
     if not np.all(np.isfinite(decisions)) or not np.all(np.isfinite(influents)):
         raise ValueError(f"{block_name} initial candidates must be finite")
 
-    # Replaying the initial generator both validates its identity and gives the
-    # exact state at which the independent supplemental stream begins.
+    # Replaying the initial generator validates the immutable LHS identity.
     expected_decisions, expected_influents, generator = core._design_block(
         required_count, seed,
     )
@@ -707,9 +615,7 @@ def generate_mechanistic_block_with_replacements(
     output.mkdir(parents=True, exist_ok=True)
     rows_directory = output / "rows"
     rows_directory.mkdir(parents=True, exist_ok=True)
-    replacement_directory = output / "attempts" / "replacement"
     base_contract = _base_contract_hash(decisions, influents, profile)
-    replacement_contract = _replacement_contract_hash(profile, block_name)
     state_size = N_STAGES * N_COMPONENTS + profile.layer_count
 
     base_candidates = [
@@ -726,68 +632,21 @@ def generate_mechanistic_block_with_replacements(
         for candidate in base_candidates
     }
     base_results = _solve_candidates(base_candidates, profile, base_contract)
-
-    slots: dict[int, tuple[_Candidate, np.ndarray, np.ndarray, np.ndarray, dict[str, object]]] = {}
     attempts = list(base_results)
-    for item in base_results:
-        candidate, target, first, second, record = item
-        if bool(record["accepted"]):
-            slots[candidate.candidate_index] = item
+    accepted_results = [item for item in base_results if bool(item[4]["accepted"])]
+    accepted_count = len(accepted_results)
+    if accepted_count == 0:
+        raise RuntimeError(f"{block_name} fixed LHS produced no accepted rows")
 
-    failed_slots = [index for index in range(required_count) if index not in slots]
-    stream_state = int(generator["final_state"])
-    stream_draw_count = int(generator["draw_count"])
-    candidate_ordinal = required_count
-    round_index = 1
-    while failed_slots:
-        deficit = len(failed_slots)
-        round_dir = replacement_directory / f"round_{round_index:06d}"
-        round_decisions, round_influents, final_state, draws = _physical_supplemental(
-            deficit, stream_state,
-        )
-        _round_manifest(
-            round_dir / "manifest.json", block=block_name,
-            round_index=round_index, count=deficit,
-            starting_state=stream_state, final_state=final_state,
-            starting_draw_count=stream_draw_count, draw_count=draws,
-            decisions=round_decisions, influents=round_influents,
-        )
-        candidates = [
-            _Candidate(
-                block=block_name, round_index=round_index,
-                candidate_index=index,
-                candidate_ordinal=candidate_ordinal + index,
-                decision=round_decisions[index],
-                influent=round_influents[index],
-                checkpoint=round_dir / f"candidate_{index:06d}.npz",
-            )
-            for index in range(deficit)
-        ]
-        results = _solve_candidates(candidates, profile, replacement_contract)
-        attempts.extend(results)
-        accepted = [item for item in results if bool(item[4]["accepted"])]
-        for slot, item in zip(failed_slots, accepted, strict=False):
-            slots[slot] = item
-        failed_slots = [index for index in failed_slots if index not in slots]
-        stream_state = final_state
-        stream_draw_count += draws
-        candidate_ordinal += deficit
-        print(
-            f"[{block_name}] replacement round {round_index}: "
-            f"{len(accepted)}/{deficit} accepted; {len(failed_slots)} slots remain",
-            flush=True,
-        )
-        round_index += 1
-
-    accepted_decisions = np.empty((required_count, 7), dtype=float)
-    accepted_influents = np.empty((required_count, N_COMPONENTS), dtype=float)
-    targets = np.empty((required_count, profile.mechanistic_response_count), dtype=float)
-    states_start_1 = np.empty((required_count, state_size), dtype=float)
+    accepted_decisions = np.empty((accepted_count, 7), dtype=float)
+    accepted_influents = np.empty((accepted_count, N_COMPONENTS), dtype=float)
+    targets = np.empty((accepted_count, profile.mechanistic_response_count), dtype=float)
+    states_start_1 = np.empty((accepted_count, state_size), dtype=float)
     states_start_2 = np.empty_like(states_start_1)
     diagnostic_records: list[dict[str, object]] = []
     provenance_records: list[dict[str, object]] = []
-    for slot in range(required_count):
-        candidate, target, first, second, attempt_record = slots[slot]
+    for slot, item in enumerate(accepted_results):
+        candidate, target, first, second, attempt_record = item
         accepted_decisions[slot] = candidate.decision
         accepted_influents[slot] = candidate.influent
         targets[slot] = target
@@ -803,14 +662,9 @@ def generate_mechanistic_block_with_replacements(
         diagnostic_records.append(diagnostic)
         provenance_records.append({
             "accepted_slot": slot,
-            "base_candidate_id": (
-                f"{block_name}:r000000:c{slot:06d}"
-            ),
             "source_candidate_id": candidate.candidate_id,
-            "source_candidate_round": candidate.round_index,
             "source_candidate_index": candidate.candidate_index,
             "source_candidate_ordinal": candidate.candidate_ordinal,
-            "replaced_base_candidate": bool(candidate.round_index > 0),
         })
 
     diagnostics = pd.DataFrame(diagnostic_records)
@@ -854,13 +708,12 @@ def generate_mechanistic_block_with_replacements(
         decisions=accepted_decisions,
         influents=accepted_influents,
         source_candidate_id=provenance["source_candidate_id"].to_numpy(str),
-        source_candidate_round=provenance["source_candidate_round"].to_numpy(int),
         source_candidate_index=provenance["source_candidate_index"].to_numpy(int),
         source_candidate_ordinal=provenance["source_candidate_ordinal"].to_numpy(int),
     )
     _atomic_npz(
         output / "mechanistic_accepted_v3.npz",
-        contract_hash=np.asarray(replacement_contract),
+        contract_hash=np.asarray(base_contract),
         targets=targets,
         states_start_1=states_start_1,
         states_start_2=states_start_2,
@@ -868,27 +721,16 @@ def generate_mechanistic_block_with_replacements(
     _atomic_dataframe(output / "accepted_diagnostics.csv", diagnostics)
     _atomic_dataframe(output / "all_attempts.csv", attempts_frame)
     _atomic_dataframe(output / "accepted_provenance.csv", provenance)
-    _atomic_dataframe(output / "base_checkpoint_migration.csv", migration)
-    _atomic_json(output / "replacement_summary.json", {
-        "schema": REPLACEMENT_SCHEMA,
+    _atomic_dataframe(output / "candidate_checkpoint_summary.csv", migration)
+    _atomic_json(output / "generation_summary.json", {
+        "schema": GENERATION_SCHEMA,
         "block": block_name,
-        "requested_accepted_count": required_count,
-        "accepted_count": required_count,
-        "base_attempt_count": required_count,
-        "base_accepted_count": int(sum(
-            bool(item[4]["accepted"]) for item in base_results
-        )),
-        "supplemental_attempt_count": len(attempts) - required_count,
-        "supplemental_accepted_count": int(sum(
-            bool(item[4]["accepted"]) for item in attempts[required_count:]
-        )),
-        "supplemental_round_count": round_index - 1,
+        "candidate_count": required_count,
+        "accepted_count": accepted_count,
+        "rejected_count": required_count - accepted_count,
         "initial_seed": int(seed),
         "initial_final_state": int(generator["final_state"]),
         "initial_draw_count": int(generator["draw_count"]),
-        "replacement_final_state": int(stream_state),
-        "replacement_draw_count": int(stream_draw_count - generator["draw_count"]),
-        "total_stream_draw_count": int(stream_draw_count),
     })
     return MechanisticBlockResult(
         decisions=accepted_decisions, influents=accepted_influents,
@@ -898,7 +740,7 @@ def generate_mechanistic_block_with_replacements(
 
 
 __all__ = [
+    "GENERATION_SCHEMA",
     "MechanisticBlockResult",
-    "REPLACEMENT_SCHEMA",
-    "generate_mechanistic_block_with_replacements",
+    "generate_mechanistic_block_from_fixed_design",
 ]

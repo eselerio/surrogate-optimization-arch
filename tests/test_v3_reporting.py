@@ -431,7 +431,7 @@ class ReportingSnapshotTests(unittest.TestCase):
             row = row[(row["case"] == "nominal") & (row["route"] == "direct")].iloc[0]
             self.assertEqual(row["starts_expected"], 9)
 
-    def test_replacement_generation_tables_and_effective_artifacts_are_preferred(self) -> None:
+    def test_fixed_generation_tables_and_effective_artifacts_are_preferred(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             run = Path(temporary) / "run"
             _make_run(run, robustness_count=0)
@@ -462,7 +462,7 @@ class ReportingSnapshotTests(unittest.TestCase):
                     "candidate_id": [
                         f"{block}:r000000:c000000",
                         f"{block}:r000000:c000001",
-                        f"{block}:r000001:c000000",
+                        f"{block}:r000000:c000002",
                     ],
                     "accepted": [True, False, True],
                     "rejection_reason": ["accepted", "branch_disagreement", "accepted"],
@@ -481,9 +481,9 @@ class ReportingSnapshotTests(unittest.TestCase):
                     "accepted_slot": [0, 1],
                     "source_candidate_id": [
                         f"{block}:r000000:c000000",
-                        f"{block}:r000001:c000000",
+                        f"{block}:r000000:c000002",
                     ],
-                    "source_candidate_round": [0, 1],
+                    "source_candidate_index": [0, 2],
                 }).to_csv(directory / "accepted_provenance.csv", index=False)
                 pd.DataFrame({
                     "candidate_id": [
@@ -491,15 +491,13 @@ class ReportingSnapshotTests(unittest.TestCase):
                         f"{block}:r000000:c000001",
                     ],
                     "preserved_without_rewrite": [True, True],
-                }).to_csv(directory / "base_checkpoint_migration.csv", index=False)
-                _write_json(directory / "replacement_summary.json", {
-                    "requested_accepted_count": 2,
+                }).to_csv(
+                    directory / "candidate_checkpoint_summary.csv", index=False,
+                )
+                _write_json(directory / "generation_summary.json", {
+                    "candidate_count": 3,
                     "accepted_count": 2,
-                    "base_attempt_count": 2,
-                    "base_accepted_count": 1,
-                    "supplemental_attempt_count": 1,
-                    "supplemental_accepted_count": 1,
-                    "supplemental_round_count": 1,
+                    "rejected_count": 1,
                 })
 
             warnings: list[str] = []
@@ -517,7 +515,14 @@ class ReportingSnapshotTests(unittest.TestCase):
             self.assertEqual(summary.loc["development", "accepted_row_denominator"], 2)
             self.assertEqual(summary.loc["development", "rejected_candidate_count"], 1)
             self.assertTrue(summary.loc["development", "accepted_slots_fully_traced"])
-            self.assertFalse(summary.loc["development", "single_global_strength_one_lhs"])
+            self.assertTrue(
+                summary.loc[
+                    "development", "candidate_design_is_single_strength_one_lhs"
+                ]
+            )
+            self.assertFalse(
+                summary.loc["development", "rejected_candidates_replaced"]
+            )
             reasons = bundle["generation_rejection_reasons"]
             branch = reasons[
                 (reasons["block"] == "development")

@@ -111,18 +111,7 @@ class ReplacementGenerationTests(unittest.TestCase):
             self.assertEqual(sleeper.call_count, 2)
             self.assertEqual(destination.read_text(encoding="utf-8"), "complete")
 
-    def test_continuation_is_row_major_open_and_replayable(self) -> None:
-        first, state, draws = replacement._supplemental_coordinates(2, 987654321)
-        second, replay_state, replay_draws = replacement._supplemental_coordinates(
-            2, 987654321,
-        )
-        np.testing.assert_array_equal(first, second)
-        self.assertEqual(draws, 54)
-        self.assertEqual((state, draws), (replay_state, replay_draws))
-        self.assertTrue(np.all(first > 0.0))
-        self.assertTrue(np.all(first < 1.0))
-
-    def test_reuses_base_attempts_and_fills_failed_slot_without_overwrite(self) -> None:
+    def test_reuses_fixed_candidates_and_excludes_rejected_row(self) -> None:
         profile = _profile()
         design = create_design(profile)
         decisions = design["development_decisions"]
@@ -161,32 +150,17 @@ class ReplacementGenerationTests(unittest.TestCase):
                 for item in base_candidates
             }
 
-            generator = design["generators"]["development"]
-            round_decisions, round_influents, _, _ = replacement._physical_supplemental(
-                1, int(generator["final_state"]),
-            )
-            supplemental = replacement._Candidate(
-                "development", 1, 0, 3, round_decisions[0], round_influents[0],
-                output / "attempts/replacement/round_000001/candidate_000000.npz",
-            )
-            _checkpoint(
-                supplemental, profile,
-                replacement._replacement_contract_hash(profile, "development"),
-                accepted=True, marker=9.0,
-            )
-
-            result = replacement.generate_mechanistic_block_with_replacements(
+            result = replacement.generate_mechanistic_block_from_fixed_design(
                 decisions, influents, profile, output, block="development",
             )
-            self.assertEqual(result.targets.shape, (3, profile.response_count))
-            np.testing.assert_array_equal(result.targets[:, 0], [1.0, 9.0, 3.0])
+            self.assertEqual(result.targets.shape, (2, profile.response_count))
+            np.testing.assert_array_equal(result.targets[:, 0], [1.0, 3.0])
             np.testing.assert_array_equal(result.decisions[0], decisions[0])
-            np.testing.assert_array_equal(result.decisions[2], decisions[2])
-            np.testing.assert_array_equal(result.decisions[1], round_decisions[0])
+            np.testing.assert_array_equal(result.decisions[1], decisions[2])
             self.assertEqual(
-                result.provenance["source_candidate_round"].tolist(), [0, 1, 0],
+                result.provenance["source_candidate_index"].tolist(), [0, 2],
             )
-            self.assertEqual(len(result.attempts), 4)
+            self.assertEqual(len(result.attempts), 3)
             self.assertFalse(result.attempts.iloc[1]["accepted"])
             for path, digest in original_hashes.items():
                 self.assertEqual(replacement._file_digest(path), digest)
@@ -198,11 +172,12 @@ class ReplacementGenerationTests(unittest.TestCase):
             self.assertTrue((output / "all_attempts.csv").is_file())
             self.assertTrue((output / "accepted_inputs.npz").is_file())
             self.assertTrue((output / "accepted_provenance.csv").is_file())
-            self.assertTrue((output / "base_checkpoint_migration.csv").is_file())
+            self.assertTrue((output / "candidate_checkpoint_summary.csv").is_file())
+            self.assertTrue((output / "generation_summary.json").is_file())
             self.assertTrue((output / "mechanistic_rows_v3.npz").exists())
             self.assertTrue((output / "mechanistic_diagnostics.csv").exists())
 
-            replayed = replacement.generate_mechanistic_block_with_replacements(
+            replayed = replacement.generate_mechanistic_block_from_fixed_design(
                 decisions, influents, profile, output, block="development",
             )
             np.testing.assert_array_equal(replayed.targets, result.targets)
@@ -211,7 +186,7 @@ class ReplacementGenerationTests(unittest.TestCase):
             for path, digest in legacy_hashes.items():
                 self.assertEqual(replacement._file_digest(path), digest)
 
-    def test_failed_supplement_is_retained_and_next_round_continues_stream(self) -> None:
+    def test_rejected_fixed_candidate_does_not_trigger_another_round(self) -> None:
         profile = _profile()
         design = create_design(profile)
         decisions = design["test_decisions"]
@@ -231,41 +206,21 @@ class ReplacementGenerationTests(unittest.TestCase):
             _checkpoint(candidates[0], profile, base_contract, accepted=True, marker=1.0)
             _checkpoint(candidates[1], profile, base_contract, accepted=False, marker=2.0)
 
-            generator = design["generators"]["test"]
-            round_1_d, round_1_i, round_1_state, _ = replacement._physical_supplemental(
-                1, int(generator["final_state"]),
-            )
-            first = replacement._Candidate(
-                "test", 1, 0, 2, round_1_d[0], round_1_i[0],
-                output / "attempts/replacement/round_000001/candidate_000000.npz",
-            )
-            contract = replacement._replacement_contract_hash(profile, "test")
-            _checkpoint(first, profile, contract, accepted=False, marker=3.0)
-            rejected_hash = replacement._file_digest(first.checkpoint)
-            round_2_d, round_2_i, _, _ = replacement._physical_supplemental(
-                1, round_1_state,
-            )
-            second = replacement._Candidate(
-                "test", 2, 0, 3, round_2_d[0], round_2_i[0],
-                output / "attempts/replacement/round_000002/candidate_000000.npz",
-            )
-            _checkpoint(second, profile, contract, accepted=True, marker=4.0)
-
-            result = replacement.generate_mechanistic_block_with_replacements(
+            result = replacement.generate_mechanistic_block_from_fixed_design(
                 decisions, influents, profile, output, block="test",
             )
-            self.assertEqual(len(result.attempts), 4)
+            self.assertEqual(len(result.attempts), 2)
             self.assertEqual(
-                result.provenance["source_candidate_round"].tolist(), [0, 2],
+                result.provenance["source_candidate_index"].tolist(), [0],
             )
-            np.testing.assert_array_equal(result.targets[:, 0], [1.0, 4.0])
+            np.testing.assert_array_equal(result.targets[:, 0], [1.0])
             summary = json.loads(
-                (output / "replacement_summary.json").read_text(encoding="utf-8")
+                (output / "generation_summary.json").read_text(encoding="utf-8")
             )
-            self.assertEqual(summary["supplemental_round_count"], 2)
-            self.assertEqual(summary["supplemental_attempt_count"], 2)
-            self.assertEqual(summary["supplemental_accepted_count"], 1)
-            self.assertEqual(replacement._file_digest(first.checkpoint), rejected_hash)
+            self.assertEqual(summary["candidate_count"], 2)
+            self.assertEqual(summary["accepted_count"], 1)
+            self.assertEqual(summary["rejected_count"], 1)
+            self.assertFalse((output / "attempts" / "replacement").exists())
 
 
 if __name__ == "__main__":

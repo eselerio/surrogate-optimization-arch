@@ -29,16 +29,16 @@
       "admission_gate_execution_policy": "record every failed scientific gate and continue without refitting",
       "scientific_admission_gate_enforced_for_article_eligibility": true,
       "article_results_eligible_only_if_all_scientific_gates_pass": true,
-      "counts_are_accepted_rows": true,
-      "replace_rejected_mechanistic_candidates": true,
-      "purpose": "Generate exactly 10000 accepted states in independent 8000-row development and 2000-row descriptive holdout streams. Audit and deterministically replace rejected mechanistic attempts."
+      "counts_are_candidate_rows": true,
+      "replace_rejected_mechanistic_candidates": false,
+      "purpose": "Attempt exactly 10000 LHS candidates in independent 8000-row development and 2000-row descriptive holdout streams. Audit rejected mechanistic attempts and retain the accepted subsets without replacement."
     }
   },
   "design": {
     "generator": "SplitMix64",
-    "method": "candidate round 0 is a strength-1 Latin hypercube; supplemental candidates are row-major open-unit SplitMix64 draws",
+    "method": "each development and holdout block is one fixed strength-1 Latin hypercube",
     "initial_candidate_method": "strength-1 Latin hypercube",
-    "final_accepted_design_description": "acceptance-conditioned union of initial-round survivors and deterministic supplemental candidates; not one global Latin hypercube",
+    "final_accepted_design_description": "accepted rows are the numerically valid subset of each fixed Latin hypercube; rejected candidates are not replaced",
     "dimension_order": [
       "H", "a_3", "a_4", "a_5", "r_I", "r_R", "w",
       "S_O", "S_F", "S_A", "S_NH4", "S_NO2", "S_NO3", "S_N2", "S_PO4", "S_I", "S_ALK",
@@ -69,26 +69,13 @@
     "stability_step_agreement_d_inv": 1e-6,
     "stability_step_agreement_note": "Revised from 1e-9 after the complete 500-row preflight showed that all 21 apparent failures passed every physical, convergence, branch, and stability-margin gate and differed only in the prescribed two-step finite-difference eigenvalue estimate (maximum observed discrepancy 9.281e-7 d^-1); see manuscript revision record.",
     "candidate_acceptance_branch_rule": "exact equality of the complete two-start nonsmooth branch-classification tuple; no development-calibrated branch-margin generation screen",
-    "replacement_policy": {
-      "enabled": true,
-      "scope": "article_full production generation and subsequent workflows that explicitly adopt this replacement contract; the completed historical preflight is unchanged",
-      "target_counts_mean": "accepted mechanistic rows",
-      "ordinary_rejection_action": "retain the complete failed attempt, exclude it from the accepted dataset, and generate a replacement",
-      "initial_candidate_round": "the original independent strength-1 Latin-hypercube block",
-      "supplemental_round_size": "current accepted-row deficit",
-      "supplemental_generator": "continue the block-specific persisted SplitMix64 state and draw count",
-      "supplemental_coordinate_order": "row-major, 27 successive words per candidate in the declared dimension order",
-      "supplemental_unit_coordinate_formula": "((U >> 11) + 0.5) / 2^53",
-      "supplemental_design_is_latin_hypercube": false,
-      "accepted_assignment": "accepted supplemental candidates in candidate order fill unoccupied initial slots in ascending slot order",
+    "candidate_policy": {
+      "target_counts_mean": "attempted LHS candidate rows",
+      "ordinary_rejection_action": "retain the failed attempt, exclude it from analysis, and do not replace it",
       "development_test_streams_independent": true,
       "cross_block_promotion_allowed": false,
-      "candidate_id_format": "<block>:r<round:06d>:c<index:06d>",
       "retain_all_attempts": true,
-      "retain_stream_state_and_draw_provenance": true,
-      "same_run_migration": "verify original contract, input bytes, and checkpoint SHA-256; preserve history and accepted states without rewriting",
       "accepted_set_is_conditioned_on_mechanistic_acceptance": true,
-      "final_accepted_set_is_single_global_lhs": false,
       "ordinary_candidate_failure_stops_workflow": false,
       "run_integrity_failure_stops_workflow": true
     }
@@ -301,13 +288,13 @@
     "common_reference_scope": "every available selected decision in the nominal and ten robustness cases",
     "common_reference_model": "exact nonsmooth mechanistic steady-state model",
     "common_reference_start_count_per_decision": 2,
-    "common_reference_acceptance": "both exact starts accepted, agreement under generation and frozen state scales, categorical branch agreement unless any mismatching branch is within the declared ambiguity band, physical/stability acceptance, and engineering feasibility",
+    "common_reference_acceptance": "both exact starts accepted, agreement under generation and fixed state scales, categorical branch agreement unless any mismatching branch is within the declared ambiguity band, physical/stability acceptance, and engineering feasibility",
     "branch_boundary_policy": "record as a qualifier; accept when exact physical checks and required replay agreement pass",
     "required_methods": ["raw", "projected", "optimizer_native", "exact_mechanistic_start_1", "exact_mechanistic_start_2"],
     "track_mass_conservation": true,
     "track_nonnegativity": true,
     "generation_attempt_denominators": ["development_candidates_attempted", "test_candidates_attempted"],
-    "downstream_dataset_denominators": ["development_accepted_13371", "post_selection_holdout_accepted_3343"],
+    "downstream_dataset_denominators": ["development_accepted_observed", "post_selection_holdout_accepted_observed"],
     "holdout_interpretation": "descriptive post-selection evidence only; excluded from fitting, scaling, ridge selection, trust calibration, and scientific eligibility gates",
     "report_candidate_to_accepted_slot_provenance": true,
     "retain_zero_count_failure_classes": true

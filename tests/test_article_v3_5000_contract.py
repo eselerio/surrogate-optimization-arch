@@ -455,7 +455,7 @@ def casewise_migration_fixture(run: Path):
     return successor, authorization, retention, case_directory
 
 
-def publish_mock_replacement_block(
+def publish_mock_generation_block(
     output: Path,
     decisions: np.ndarray,
     influents: np.ndarray,
@@ -471,10 +471,8 @@ def publish_mock_replacement_block(
     provenance = pd.DataFrame({
         "accepted_slot": np.arange(count),
         "source_candidate_id": [f"candidate-{index}" for index in range(count)],
-        "source_candidate_round": np.zeros(count, dtype=int),
         "source_candidate_index": np.arange(count),
         "source_candidate_ordinal": np.arange(count),
-        "replaced_base_candidate": np.zeros(count, dtype=bool),
     })
     attempt_rows = []
     for index in range(count):
@@ -503,9 +501,9 @@ def publish_mock_replacement_block(
     runner.atomic_dataframe(output / "accepted_diagnostics.csv", diagnostics)
     runner.atomic_dataframe(output / "all_attempts.csv", attempts)
     runner.atomic_dataframe(output / "accepted_provenance.csv", provenance)
-    runner.atomic_dataframe(output / "base_checkpoint_migration.csv", attempts)
-    runner.atomic_json(output / "replacement_summary.json", {
-        "accepted": count, "supplemental_round_count": 0,
+    runner.atomic_dataframe(output / "candidate_checkpoint_summary.csv", attempts)
+    runner.atomic_json(output / "generation_summary.json", {
+        "candidate_count": count, "accepted_count": count, "rejected_count": 0,
     })
     return runner.MechanisticBlockResult(
         decisions=np.asarray(decisions), influents=np.asarray(influents),
@@ -552,7 +550,7 @@ TRUST_LIMITS = {
 
 
 class ArticleV3FiveThousandContractTests(unittest.TestCase):
-    def test_full_profile_is_exactly_eight_thousand_plus_two_thousand(self) -> None:
+    def test_full_profile_attempts_eight_thousand_plus_two_thousand(self) -> None:
         runner.validate_authorized_profile(ARTICLE_FULL)
         self.assertEqual(ARTICLE_FULL.development_count, 8_000)
         self.assertEqual(ARTICLE_FULL.test_count, 2_000)
@@ -562,7 +560,7 @@ class ArticleV3FiveThousandContractTests(unittest.TestCase):
         self.assertTrue(ARTICLE_FULL.article_eligible)
         self.assertTrue(ARTICLE_FULL.enforce_admission_gate)
 
-    def test_ten_thousand_profile_generates_fresh_accepted_rows(self) -> None:
+    def test_ten_thousand_profile_generates_fresh_candidate_rows(self) -> None:
         profile = runner.profile_for_dataset_total(10_000)
 
         runner.validate_authorized_profile(profile)
@@ -1065,14 +1063,14 @@ class ArticleV3FiveThousandContractTests(unittest.TestCase):
         def generator(
             decisions, influents, supplied_profile, output, *, block=None,
         ):
-            return publish_mock_replacement_block(
+            return publish_mock_generation_block(
                 output, decisions, influents, supplied_profile,
             )
 
         with tempfile.TemporaryDirectory() as temporary:
             run = Path(temporary)
             with patch.object(
-                    runner, "generate_mechanistic_block_with_replacements",
+                    runner, "generate_mechanistic_block_from_fixed_design",
                     side_effect=generator,
                 ) as mocked, \
                     patch.object(runner, "assert_source_unchanged"):
@@ -1099,14 +1097,14 @@ class ArticleV3FiveThousandContractTests(unittest.TestCase):
         def generator(
             decisions, influents, supplied_profile, output, *, block=None,
         ):
-            return publish_mock_replacement_block(
+            return publish_mock_generation_block(
                 output, decisions, influents, supplied_profile,
             )
 
         with tempfile.TemporaryDirectory() as temporary:
             run = Path(temporary)
             with patch.object(
-                runner, "generate_mechanistic_block_with_replacements",
+                runner, "generate_mechanistic_block_from_fixed_design",
                 side_effect=generator,
             ) as mocked, patch.object(runner, "assert_source_unchanged"):
                 first = runner.run_generation(
@@ -1143,14 +1141,14 @@ class ArticleV3FiveThousandContractTests(unittest.TestCase):
         def generator(
             decisions, influents, supplied_profile, output, *, block=None,
         ):
-            return publish_mock_replacement_block(
+            return publish_mock_generation_block(
                 output, decisions, influents, supplied_profile, accepted=False,
             )
 
         with tempfile.TemporaryDirectory() as temporary:
             run = Path(temporary)
             with patch.object(
-                    runner, "generate_mechanistic_block_with_replacements",
+                    runner, "generate_mechanistic_block_from_fixed_design",
                     side_effect=generator,
                 ), \
                     patch.object(runner, "assert_source_unchanged"):
@@ -1163,7 +1161,7 @@ class ArticleV3FiveThousandContractTests(unittest.TestCase):
                 (run / "datasets/development/block_complete.json").exists()
             )
 
-    def test_replacement_inputs_become_effective_design_without_mutating_base(self) -> None:
+    def test_accepted_subset_becomes_effective_design_without_mutating_base(self) -> None:
         profile = tiny_profile()
         design = tiny_design(profile)
         base_development = design["development_decisions"].copy()
@@ -1172,16 +1170,18 @@ class ArticleV3FiveThousandContractTests(unittest.TestCase):
             decisions, influents, supplied_profile, output, *, block=None,
         ):
             accepted_decisions = np.asarray(decisions).copy()
+            accepted_influents = np.asarray(influents).copy()
             if block == "development":
-                accepted_decisions[1, 0] = runner.DECISION_LOWER[0]
-            return publish_mock_replacement_block(
-                output, accepted_decisions, influents, supplied_profile,
+                accepted_decisions = np.delete(accepted_decisions, 1, axis=0)
+                accepted_influents = np.delete(accepted_influents, 1, axis=0)
+            return publish_mock_generation_block(
+                output, accepted_decisions, accepted_influents, supplied_profile,
             )
 
         with tempfile.TemporaryDirectory() as temporary:
             run = Path(temporary)
             with patch.object(
-                    runner, "generate_mechanistic_block_with_replacements",
+                    runner, "generate_mechanistic_block_from_fixed_design",
                     side_effect=generator,
                 ), patch.object(runner, "assert_source_unchanged"):
                 result = runner.run_generation(
@@ -1191,10 +1191,7 @@ class ArticleV3FiveThousandContractTests(unittest.TestCase):
             np.testing.assert_array_equal(
                 design["development_decisions"], base_development,
             )
-            self.assertEqual(
-                result.design["development_decisions"][1, 0],
-                runner.DECISION_LOWER[0],
-            )
+            self.assertEqual(len(result.design["development_decisions"]), 4)
             with np.load(run / "datasets/effective_design.npz") as stored:
                 np.testing.assert_array_equal(
                     stored["development_decisions"],

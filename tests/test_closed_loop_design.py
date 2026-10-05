@@ -319,7 +319,7 @@ class UnifiedArticleProfileTests(unittest.TestCase):
         path = Path(__file__).resolve().parents[1] / "config" / "parameters.json"
         cls.config = json.loads(path.read_text(encoding="utf-8"))
 
-    def test_article_profile_freezes_independent_accepted_count_streams(self) -> None:
+    def test_article_profile_freezes_independent_candidate_streams(self) -> None:
         self.assertEqual(self.config["schema_version"], 5)
         self.assertEqual(
             self.config["execution"]["default_profile"], "article_full_10000"
@@ -331,8 +331,8 @@ class UnifiedArticleProfileTests(unittest.TestCase):
         self.assertEqual(
             (profile["development_seed"], profile["test_seed"]), (100_042, 100_043)
         )
-        self.assertTrue(profile["counts_are_accepted_rows"])
-        self.assertTrue(profile["replace_rejected_mechanistic_candidates"])
+        self.assertTrue(profile["counts_are_candidate_rows"])
+        self.assertFalse(profile["replace_rejected_mechanistic_candidates"])
 
     def test_removed_guardrails_and_primary_time_are_explicit(self) -> None:
         engineering = self.config["engineering"]

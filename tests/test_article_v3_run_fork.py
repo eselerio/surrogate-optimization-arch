@@ -45,9 +45,9 @@ def _retained_stage(source: Path) -> dict[str, object]:
 
 
 class ArticleV3RunForkTests(unittest.TestCase):
-    def test_schema_twelve_defaults_name_a_new_folder_and_no_minimum_srt_protocol(self) -> None:
+    def test_schema_twelve_defaults_to_current_article_run_and_protocol(self) -> None:
         self.assertEqual(runner.LEGACY_RUN_ID, "article_full_5000_001")
-        self.assertEqual(runner.DEFAULT_RUN_ID, "article_full_5000_002")
+        self.assertEqual(runner.DEFAULT_RUN_ID, "article_full_10000_001")
         self.assertEqual(runner.RUNNER_SCHEMA, 12)
         self.assertEqual(
             runner.COMPARISON_PROTOCOL,
@@ -591,7 +591,7 @@ class ArticleV3RunForkTests(unittest.TestCase):
 
     def test_main_forwards_explicit_reuse_source_before_work_starts(self) -> None:
         target = Path("unit-target")
-        contract = {"run_id": "article_full_5000_002", "runner_schema": 8}
+        contract = {"run_id": "article_full_10000_002", "runner_schema": 12}
         with (
             patch.object(runner, "validate_authorized_profile"),
             patch.object(runner, "resolve_run_directory", return_value=target),
@@ -605,13 +605,13 @@ class ArticleV3RunForkTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "stop after reuse"):
                 runner.main(
-                    "article_full_5000_002",
+                    "article_full_10000_002",
                     "generation",
-                    reuse_from_run_id="article_full_5000_001",
+                    reuse_from_run_id="article_full_10000_001",
                 )
         initialize.assert_called_once_with(
             target,
-            source_run_id="article_full_5000_001",
+            source_run_id="article_full_10000_001",
             successor_contract=contract,
         )
 

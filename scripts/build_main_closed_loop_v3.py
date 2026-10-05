@@ -27,19 +27,18 @@ cells = [
 
 This notebook is the canonical, resumable interface to
 `scripts/run_article_v3_5000.py`. The production driver, rather than duplicated
-notebook code, owns candidate generation and deterministic replacement, two-start
+notebook code, owns fixed-design candidate generation, two-start
 mechanistic acceptance, ridge selection,
 post-selection-holdout surrogate assessment, scientific admission gates, paired optimization,
 casewise exact-reference replay, convergence and physical audits, and
 Results/Discussion tables.
 
-The production study generates **10,000 accepted mechanistic states** directly.
-Independent seeded streams target 8,000 model-development states and 2,000
-descriptive holdout states. Each stream begins with a strength-one Latin
-hypercube. Rejected mechanistic candidates remain fully audited, are excluded,
-and are deterministically replaced until the accepted-row target is met. The
-final accepted set is therefore conditioned on mechanistic acceptance and is
-not one global Latin hypercube. The analysis uses ten robustness cases plus the
+The production study attempts **10,000 mechanistic simulations** directly.
+Independent seeded Latin hypercubes contain 8,000 model-development candidates
+and 2,000 descriptive holdout candidates. Rejected mechanistic candidates
+remain fully audited and are excluded without replacement. The retained sets
+are therefore numerically accepted subsets of the two fixed Latin hypercubes.
+The analysis uses ten robustness cases plus the
 nominal case and a ten-layer
 Clarifier in the mechanistic model. Each retained 170-coordinate mechanistic
 response is deterministically reduced to 161 operational coordinates: mixer and
@@ -302,11 +301,11 @@ display(pd.Series({
     "run_id": RUN_ID,
     "run_directory": str(RUN_ROOT),
     "reused_from_run_id": REUSE_FROM_RUN_ID,
-    "accepted_dataset_target": expected_total,
-    "accepted_development_target": profile["development_count"],
-    "accepted_post_selection_holdout_target": profile["test_count"],
-    "candidate_attempt_count": f"reported after generation; may exceed {expected_total:,}",
-    "candidate_replacement_policy": "audit, exclude, deterministically replace",
+    "candidate_attempt_count": expected_total,
+    "development_candidate_count": profile["development_count"],
+    "post_selection_holdout_candidate_count": profile["test_count"],
+    "accepted_row_count": "reported after generation",
+    "candidate_rejection_policy": "audit, exclude, do not replace",
     "robustness_cases": profile["robustness_count"],
     "mechanistic_clarifier_layers": profile["layer_count"],
     "mechanistic_response_coordinates": surrogate_contract["mechanistic_target_dimension"],
@@ -353,7 +352,6 @@ STAGE_ARTIFACTS = {
         f"inputs/contract_migrations/article-v3-reduced-response-{RUN_ID}.json",
         f"inputs/contract_migrations/article-v3-reduced-response-{RUN_ID}-retained.json",
         f"inputs/contract_migrations/article-v3-reduced-response-{RUN_ID}-reused-files.json",
-        "inputs/contract_migrations/article-v3-generation-replacement-v1.json",
         "inputs/contract_migrations/article-v3-projection-audit-v1.json",
         "inputs/contract_migrations/article-v3-direct-active-set-v1.json",
         "inputs/contract_migrations/article-v3-casewise-common-reference-v1.json",
@@ -369,16 +367,16 @@ STAGE_ARTIFACTS = {
         "datasets/development/accepted_inputs.npz",
         "datasets/development/mechanistic_accepted_v3.npz",
         "datasets/development/accepted_diagnostics.csv",
-        "datasets/development/base_checkpoint_migration.csv",
-        "datasets/development/replacement_summary.json",
+        "datasets/development/candidate_checkpoint_summary.csv",
+        "datasets/development/generation_summary.json",
         "datasets/development/block_complete.json",
         "datasets/test/all_attempts.csv",
         "datasets/test/accepted_provenance.csv",
         "datasets/test/accepted_inputs.npz",
         "datasets/test/mechanistic_accepted_v3.npz",
         "datasets/test/accepted_diagnostics.csv",
-        "datasets/test/base_checkpoint_migration.csv",
-        "datasets/test/replacement_summary.json",
+        "datasets/test/candidate_checkpoint_summary.csv",
+        "datasets/test/generation_summary.json",
         "datasets/test/block_complete.json",
     ),
     "assessment": (
@@ -455,31 +453,14 @@ def invoke_stage(through: str) -> None:
         show_status(through)
 """),
     markdown(r"""
-## 1. Complete the accepted mechanistic blocks
+## 1. Simulate the fixed LHS candidate blocks
 
-Candidate round 0 retains the independent development/test Latin hypercubes
-and resumes their row-level, two-start nonsmooth mechanistic checkpoints. Each
-rejected candidate remains in the attempt ledger with all available audits but
-is excluded from the accepted dataset. The runner then continues that block's
-persisted SplitMix64 state in deterministic row-major supplemental rounds,
-each sized to the remaining deficit, until the selected profile's 80/20
-development/test targets have been accepted. Accepted replacements fill failed original slots
-in ascending order; neither candidates nor accepted rows cross block boundaries.
-
-The accepted union is conditioned on mechanistic acceptance and is not one
-global Latin hypercube. Generation reports therefore distinguish the attempted
-candidate denominator from the accepted-row denominator and retain every
-candidate-to-final-slot mapping. The frozen 3,343-row block is post-selection:
-its superseded layer-wise summaries informed the reduced response definition.
-
-For this revision, the runner first creates a new self-contained run directory.
-It byte-copies and hash-verifies only the frozen design, accepted mechanistic
-states, attempt ledgers, and provenance from the declared source run. The
-historical 170-output fit, projections, trust calibration, optimization,
-replays at the old decisions, timing, and reports are archived as superseded
-and are never loaded as current results. The runner deterministically derives
-the 161-coordinate response from each full state, then refits and reruns every
-surrogate-dependent stage.
+The development and holdout streams are independent fixed Latin hypercubes.
+Every candidate receives the declared two-start nonsmooth mechanistic audit.
+Rejected candidates remain in the attempt ledger and are excluded without
+replacement. Accepted rows retain their original candidate order. Generation
+reports distinguish the fixed attempted-candidate denominator from the
+observed accepted-row denominator.
 """),
     code(r"""
 invoke_stage("generation")
@@ -496,17 +477,14 @@ for block, required in (
     provenance = (
         pd.read_csv(provenance_path) if provenance_path.is_file() else pd.DataFrame()
     )
-    summary = read_json(f"datasets/{block}/replacement_summary.json")
+    summary = read_json(f"datasets/{block}/generation_summary.json")
     generation_rows.append({
         "block": block,
         "candidate_attempts": len(attempts),
-        "required_accepted_rows": required,
+        "configured_candidate_rows": required,
         "accepted_rows": len(provenance),
-        "rejected_attempts": max(0, len(attempts) - len(provenance)),
-        "base_accepted_rows": summary.get("base_accepted_count"),
-        "supplemental_attempts": summary.get("supplemental_attempt_count"),
-        "supplemental_rounds": summary.get("supplemental_round_count"),
-        "provenance_complete": len(provenance) == required,
+        "rejected_attempts": summary.get("rejected_count"),
+        "all_candidates_accounted_for": len(attempts) == required,
     })
     if "attempt_status" in attempts:
         attempt_status_rows.extend(

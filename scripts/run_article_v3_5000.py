@@ -85,7 +85,7 @@ from closed_loop.v3_reporting import OBJECTIVE_COMPONENT_NAMES, write_reporting_
 from closed_loop.v3_derivative_audit import audit_casadi_nlp_derivatives
 from closed_loop.v3_replacement_generation import (
     MechanisticBlockResult,
-    generate_mechanistic_block_with_replacements,
+    generate_mechanistic_block_from_fixed_design,
 )
 from closed_loop.config import article_profile_parameters
 from closed_loop import v3_replacement_generation as replacement_generation
@@ -212,8 +212,8 @@ REDUCED_FORK_DATASET_FILES = frozenset({
             "accepted_diagnostics.csv",
             "all_attempts.csv",
             "accepted_provenance.csv",
-            "base_checkpoint_migration.csv",
-            "replacement_summary.json",
+            "candidate_checkpoint_summary.csv",
+            "generation_summary.json",
             "accepted_coordinate_coverage.csv",
             "rejection_reason_summary.csv",
             "mechanistic_rows_v3.npz",
@@ -1265,7 +1265,7 @@ def _build_contract(
         "dataset_protocol": (
             "frozen_accepted_checkpoint_split_80_20_v1"
             if profile.name == FROZEN_PROFILE_NAME
-            else "complete_declared_generation_with_replacements_v1"
+            else "fixed_lhs_candidates_with_accepted_subset_v1"
         ),
         "preflight_artifacts_permitted": False,
         "full_run_admission_gate_bypass_permitted": False,
@@ -3987,10 +3987,16 @@ def _validate_generation_block(
     diagnostics: pd.DataFrame,
     *,
     block: str,
-    count: int,
+    attempted_count: int,
     profile: StudyProfile,
-) -> None:
-    if targets.shape != (count, profile.mechanistic_response_count) or not np.all(np.isfinite(targets)):
+) -> int:
+    accepted_count = len(targets)
+    if (
+        accepted_count < 1
+        or accepted_count > attempted_count
+        or targets.shape != (accepted_count, profile.mechanistic_response_count)
+        or not np.all(np.isfinite(targets))
+    ):
         raise RuntimeError(f"{block} target block is incomplete or non-finite")
     required = {
         "row", "accepted", "root_difference_inf", "branch_agreement",
@@ -4006,8 +4012,11 @@ def _validate_generation_block(
     if missing:
         raise RuntimeError(f"{block} diagnostics omit columns: {sorted(missing)}")
     rows = np.asarray(diagnostics["row"], dtype=int)
-    if len(diagnostics) != count or not np.array_equal(np.sort(rows), np.arange(count)):
-        raise RuntimeError(f"{block} diagnostics do not cover every fixed row exactly once")
+    if (
+        len(diagnostics) != accepted_count
+        or not np.array_equal(np.sort(rows), np.arange(accepted_count))
+    ):
+        raise RuntimeError(f"{block} diagnostics do not cover every accepted row exactly once")
     accepted = diagnostics["accepted"].astype(str).str.lower().map(
         {"true": True, "false": False}
     )
@@ -4044,6 +4053,7 @@ def _validate_generation_block(
     )]
     if failures:
         raise RuntimeError(f"{block} failed mechanistic generation gates: {failures}")
+    return accepted_count
 
 
 def _load_generation_checkpoint(
@@ -4085,20 +4095,26 @@ def _load_generation_checkpoint(
         diagnostics = pd.read_csv(output / "accepted_diagnostics.csv")
         attempts = pd.read_csv(output / "all_attempts.csv")
         provenance = pd.read_csv(output / "accepted_provenance.csv")
-        _validate_generation_block(
-            targets, diagnostics, block=block, count=count, profile=profile,
+        accepted_count = _validate_generation_block(
+            targets, diagnostics, block=block,
+            attempted_count=count, profile=profile,
         )
         if (
-            decisions.shape != (count, 7)
-            or influents.shape != (count, 20)
+            int(marker.get("accepted_count", -1)) != accepted_count
+            or decisions.shape != (accepted_count, 7)
+            or influents.shape != (accepted_count, 20)
             or not np.all(np.isfinite(decisions))
             or not np.all(np.isfinite(influents))
             or np.any(decisions < DECISION_LOWER)
             or np.any(decisions > DECISION_UPPER)
             or np.any(influents < INFLUENT_LOWER)
             or np.any(influents > INFLUENT_UPPER)
-            or len(provenance) != count
-            or len(source_candidate_id) != count
+            or len(attempts) != count
+            or int(_boolean_series(
+                attempts["accepted"], description="attempt ledger",
+            ).sum()) != accepted_count
+            or len(provenance) != accepted_count
+            or len(source_candidate_id) != accepted_count
             or not np.array_equal(
                 source_candidate_id,
                 provenance["source_candidate_id"].to_numpy(dtype=str),
@@ -4198,26 +4214,11 @@ def _generation_publication_paths(output: Path) -> tuple[Path, ...]:
     names = (
         "mechanistic_accepted_v3.npz", "accepted_inputs.npz",
         "accepted_diagnostics.csv", "all_attempts.csv",
-        "accepted_provenance.csv", "base_checkpoint_migration.csv",
-        "replacement_summary.json", "accepted_coordinate_coverage.csv",
+        "accepted_provenance.csv", "candidate_checkpoint_summary.csv",
+        "generation_summary.json", "accepted_coordinate_coverage.csv",
         "rejection_reason_summary.csv",
     )
-    fixed = tuple(output / name for name in names)
-    summary_path = output / "replacement_summary.json"
-    summary = _load_json_object(summary_path, description="replacement summary")
-    round_count = int(summary.get("supplemental_round_count", -1))
-    if round_count < 0:
-        raise RuntimeError("replacement summary has an invalid round count")
-    expected_manifests = tuple(
-        output / "attempts" / "replacement" / f"round_{index:06d}" / "manifest.json"
-        for index in range(1, round_count + 1)
-    )
-    actual_manifests = tuple(sorted(
-        (output / "attempts" / "replacement").glob("round_*/manifest.json")
-    ))
-    if actual_manifests != expected_manifests:
-        raise RuntimeError("supplemental round-manifest sequence is incomplete or unexpected")
-    return fixed + expected_manifests
+    return tuple(output / name for name in names)
 
 
 def _run_generation_block(
@@ -4238,7 +4239,7 @@ def _run_generation_block(
     if checkpoint is not None:
         return (*checkpoint, True)
     started = perf_counter()
-    result = generate_mechanistic_block_with_replacements(
+    result = generate_mechanistic_block_from_fixed_design(
         np.asarray(design[f"{block}_decisions"]),
         np.asarray(design[f"{block}_influents"]),
         profile,
@@ -4246,9 +4247,9 @@ def _run_generation_block(
         block=block,
     )
     elapsed = perf_counter() - started
-    _validate_generation_block(
+    accepted_count = _validate_generation_block(
         result.targets, result.diagnostics,
-        block=block, count=count, profile=profile,
+        block=block, attempted_count=count, profile=profile,
     )
     _validate_attempt_checkpoint_hashes(run / "datasets" / block, result.attempts)
     _write_generation_audits(run / "datasets" / block, result)
@@ -4262,19 +4263,13 @@ def _run_generation_block(
         "source_digest": source_id,
         "design_digest": design_id,
         "row_count": count,
-        "accepted_count": count,
+        "accepted_count": accepted_count,
         "target_shape": list(result.targets.shape),
         "attempt_count": len(result.attempts),
         "rejected_attempt_count": int(
             (~_boolean_series(
                 result.attempts["accepted"], description="attempt ledger",
             )).sum()
-        ),
-        "replacement_slot_count": int(
-            _boolean_series(
-                result.provenance["replaced_base_candidate"],
-                description="provenance ledger",
-            ).sum()
         ),
         "effective_input_digest": array_digest(
             decisions=np.asarray(result.decisions, dtype="<f8"),
@@ -4303,22 +4298,16 @@ def run_generation(
     summary = pd.DataFrame([
         {
             "block": block,
-            "fixed_candidate_rows": len(result[0].diagnostics),
-            "required_accepted_rows": len(result[0].diagnostics),
-            "accepted_rows": int(result[0].diagnostics["accepted"].astype(
-                str
-            ).str.lower().eq("true").sum()),
+            "candidate_rows": (
+                profile.development_count if block == "development"
+                else profile.test_count
+            ),
+            "accepted_rows": len(result[0].diagnostics),
             "total_attempts": len(result[0].attempts),
             "excluded_rejected_attempts": int(
                 (~_boolean_series(
                     result[0].attempts["accepted"], description="attempt ledger",
                 )).sum()
-            ),
-            "replacement_slots": int(
-                _boolean_series(
-                    result[0].provenance["replaced_base_candidate"],
-                    description="provenance ledger",
-                ).sum()
             ),
             "elapsed_seconds": result[1],
             "reused_complete_checkpoint": result[2],
@@ -4381,12 +4370,7 @@ def run_generation(
                 "accepted_input_artifact_sha256": file_digest(
                     run / "datasets" / block / "accepted_inputs.npz"
                 ),
-                "replacement_slots": int(
-                    _boolean_series(
-                        result[0].provenance["replaced_base_candidate"],
-                        description="provenance ledger",
-                    ).sum()
-                ),
+                "accepted_row_count": len(result[0].targets),
             }
             for block, result in blocks.items()
         },
@@ -4631,7 +4615,7 @@ def sample_accepted_generation(
         atomic_dataframe(output / "accepted_provenance.csv", provenance)
         atomic_dataframe(output / "base_checkpoint_migration.csv", pd.DataFrame(migration_records))
         atomic_json(output / "replacement_summary.json", {
-            "schema": replacement_generation.REPLACEMENT_SCHEMA,
+            "schema": replacement_generation.GENERATION_SCHEMA,
             "block": block,
             "requested_accepted_count": len(selected),
             "accepted_count": len(selected),
@@ -4946,7 +4930,7 @@ def freeze_accepted_generation(
         atomic_dataframe(output / "accepted_provenance.csv", provenance)
         atomic_dataframe(output / "base_checkpoint_migration.csv", pd.DataFrame(migration_records))
         atomic_json(output / "replacement_summary.json", {
-            "schema": replacement_generation.REPLACEMENT_SCHEMA,
+            "schema": replacement_generation.GENERATION_SCHEMA,
             "block": block,
             "requested_accepted_count": len(selected),
             "accepted_count": len(selected),
@@ -5849,6 +5833,10 @@ def run_assessment(
 ) -> AnalysisBundle:
     development_decisions = np.asarray(design["development_decisions"])
     development_influents = np.asarray(design["development_influents"])
+    if len(development_decisions) < 5:
+        raise RuntimeError("assessment requires at least five accepted development rows")
+    if len(np.asarray(design["test_decisions"])) < 1:
+        raise RuntimeError("assessment requires at least one accepted holdout row")
     development_reduced = _materialize_reduced_response_block(
         run,
         block="development",
@@ -5906,7 +5894,9 @@ def run_assessment(
     trust_values = np.column_stack((
         trust.development_values[:, 0], leverage, trust.development_values[:, 1:],
     ))
-    if trust_values.shape != (profile.development_count, 4) or not np.all(
+    development_count = len(development_decisions)
+    test_count = len(np.asarray(design["test_decisions"]))
+    if trust_values.shape != (development_count, 4) or not np.all(
         np.isfinite(trust_values)
     ):
         raise RuntimeError("four development trust diagnostics were not evaluated")
@@ -5929,7 +5919,7 @@ def run_assessment(
         "correction", "regularized_leverage", "particulate_split",
         "reactor_residual",
     ])
-    trust_frame.insert(0, "row", np.arange(profile.development_count))
+    trust_frame.insert(0, "row", np.arange(development_count))
     trust_frame.insert(
         1, "projection_qp_accepted", trust.out_of_fold_projection_accepted,
     )
@@ -5955,7 +5945,7 @@ def run_assessment(
         development_overflow_tss_closure=oof_overflow_tss,
     )
     _validate_assessment(
-        assessment, test_count=profile.test_count,
+        assessment, test_count=test_count,
         response_count=profile.surrogate_response_count,
     )
     holdout_trust_path = run / "metrics" / "trust_post_selection_holdout.csv"
@@ -6034,7 +6024,7 @@ def run_assessment(
                 )
             )
         ),
-        test_count=profile.test_count,
+        test_count=test_count,
     )
     holdout_trust = _post_selection_holdout_trust_diagnostics(
         model,
@@ -9374,7 +9364,6 @@ def main(
     use_frozen_accepted_checkpoints: bool = False,
     use_random_sampled_accepted_checkpoints: bool = False,
     reuse_from_run_id: str | None = None,
-    authorize_generation_replacement_migration: bool = False,
     authorize_assessment_recovery_migration: bool = False,
     authorize_single_start_exact_qp_migration: bool = False,
     authorize_casewise_common_reference_migration: bool = False,
@@ -9411,9 +9400,6 @@ def main(
     establish_contract(
         run,
         contract,
-        authorize_generation_replacement_migration=(
-            authorize_generation_replacement_migration
-        ),
         authorize_assessment_recovery_migration=(
             authorize_assessment_recovery_migration
         ),
@@ -9540,19 +9526,11 @@ if __name__ == "__main__":
         type=int,
         choices=AUTHORIZED_DATASET_TOTALS,
         default=int(os.environ.get("ARTICLE_V3_DATASET_COUNT", "10000")),
-        help="accepted development-plus-test rows; the split remains 80/20",
+        help="attempted development-plus-holdout LHS candidates; split is 80/20",
     )
     parser.add_argument(
         "--through", choices=("generation", "assessment", "complete"),
         default="complete",
-    )
-    parser.add_argument(
-        "--authorize-generation-replacement-migration",
-        action="store_true",
-        help=(
-            "apply the one-time, pinned article-v3 generation-replacement source "
-            "contract migration to the existing default run"
-        ),
     )
     parser.add_argument(
         "--authorize-assessment-recovery-migration",
@@ -9609,9 +9587,6 @@ if __name__ == "__main__":
         arguments.through,
         profile=selected_profile,
         reuse_from_run_id=None,
-        authorize_generation_replacement_migration=(
-            arguments.authorize_generation_replacement_migration
-        ),
         authorize_assessment_recovery_migration=(
             arguments.authorize_assessment_recovery_migration
         ),

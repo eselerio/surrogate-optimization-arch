@@ -41,10 +41,11 @@ resolves the extended-ICSOR projection QPs. Result artifacts are written below
 
 ## Article calculation
 
-The article notebook generates 10,000 accepted states directly. Independent
-seeded streams target 8,000 model-development rows and 2,000 descriptive
-holdout rows. Rejected candidates remain audited and are deterministically
-replaced until each accepted-row target is met. Ten influent scenarios plus the
+The article notebook attempts 10,000 fixed Latin-hypercube candidates directly.
+Independent seeded streams contain 8,000 model-development candidates and
+2,000 descriptive holdout candidates. Rejected candidates remain audited and
+are excluded without replacement. The accepted subsets continue through the
+analysis. Ten influent scenarios plus the
 nominal case use the deterministic robustness design seeded with 314159. The
 holdout and scenarios provide descriptive post-selection evidence.
 
@@ -64,17 +65,21 @@ generation are excluded from Time.
 
 To execute a named resumable run:
 
+This launches the complete production workload and can run for many hours or
+days. Use a new run ID for an independent calculation. Reusing the same ID
+resumes only artifacts that pass the source, parameter, input, and checkpoint
+integrity checks.
+
 ```powershell
-uv run python -u scripts\run_article_v3_5000.py `
+uv run python -u -m scripts.run_article_v3_5000 `
   --run-id article_full_10000_001 `
   --dataset-count 10000 `
   --through complete
 ```
 
-Assessment rows run in deterministic process batches with one numerical thread
-per worker. Each completed batch is atomically checkpointed and reused after an
-interruption. Worker count may change on restart; changing batch size starts a
-new checkpoint geometry.
+Mechanistic candidate attempts are atomically checkpointed by row and reused
+after an interruption. Completed downstream stages are also reused only after
+their contract and artifact hashes pass validation.
 
 An article result is releasable only when its artifact manifest verifies the
 accepted-set provenance, mechanistic and projection audits, the two

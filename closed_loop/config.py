@@ -39,11 +39,11 @@ def load_parameters(path: str | Path = PARAMETERS_PATH) -> dict[str, Any]:
     if not isinstance(profile, dict):
         raise RuntimeError("the default profile must be a JSON object")
     if (profile.get("development_count"), profile.get("test_count")) != (8_000, 2_000):
-        raise RuntimeError("the article profile must contain 8000/2000 accepted rows")
-    if profile.get("counts_are_accepted_rows") is not True:
-        raise RuntimeError("article profile counts must denote accepted rows")
-    if profile.get("replace_rejected_mechanistic_candidates") is not True:
-        raise RuntimeError("the article profile must replace rejected candidates")
+        raise RuntimeError("the article profile must contain 8000/2000 LHS candidates")
+    if profile.get("counts_are_candidate_rows") is not True:
+        raise RuntimeError("article profile counts must denote attempted LHS candidates")
+    if profile.get("replace_rejected_mechanistic_candidates") is not False:
+        raise RuntimeError("the article profile must not replace rejected candidates")
     if generation.get("balance_tolerance") != 1.0e-6:
         raise RuntimeError("physical mass-conservation tolerance must be 1e-6")
 
