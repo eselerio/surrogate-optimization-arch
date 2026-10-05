@@ -1,0 +1,166 @@
+{
+  "doi_actions": [
+    {
+      "key": "Aboagye2021",
+      "action": "added",
+      "doi": "10.3390/w13091326"
+    },
+    {
+      "key": "AudetDennis2006",
+      "action": "added",
+      "doi": "10.1137/040603371"
+    },
+    {
+      "key": "Bernardelli2020",
+      "action": "added",
+      "doi": "10.2166/wst.2020.298"
+    },
+    {
+      "key": "Beucler2021",
+      "action": "added",
+      "doi": "10.1103/physrevlett.126.098302"
+    },
+    {
+      "key": "Bhosekar2018",
+      "action": "added",
+      "doi": "10.1016/j.compchemeng.2017.09.017"
+    },
+    {
+      "key": "Boyd2004",
+      "action": "added",
+      "doi": "10.1017/cbo9780511804441"
+    },
+    {
+      "key": "BuzziFerraris2013",
+      "action": "added",
+      "doi": "10.1002/9783527667147"
+    },
+    {
+      "key": "Colson2007",
+      "action": "added",
+      "doi": "10.1007/s10479-007-0176-2"
+    },
+    {
+      "key": "CurtissHirschfelder1952",
+      "action": "added",
+      "doi": "10.1073/pnas.38.3.235"
+    },
+    {
+      "key": "Durkin2024",
+      "action": "added",
+      "doi": "10.1016/j.compchemeng.2024.108584"
+    },
+    {
+      "key": "Haddad2010",
+      "action": "added",
+      "doi": "10.1515/9781400832248"
+    },
+    {
+      "key": "HartelPopel1992",
+      "action": "added",
+      "doi": "10.2166/wst.1992.0128"
+    },
+    {
+      "key": "Hastie2009",
+      "action": "added",
+      "doi": "10.1007/978-0-387-84858-7"
+    },
+    {
+      "key": "He2023",
+      "action": "added",
+      "doi": "10.1016/j.jclepro.2023.139039"
+    },
+    {
+      "key": "Henze2006",
+      "action": "added",
+      "doi": "10.2166/9781780402369"
+    },
+    {
+      "key": "Henze2008",
+      "action": "added",
+      "doi": "10.2166/9781780401867"
+    },
+    {
+      "key": "Kaufman2012",
+      "action": "added",
+      "doi": "10.1145/2382577.2382579"
+    },
+    {
+      "key": "KelleyKeyes1998",
+      "action": "added",
+      "doi": "10.1137/s0036142996304796"
+    },
+    {
+      "key": "Leu2012",
+      "action": "added",
+      "doi": "10.2175/106143011x12989211841052"
+    },
+    {
+      "key": "Li2024",
+      "action": "added",
+      "doi": "10.1061/joeedu.eeeng-7467"
+    },
+    {
+      "key": "McBride2019",
+      "action": "added",
+      "doi": "10.1002/cite.201800091"
+    },
+    {
+      "key": "McKay1979",
+      "action": "added",
+      "doi": "10.2307/1268522"
+    },
+    {
+      "key": "Ruckstuhl2021",
+      "action": "added",
+      "doi": "10.5194/npg-28-111-2021"
+    },
+    {
+      "key": "Stellato2020",
+      "action": "added",
+      "doi": "10.1007/s12532-020-00179-2"
+    },
+    {
+      "key": "SturmWexler2020",
+      "action": "added",
+      "doi": "10.5194/gmd-13-4435-2020"
+    },
+    {
+      "key": "Tofallis2015",
+      "action": "added",
+      "doi": "10.1057/jors.2014.103"
+    },
+    {
+      "key": "Tondel2003",
+      "action": "added",
+      "doi": "10.1016/s0005-1098(02)00250-9"
+    },
+    {
+      "key": "WachterBiegler2006",
+      "action": "added",
+      "doi": "10.1007/s10107-004-0559-y"
+    }
+  ],
+  "reference_corrections": {
+    "Tondel2003": "Title restored to the published title; MPC is part of that title."
+  },
+  "access_links_added": {
+    "Ragonneau2022": "https://arxiv.org/abs/2210.12018"
+  },
+  "removed_uncited": [],
+  "removed_unverified": [],
+  "supplementary_entries_synchronized": [
+    "AudetDennis2006",
+    "Boyd2004",
+    "Hastie2009",
+    "Henze2006",
+    "Kaufman2012",
+    "McKay1979",
+    "Ragonneau2022",
+    "Selerio2026",
+    "Stellato2020",
+    "Takacs1991",
+    "Tondel2003",
+    "WachterBiegler2006"
+  ]
+}
