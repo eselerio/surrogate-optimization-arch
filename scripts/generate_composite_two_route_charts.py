@@ -53,9 +53,97 @@ def style() -> None:
 
 
 def save(fig: plt.Figure, output: Path, stem: str) -> None:
+    # Captions belong in the companion README, not inside publication figures.
+    # Clear figure- and axes-level titles immediately before every export so a
+    # future plotting change cannot accidentally reintroduce a title.
+    if fig._suptitle is not None:
+        fig._suptitle.remove()
+    for axis in fig.axes:
+        axis.set_title("")
     fig.savefig(output / f"{stem}.png", bbox_inches="tight", facecolor="white")
     fig.savefig(output / f"{stem}.svg", bbox_inches="tight", facecolor="white")
     plt.close(fig)
+
+
+def write_readme(output: Path) -> None:
+    """Document the chart package in place of embedded figure titles."""
+
+    output.joinpath("README.md").write_text(
+        """# Article-v3 figure package
+
+These untitled figures are generated only from the parent result run.  PNG and
+SVG files with the same stem contain the same chart. `chart_index.csv` maps the
+question identifiers below to file names; `chart_summary.csv` contains the
+principal numerical comparisons.
+
+## Common conventions
+
+- **Extended ICSOR** is the `surrogate` route; **Smooth NLP** is the `direct`
+  route. `N` denotes the nominal case and `R1`-`R10` denote robustness cases.
+- Water-quality quantities are COD, TN, TP, and TSS concentrations in mg/L.
+  "Exact mechanistic replay" means the mechanistic model evaluated at the
+  selected route decision.
+- Holdout errors are coordinate-normalized: each location/composite error is
+  divided by that location/composite's mechanistic holdout range. nRMSE and
+  nMAE are lower-is-better; mean location R^2 is higher-is-better.
+- Pink robustness-case backgrounds mark `comparison_eligible = false`; values
+  remain plotted but are excluded from paired win counts.
+- This run has no audited Smooth NLP selected decision for R1 (`direct_no_candidate`).
+  Smooth NLP R1 marks are therefore absent from selected-decision charts rather
+  than imputed; R1 remains shaded as comparison-ineligible.
+- All figure titles are deliberately omitted. Panel legends, axis labels, and
+  this README provide the interpretation.
+
+## Figures and target-run sources
+
+- **Q1** `q01_holdout_composite_accuracy`: raw and projected holdout aggregate
+  nRMSE, nMAE, and mean location R^2. Source:
+  `predictions/post_selection_holdout.npz` and `datasets/effective_design.npz`.
+- **Q2** `q02_holdout_accuracy_by_response_block`: raw/projected composite
+  nRMSE by treatment location. Same holdout sources as Q1.
+- **Q3** `q03_holdout_component_accuracy`: raw/projected nRMSE, nMAE, and mean
+  location R^2 for COD, TN, TP, and TSS. Same holdout sources as Q1.
+- **Q4** `q04_holdout_component_accuracy_by_stage`: location-by-composite raw
+  nRMSE, projected nRMSE, and percent nRMSE change (negative is improvement).
+  Same holdout sources as Q1.
+- **Q5/Q6** `q05_surrogate_effluent_prediction_vs_mechanistic` and
+  `q06_smooth_nlp_effluent_prediction_vs_mechanistic`: selected-case effluent
+  concentration parity against exact replay. Source: `report/tables/selected_quality.csv`
+  (or the casewise-reference files when that table is unavailable).
+- **Q5R/Q6R** `q05_surrogate_percent_removal_vs_mechanistic` and
+  `q06_smooth_nlp_percent_removal_vs_mechanistic`: selected-case removal parity;
+  differences are percentage points. Sources: selected-quality data plus
+  `datasets/effective_design.npz` and the nominal influent contract.
+- **Q7/Q8** `q07_exact_optimal_objective` and
+  `q08_exact_water_quality_component`: exact total objective and its normalized
+  water-quality component by robustness case. Source:
+  `optimization/<case>/*_casewise_reference.npz` and development targets.
+- **Q9** `q09_exact_effluent_composites`: exact-replay effluent COD, TN, TP,
+  and TSS at both routes' selected decisions. Source: casewise-reference files.
+- **Q10** `q10_exact_economic_component`: weighted HRT, aeration, recycle,
+  return-sludge, and wasting contributions. Source: casewise-reference files.
+- **Q11** `q11_optimal_operating_values`: selected HRT, aeration, recycle,
+  return-sludge, and wasting controls. Source:
+  `report/tables/scenario_controls.csv` (or casewise-reference `theta`).
+- **Q12** `q12_primary_optimization_time`: primary optimization time only,
+  shown on a logarithmic seconds axis. Source: `metrics/robustness_case_timing.csv`.
+- **Q13** `q13_exact_objective_value_comparison`: exact total objective for the
+  nominal and all robustness cases. Source: casewise-reference files.
+- **Q14–Q17** treatment-train profiles for COD, TN, TP, and TSS. Each follows
+  influent → mixer → R1–R5 → clarifier effluent; the y-axis is logarithmic.
+  Source: `exact_reference_full`, `theta`, and influents in casewise-reference
+  files and `datasets/effective_design.npz`.
+- **Q18** `q18_holdout_effluent_composite_parity`: projected Extended ICSOR
+  parity for all holdout rows and all eight locations. Hexagon color is the
+  number of location-observations; location medians are marked. Sources are the
+  post-selection holdout predictions and test decisions.
+
+Composite calculations use the repository's authoritative `COMPOSITE_MATRIX`;
+overflow and underflow component flows are converted to concentrations before
+composites are calculated. No source data from another run are used.
+""",
+        encoding="utf-8",
+    )
 
 
 def finite_score(truth: np.ndarray, prediction: np.ndarray) -> tuple[float, float, float]:
@@ -157,7 +245,11 @@ def route_parity(
         r2 = 1.0 - float(np.sum((y - x) ** 2)) / denominator if denominator > 0.0 else np.nan
         errors.extend(percentage.tolist())
         r2_values.append(r2)
-        axis.set(xlim=limits, ylim=limits, xlabel="Exact mechanistic replay", ylabel=f"{method.capitalize()} prediction")
+        axis.set(
+            xlim=limits, ylim=limits,
+            xlabel="Exact mechanistic replay (mg/L)",
+            ylabel=f"{ROUTE_LABEL[route]} prediction (mg/L)",
+        )
         axis.set_aspect("equal", adjustable="box")
         axis.set_title(f"{component}: median |error| = {np.median(percentage):.1f}%")
     fig.suptitle(title, fontsize=14, y=0.99)
@@ -207,7 +299,11 @@ def removal_parity(
         denominator = float(np.sum((reference - np.mean(reference)) ** 2))
         r2_values.append(1.0 - float(np.sum((predicted - reference) ** 2)) / denominator if denominator > 0.0 else np.nan)
         errors.extend(absolute.tolist())
-        axis.set(xlim=limits, ylim=limits, xlabel="Exact removal (%)", ylabel=f"{method.capitalize()} removal (%)")
+        axis.set(
+            xlim=limits, ylim=limits,
+            xlabel="Exact-replay removal (%)",
+            ylabel=f"{ROUTE_LABEL[route]} removal (%)",
+        )
         axis.set_aspect("equal", adjustable="box")
         axis.set_title(f"{component}: median |error| = {np.median(absolute):.2f} percentage points")
     fig.suptitle(title, fontsize=14, y=0.99)
@@ -273,13 +369,16 @@ def main() -> None:
     fig, axes = plt.subplots(1, 3, figsize=(11, 3.8))
     for axis, (column, label, lower) in zip(
         axes,
-        (("nrmse", "Normalized RMSE", True), ("nmae", "Normalized MAE", True), ("r2_mean", "Mean R²", False)),
+        (("nrmse", "Coordinate-normalized RMSE (nRMSE)", True),
+         ("nmae", "Coordinate-normalized MAE (nMAE)", True),
+         ("r2_mean", "Mean location R²", False)),
         strict=True,
     ):
         values = overall.loc[["raw", "projected"], column].to_numpy(float)
         bars = axis.bar(("Raw", "Projected"), values, color=(RAW, EXTENDED), width=0.62)
         for bar in bars:
             axis.annotate(f"{bar.get_height():.3f}", (bar.get_x() + bar.get_width()/2, bar.get_height()), xytext=(0, 3), textcoords="offset points", ha="center", fontsize=7)
+        axis.set_xlabel("Prediction output")
         axis.set_title(f"{label} ({'lower' if lower else 'higher'} is better)")
         axis.set_ylabel(label)
     fig.suptitle("Q1. Holdout accuracy across COD, TN, TP, and TSS at all system locations", fontsize=14)
@@ -293,7 +392,7 @@ def main() -> None:
     fig, axis = plt.subplots(figsize=(11, 5.2))
     axis.bar(x-width/2, location_nrmse["raw"], width, color=RAW, label="Raw")
     axis.bar(x+width/2, location_nrmse["projected"], width, color=EXTENDED, label="Projected")
-    axis.set(xticks=x, xticklabels=LOCATION_LABELS, ylabel="Composite nRMSE", title="Q2. Composite prediction accuracy by system location")
+    axis.set(xticks=x, xticklabels=LOCATION_LABELS, xlabel="System location", ylabel="Coordinate-normalized RMSE (nRMSE)", title="Q2. Composite prediction accuracy by system location")
     axis.legend(ncol=2)
     fig.tight_layout(); save(fig, output, "q02_holdout_accuracy_by_response_block")
     summary.append({"question": 2, "metric": "locations_improved_by_projection", "value": int(np.sum(location_nrmse["projected"] < location_nrmse["raw"]))})
@@ -305,19 +404,18 @@ def main() -> None:
                 composite_predictions["mechanistic"][:, :, component],
                 composite_predictions[method][:, :, component],
             ))
-    fig, axes = plt.subplots(2, 2, figsize=(10.8, 7.5))
+    fig, axes = plt.subplots(1, 3, figsize=(15.0, 4.6))
     for axis, metric_index, ylabel, title in (
-        (axes[0, 0], 0, "nRMSE", "Location-normalized RMSE"),
-        (axes[0, 1], 1, "nMAE", "Location-normalized MAE"),
-        (axes[1, 0], 2, "Mean location R²", "Mean location coefficient of determination"),
+        (axes[0], 0, "Coordinate-normalized RMSE (nRMSE)", "Location-normalized RMSE"),
+        (axes[1], 1, "Coordinate-normalized MAE (nMAE)", "Location-normalized MAE"),
+        (axes[2], 2, "Mean location R²", "Mean location coefficient of determination"),
     ):
         raw_values = [row[metric_index] for row in component_scores["raw"]]
         projected_values = [row[metric_index] for row in component_scores["projected"]]
         axis.bar(np.arange(4)-width/2, raw_values, width, color=RAW, label="Raw")
         axis.bar(np.arange(4)+width/2, projected_values, width, color=EXTENDED, label="Projected")
-        axis.set(xticks=np.arange(4), xticklabels=COMPOSITES, ylabel=ylabel, title=title)
-    axes[1, 1].axis("off")
-    axes[0, 0].legend(ncol=2)
+        axis.set(xticks=np.arange(4), xticklabels=COMPOSITES, xlabel="Water-quality composite", ylabel=ylabel, title=title)
+    axes[0].legend(ncol=2)
     fig.suptitle("Q3. Holdout prediction accuracy by composite quantity", fontsize=14)
     fig.tight_layout(rect=(0, 0, 1, 0.95)); save(fig, output, "q03_holdout_component_accuracy")
     summary.append({"question": 3, "metric": "composites_improved_by_projection", "value": int(sum(component_scores["projected"][i][0] < component_scores["raw"][i][0] for i in range(4)))})
@@ -342,13 +440,21 @@ def main() -> None:
     fig, axes = plt.subplots(1, 3, figsize=(14.5, 5.3))
     for axis, matrix, title in ((axes[0], matrices["raw"], "Raw composite nRMSE"), (axes[1], matrices["projected"], "Projected composite nRMSE")):
         image = axis.imshow(matrix, aspect="auto", cmap="YlOrRd", vmin=0, vmax=common_max)
-        fig.colorbar(image, ax=axis, pad=0.02)
+        fig.colorbar(image, ax=axis, pad=0.02, label="Coordinate-normalized RMSE (nRMSE)")
         axis.set_title(title)
-        axis.set(yticks=np.arange(len(LOCATIONS)), yticklabels=LOCATION_LABELS, xticks=np.arange(4), xticklabels=COMPOSITES)
+        axis.set(
+            yticks=np.arange(len(LOCATIONS)), yticklabels=LOCATION_LABELS,
+            xticks=np.arange(4), xticklabels=COMPOSITES,
+            xlabel="Water-quality composite", ylabel="System location",
+        )
     image = axes[2].imshow(delta, aspect="auto", cmap="RdBu_r", vmin=-limit, vmax=limit)
-    fig.colorbar(image, ax=axes[2], pad=0.02, label="Change (%)")
+    fig.colorbar(image, ax=axes[2], pad=0.02, label="nRMSE change (%)")
     axes[2].set_title("Projection change (negative improves)")
-    axes[2].set(yticks=np.arange(len(LOCATIONS)), yticklabels=LOCATION_LABELS, xticks=np.arange(4), xticklabels=COMPOSITES)
+    axes[2].set(
+        yticks=np.arange(len(LOCATIONS)), yticklabels=LOCATION_LABELS,
+        xticks=np.arange(4), xticklabels=COMPOSITES,
+        xlabel="Water-quality composite", ylabel="System location",
+    )
     fig.suptitle("Q4. Composite prediction accuracy by treatment location", fontsize=14)
     fig.tight_layout(rect=(0, 0, 1, 0.94)); save(fig, output, "q04_holdout_component_accuracy_by_stage")
     summary.append({"question": 4, "metric": "location_composite_cells_improved", "value": int(np.sum(delta < 0.0))})
@@ -395,8 +501,13 @@ def main() -> None:
         axis.set(
             xlim=limits, ylim=limits,
             xlabel=f"Mechanistic {component} (mg/L)",
-            ylabel=f"Projected Extended-ICSOR {component} (mg/L)",
+            ylabel=f"Extended ICSOR prediction {component} (mg/L)",
             title=f"{component}: mean location R²={mean_r2:.3f}; nRMSE={nrmse:.3f}",
+        )
+        axis.text(
+            0.03, 0.97, f"nRMSE = {nrmse:.3f}\nMean location R² = {mean_r2:.3f}",
+            transform=axis.transAxes, va="top", ha="left", fontsize=7,
+            bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.78},
         )
         axis.set_aspect("equal", adjustable="box")
         summary.extend((
@@ -474,7 +585,12 @@ def main() -> None:
     exact_rows: list[dict[str, object]] = []
     for case in all_cases:
         for route in ROUTES:
-            with np.load(run / "optimization" / case / f"{route}_casewise_reference.npz", allow_pickle=False) as stored:
+            reference_path = run / "optimization" / case / f"{route}_casewise_reference.npz"
+            if not reference_path.is_file():
+                # A failed route has no audited selected decision. Leave its
+                # value absent; never substitute another case or route.
+                continue
+            with np.load(reference_path, allow_pickle=False) as stored:
                 theta = np.asarray(stored["theta"], dtype=float)
                 response = np.asarray(stored["exact_reference"], dtype=float)
             effluent = response[120:140] / (1.0 - theta[6])
@@ -510,7 +626,7 @@ def main() -> None:
         fig, axis = plt.subplots(figsize=(12, 5.4)); shade(axis)
         axis.bar(x-width/2, pivot["surrogate"], width, color=EXTENDED, label=ROUTE_LABEL["surrogate"])
         axis.bar(x+width/2, pivot["direct"], width, color=DIRECT, label=ROUTE_LABEL["direct"])
-        axis.set(xticks=x, xticklabels=[case_labels[c] for c in robust_cases], ylabel=ylabel, title=title)
+        axis.set(xticks=x, xticklabels=[case_labels[c] for c in robust_cases], xlabel="Robustness case", ylabel=ylabel, title=title)
         axis.legend(handles=(Patch(facecolor=EXTENDED, label=ROUTE_LABEL["surrogate"]), Patch(facecolor=DIRECT, label=ROUTE_LABEL["direct"]), Patch(facecolor=BAD, alpha=.55, label="Comparison ineligible")), ncol=3)
         fig.tight_layout(); save(fig, output, stem)
         valid = pivot.loc[eligibility]
@@ -529,7 +645,7 @@ def main() -> None:
         shade(axis)
         axis.plot(x, pivot["surrogate"], marker="o", color=EXTENDED, label=ROUTE_LABEL["surrogate"])
         axis.plot(x, pivot["direct"], marker="s", color=DIRECT, label=ROUTE_LABEL["direct"])
-        axis.set(xticks=x, xticklabels=[case_labels[c] for c in robust_cases], ylabel=f"{component} (mg/L)", title=component)
+        axis.set(xticks=x, xticklabels=[case_labels[c] for c in robust_cases], xlabel="Robustness case", ylabel=f"{component} (mg/L)", title=component)
     fig.legend(*axes.flat[0].get_legend_handles_labels(), loc="upper center", ncol=2, bbox_to_anchor=(.5, .95))
     fig.suptitle("Q9. Exact effluent composites at the selected decisions", fontsize=14)
     fig.tight_layout(rect=(0, 0, 1, .91)); save(fig, output, "q09_exact_effluent_composites")
@@ -548,7 +664,7 @@ def main() -> None:
             values = weight * data[column].to_numpy(float)
             axis.bar(x+offset, values, width, bottom=bottom, color=color, edgecolor="white", linewidth=.3, hatch=hatch, label=label if route == "surrogate" else None)
             bottom += values
-    axis.set(xticks=x, xticklabels=[case_labels[c] for c in robust_cases], ylabel="Weighted economic/resource contribution", title="Q10. Exact economic/resource contribution")
+    axis.set(xticks=x, xticklabels=[case_labels[c] for c in robust_cases], xlabel="Robustness case", ylabel="Weighted economic/resource contribution", title="Q10. Exact economic/resource contribution")
     axis.legend(handles=[*[Patch(facecolor=c, label=l) for c, l in zip(economic_colors, economic_labels, strict=True)], Patch(facecolor="white", edgecolor="black", label="Extended ICSOR: left/solid"), Patch(facecolor="white", edgecolor="black", hatch="///", label="Smooth NLP: right/hatched")], ncol=4, loc="upper center", bbox_to_anchor=(.5, -.12))
     fig.tight_layout(rect=(0, .12, 1, 1)); save(fig, output, "q10_exact_economic_component")
 
@@ -574,7 +690,8 @@ def main() -> None:
         for route in ROUTES:
             values = np.asarray([controls.loc[(case, route), column] for case in robust_cases], float)
             axis.plot(x, values, marker=ROUTE_MARKER[route], color=ROUTE_COLOR[route], label=ROUTE_LABEL[route])
-        axis.set_title(title); axis.set_xticks(x, [case_labels[c] for c in robust_cases])
+        axis.set(ylabel=title, xlabel="Robustness case")
+        axis.set_xticks(x, [case_labels[c] for c in robust_cases])
     axes.flat[-1].axis("off")
     fig.legend(*axes.flat[0].get_legend_handles_labels(), loc="lower right", bbox_to_anchor=(.93, .08))
     fig.suptitle("Q11. Selected operating decisions across robustness cases", fontsize=14)
@@ -584,8 +701,8 @@ def main() -> None:
     fig, axis = plt.subplots(figsize=(12, 5.7))
     axis.bar(x-width/2, timing["surrogate"], width, color=EXTENDED, label=f"{ROUTE_LABEL['surrogate']} primary")
     axis.bar(x+width/2, timing["direct"], width, color=DIRECT, label=f"{ROUTE_LABEL['direct']} primary")
-    axis.set_yscale("log"); axis.set(xticks=x, xticklabels=[case_labels[c] for c in robust_cases], ylabel="Time (s, log scale)", title="Q12. Time across robustness cases")
-    axis.legend(ncol=2); fig.tight_layout(); save(fig, output, "q12_time")
+    axis.set_yscale("log"); axis.set(xticks=x, xticklabels=[case_labels[c] for c in robust_cases], xlabel="Robustness case", ylabel="Primary optimization time (s; log scale)", title="Q12. Time across robustness cases")
+    axis.legend(ncol=2); fig.tight_layout(); save(fig, output, "q12_primary_optimization_time")
     summary.extend((
         {"question": 12, "metric": "extended_icsor_mean_seconds", "value": float(timing.surrogate.mean())},
         {"question": 12, "metric": "smooth_nlp_mean_seconds", "value": float(timing.direct.mean())},
@@ -600,7 +717,7 @@ def main() -> None:
     for index, valid in enumerate((True, *eligible)):
         if not valid:
             axis.axvspan(index-.5, index+.5, color=BAD, alpha=.55, zorder=0)
-    axis.set(xticks=all_x, xticklabels=[case_labels[c] for c in all_cases], ylabel="Exact total objective", title="Q13. Exact objective value at both routes' selected decisions")
+    axis.set(xticks=all_x, xticklabels=[case_labels[c] for c in all_cases], xlabel="Case", ylabel="Exact total objective", title="Q13. Exact objective value at both routes' selected decisions")
     axis.legend(ncol=2); fig.tight_layout(); save(fig, output, "q13_exact_objective_value_comparison")
     summary.extend({"question": 13, "metric": f"{route}_nominal_exact_objective", "value": float(all_objectives.loc["nominal", route])} for route in ROUTES)
 
@@ -617,13 +734,19 @@ def main() -> None:
         component_index = COMPOSITES.index(component)
         for axis, route in zip(axes, ROUTES, strict=True):
             for case in all_cases:
-                with np.load(run / "optimization" / case / f"{route}_casewise_reference.npz", allow_pickle=False) as stored:
+                reference_path = run / "optimization" / case / f"{route}_casewise_reference.npz"
+                if not reference_path.is_file():
+                    continue
+                with np.load(reference_path, allow_pickle=False) as stored:
                     full = np.asarray(stored["exact_reference_full"], dtype=float)
                     theta = np.asarray(stored["theta"], dtype=float)
                 liquid = [full[0:20], *[full[20*i:20*(i+1)] for i in range(1, 6)], full[120:140] / (1.0-theta[6])]
                 values = np.asarray([influent.loc[case, component], *[float(COMPOSITE_MATRIX[component_index] @ block) for block in liquid]])
                 axis.plot(np.arange(len(profile_labels)), values, color=case_colors[case], lw=2.2 if case == "nominal" else 1.25, ls="-" if all_eligible.loc[case] else "--", marker="o", ms=4.2, alpha=1.0 if all_eligible.loc[case] else .72)
-            axis.set_yscale("log"); axis.set_ylabel(f"{component} (mg/L, log scale)"); axis.set_title(ROUTE_LABEL[route]); axis.set_xticks(np.arange(len(profile_labels)), profile_labels)
+            axis.set_yscale("log")
+            axis.set_ylabel(f"{ROUTE_LABEL[route]}\n{component} (mg/L; log scale)")
+            axis.set_xlabel("Main liquid-treatment location")
+            axis.set_xticks(np.arange(len(profile_labels)), profile_labels)
         handles = [Line2D((0,), (0,), color=case_colors[case], lw=2.2 if case == "nominal" else 1.5, ls="-" if all_eligible.loc[case] else "--", marker="o", label=case_labels[case]) for case in all_cases]
         fig.legend(handles=handles, loc="lower center", ncol=6, bbox_to_anchor=(.5, .005), title="Case")
         fig.suptitle(f"Q{question}. {component} evolution through the main treatment train", fontsize=14)
@@ -636,7 +759,7 @@ def main() -> None:
         5: "q05_surrogate_effluent_prediction_vs_mechanistic", 6: "q06_smooth_nlp_effluent_prediction_vs_mechanistic",
         7: "q07_exact_optimal_objective", 8: "q08_exact_water_quality_component",
         9: "q09_exact_effluent_composites", 10: "q10_exact_economic_component",
-        11: "q11_optimal_operating_values", 12: "q12_time",
+        11: "q11_optimal_operating_values", 12: "q12_primary_optimization_time",
         13: "q13_exact_objective_value_comparison", 14: "q14_cod_main_treatment_train_profiles",
         15: "q15_tn_main_treatment_train_profiles", 16: "q16_tp_main_treatment_train_profiles",
         17: "q17_tss_main_treatment_train_profiles", 18: "q18_holdout_effluent_composite_parity",
@@ -647,6 +770,7 @@ def main() -> None:
         {"question": question, "png": f"{stem}.png", "svg": f"{stem}.svg"}
         for question, stem in stems.items()
     ]).to_csv(output / "chart_index.csv", index=False)
+    write_readme(output)
     print(output)
     print(pd.DataFrame(summary).to_string(index=False))
 
