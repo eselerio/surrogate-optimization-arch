@@ -2,6 +2,8 @@
 \documentclass[a4paper,fleqn]{cas-sc}
 
 \usepackage[authoryear]{natbib}
+\setcitestyle{authoryear,round}
+\hypersetup{hypertexnames=false}
 \usepackage{amsmath}
 \usepackage{amssymb}
 \usepackage{array}
@@ -65,15 +67,15 @@
 \cortext[cor1]{Corresponding author}
 
 \begin{abstract}
-Operational optimization of activated sludge plants requires repeated evaluation of interacting biological, recycle, and settling processes. This study develops a plant-wide extension of invariant-constrained second-order regression and compares surrogate-based optimization with direct smooth mechanistic optimization. The surrogate predicts connected plant responses. A constrained projection reconciles these predictions with recycle mixing, conserved inventories, clarifier balances, outlet-derived inventory bounds, and non-negativity. A logarithmic regression supplies a positive overflow solids concentration. The case study uses five reactors, a ten-layer clarifier, and 10,000 mechanistic simulation candidates. Separate development and holdout Latin hypercubes contain 8,000 and 2,000 candidates. States that pass the mechanistic acceptance checks form the analysis sets. Ten influent cases provide descriptive post-selection evidence. Selected decisions from both routes are evaluated on the same nonsmooth mechanistic model. This design separates prediction assessment, operating searches, physical replay, and comparison on a common objective basis.
+Operational optimization of activated sludge plants requires repeated calculations of interacting biological, recycle, and settling processes. Statistical surrogates can reduce this computational work, but their predictions must respect the physical connections among treatment units. This study extends invariant-constrained second-order regression to a complete plant and compares its operating decisions with direct smooth mechanistic optimization. Joint projection imposes mixer, reactor, and clarifier relations, inventory bounds, and non-negativity on the predicted response. The case study has five reactors and a ten-layer clarifier. Separate development and holdout designs contain 8,000 and 2,000 mechanistic simulation candidates. Among 1,845 accepted holdout states, projection reduces aggregate normalized root mean square error by 8.19\% and normalized mean absolute error by 15.65\%. Operating decisions for the nominal influent and ten influent scenarios are checked by independently solving the original mechanistic equations at the selected controls. The direct route has a lower reference-model objective in all eleven comparisons. The surrogate route has less optimization time, with means of 1.726~s and 5.236~s for the surrogate and direct routes across the ten influent scenarios. Projection improves aggregate prediction accuracy and enforces the stated physical relations, but mechanistic evaluation remains necessary to establish selected-decision performance.
 \end{abstract}
 
 \begin{highlights}
-\item A log regression supplies a positive overflow solids concentration.
-\item Projection reconciles connected plant responses with physical constraints.
-\item Independent Latin hypercubes provide development and holdout candidates.
-\item Exact mechanistic replay evaluates every available selected decision.
-\item Time measures only the primary search for each optimization route.
+\item Joint projection enforces the stated plant-wide physical relations.
+\item Projection lowers aggregate holdout errors across the treatment plant.
+\item Selected decisions retain errors that require mechanistic evaluation.
+\item Direct optimization gives lower objectives in all tested scenarios.
+\item Surrogate optimization takes less time in all tested scenarios.
 \end{highlights}
 
 \begin{keywords}
@@ -138,19 +140,19 @@ These approaches differ in which constraints they impose and where they impose t
 
 Related studies outside activated sludge modeling show that physical constraints can be introduced at different stages of surrogate construction. Analytic conservation constraints have been incorporated into neural network output mappings for atmospheric convection \citep{Beucler2021}. For atmospheric photochemistry, \citet{SturmWexler2020} formulated conserved fluxes as learning targets. \citet{SturmWexler2022} later embedded the stoichiometric mapping as a fixed layer that conserves atoms to numerical precision. Other studies have used constrained training data and a mass-balance penalty to reduce conservation errors \citep{Ruckstuhl2021}. Physical consistency can also be imposed after an unconstrained model has made a prediction. \citet{SturmSilva2025} applied a species-weighted correction that enforces atom conservation. \citet{Valente2025} projected surrogate outputs onto manifolds defined by conservation laws. These applications concern atmospheric and plasma systems. The activated sludge projection of \citet{Selerio2026} uses the same principle of correcting predictions to satisfy known balances.
 
-Within the studies reviewed here, two relevant capabilities remain separate. The Invariant-Constrained Second-Order Regression (ICSOR) formulation of \citet{Selerio2026} reconciles the response of one continuous stirred-tank reactor (CSTR). It does not represent the mixer, reactor train, secondary clarifier, and recycle streams as one coupled response. \citet{He2023} demonstrates surrogate-assisted optimization of a wastewater treatment process but does not impose hard plant-wide reconciliation of connected component responses. This study combines plant-wide output reconciliation with surrogate-based operating optimization. Physical consistency within one CSTR does not establish consistency of recycle mixing or clarifier outlet balances across the plant. The proposed extension must therefore preserve the physical connections among units and verify selected decisions against a mechanistic reference. Physical feasibility of a surrogate prediction must remain distinct from prediction accuracy and decision quality.
+Within the studies reviewed here, two relevant capabilities remain separate. The Invariant-Constrained Second-Order Regression (ICSOR) formulation of \citet{Selerio2026} projects the response of one continuous stirred-tank reactor (CSTR) onto conservation and non-negativity constraints. It does not represent the mixer, reactor train, secondary clarifier, and recycle streams as one coupled response. \citet{He2023} demonstrates surrogate-assisted optimization of a wastewater treatment process but does not impose hard plant-wide projection of connected component responses. This study combines projection of plant-wide outputs with surrogate-based operating optimization. Physical consistency within one CSTR does not establish consistency of recycle mixing or clarifier outlet balances across the plant. The proposed extension must therefore preserve the physical connections among units and verify selected decisions against a mechanistic reference. Physical feasibility of a surrogate prediction must remain distinct from prediction accuracy and decision quality.
 
-This study develops and evaluates a plant-wide extension of ICSOR to address the computational cost and physical reliability of surrogate-based operational optimization. The objective is to determine whether a physically constrained statistical surrogate can support the selection of operating conditions that balance treatment performance and resource use. The extended model represents the mixer, reactor train, clarifier, and recycle streams jointly. It also reconciles their predictions with plant-wide physical constraints. Three questions guide the evaluation. The first examines how reconciliation affects physical consistency and prediction accuracy across the plant. The second asks whether surrogate-selected operating conditions retain their predicted performance when evaluated with the mechanistic model. The third compares decision quality and computational cost with direct mechanistic optimization under common operating choices and objective priorities. Prediction assessment and mechanistic evaluation of the selected decisions address these questions separately. The evaluation provides post-selection evidence because the final analysis protocol was not specified independently of all inspected data \citep{Kaufman2012}. The imposed physical constraints, prediction accuracy, and decision quality are therefore assessed as distinct properties.
+This study develops and evaluates a plant-wide extension of ICSOR to address the computational cost and physical reliability of surrogate-based operational optimization. The objective is to determine whether a physically constrained statistical surrogate can support the selection of operating conditions that balance treatment performance and resource use. The extended model represents the mixer, reactor train, clarifier, and recycle streams jointly. It projects their joint predictions onto the set defined by plant-wide physical constraints. Three questions guide the evaluation. The first examines how projection affects physical consistency and prediction accuracy across the plant. The second asks whether surrogate-selected operating conditions retain their predicted performance when evaluated with the mechanistic model. The third compares decision quality and computational cost with direct mechanistic optimization under common operating choices and objective priorities. Prediction assessment and mechanistic evaluation of the selected decisions address these questions separately. The evaluation provides post-selection evidence because the final analysis protocol was not specified independently of all inspected data \citep{Kaufman2012}. The imposed physical constraints, prediction accuracy, and decision quality are therefore assessed as distinct properties.
 
 \section{Theory and calculation}
 
-The modeling problem is to select reactor capacity, aeration, recycle, and wasting settings for a coupled activated sludge plant at steady state. Each choice affects both local unit conditions and the material returned through the recycle streams. The formulation therefore begins with hydraulic and component balances that connect the mixer, reactors, and clarifier. These relations define the physical requirements used to reconcile the statistical predictions. The resulting plant response supplies the treatment and resource measures used in the objective and engineering limits. The section then develops the surrogate optimization problem and a direct mechanistic comparator. Numerical solution, route-specific normalization, and retrospective verification are described in the methodology. Both routes are judged on the same mechanistic reference without assuming that physical reconciliation reproduces the full model.
+The modeling problem is to select reactor capacity, aeration, recycle, and wasting settings for a coupled activated sludge plant at steady state. Each choice affects both local unit conditions and the material returned through the recycle streams. The formulation therefore begins with hydraulic and component balances that connect the mixer, reactors, and clarifier. These relations define the physical requirements used to project the statistical predictions onto a physically feasible set. The resulting plant response supplies the treatment and resource measures used in the objective and engineering limits. The section then develops the surrogate optimization problem and a direct mechanistic comparator. Numerical solution, route-specific normalization, and retrospective verification are described in the methodology. Both routes are judged on the same mechanistic reference without assuming that projection reproduces the full model.
 
 \subsection{Plant configuration and hydraulic balances}
 
 The hydraulic balances establish how each recycle setting changes the flow through the treatment units. Consider $N\ge1$ completely mixed biological stages followed by an $L\ge3$ layer clarifier. The component representation distinguishes soluble transport from particulate settling and thickening \citep{Takacs1991,JeppssonDiehl1996}. Component vectors contain $F=F_S+F_X$ entries. The matrices $E_S\in\R^{F_S\times F}$ and $E_X\in\R^{F_X\times F}$ select the disjoint soluble and particulate entries, so $E_S^\top E_S+E_X^\top E_X=I_F$ and $E_SE_X^\top=0$. The non-negative total suspended solids (TSS) map $t_X$ has zero soluble entries. Figure~\ref{fig:flowsheet} shows the plant connections. The final reactor supplies both the MLR stream and the clarifier. Clarifier underflow is split into RAS, which returns internally, and WAS, which leaves the plant.
 
-\begin{figure}[htbp]
+\begin{figure}[pos=htbp]
 \centering
 \begin{tikzpicture}[>=Latex,node distance=7mm,
 unit/.style={draw=black,fill=cyan!18,rounded corners,minimum width=14mm,minimum height=7mm,align=center,font=\small},
@@ -196,7 +198,7 @@ h_i=\frac{24V_i}{Q_0},\qquad H=\sum_{i=1}^{N}h_i,\quad
 d_i=\frac{Q_0q_P}{V_i}=\frac{24q_P}{h_i},
 \label{eq:stagehydraulics}
 \end{equation}
-where $h_i$ and $H$ are in hours and $d_i$ is in d$^{-1}$. The actual stage residence time is $h_i/q_P$ hours. Increasing recycle at fixed volume therefore increases dilution and reduces the time spent in each pass through a reactor. Individual stage volumes may be varied through $h_i$, or fixed volume fractions may be imposed through $h_i=f_i^V H$ with $\sum_i f_i^V=1$. Equal tanks correspond to $f_i^V=1/N$.
+Here $h_i$ and $H$ are in hours, and $d_i$ is in d$^{-1}$. The actual stage residence time is $h_i/q_P$ hours. Increasing recycle at fixed volume therefore increases dilution and reduces the time spent in each pass through a reactor. Individual stage volumes may be varied through $h_i$, or fixed volume fractions may be imposed through $h_i=f_i^V H$ with $\sum_i f_i^V=1$. Equal tanks correspond to $f_i^V=1/N$.
 
 The optimization variables must correspond to the choices available in the study. Let $\vartheta\in\R^{d_\vartheta}$ contain only these freely varied quantities. They may include selected $h_i$, aeration settings $a_i$, stage-addition rates, and the three recycle and wasting ratios. A stage addition represented only by a source term is assumed to have negligible carrier flow. If its liquid flow is not negligible relative to $Q_0$, that stream must also enter the hydraulic balances and change the downstream flow and dilution rates. Fixed settings remain parameters rather than zero-variance regression inputs. This definition avoids fitting coefficients for settings that never vary.
 
@@ -209,7 +211,7 @@ The hydraulic relations determine the dilution rate used in each reactor balance
 \qquad i=1,\ldots,N.
 \label{eq:cstr}
 \end{equation}
-Here $\nu\in\R^{n_p\times F}$ stores the stoichiometric changes caused by $n_p$ processes, and $\rho_i\in\R_+^{n_p}$ contains their volumetric rates. The vector $e_{S_O}$ selects dissolved oxygen (DO), and $\omega_i=k_La_i(a_i)(S_O^*-c_{i,S_O})$ describes oxygen transfer. The term $\xi_i$ represents an explicitly modeled stage addition with negligible carrier flow. Every term has units of component concentration per day. Retaining $\xi_i$ ensures that an optimized carbon or chemical dose enters the material balance. At a zero component concentration, the combined reaction and source terms are required to be non-negative. For a locally Lipschitz dynamic balance with non-negative initial conditions and inflows, this boundary condition preserves non-negative concentrations \citep{Haddad2010}. This property of the continuous model does not guarantee non-negative numerical integration steps.
+The matrix $\nu\in\R^{n_p\times F}$ stores the stoichiometric changes caused by $n_p$ processes, and $\rho_i\in\R_+^{n_p}$ contains their volumetric rates. The vector $e_{S_O}$ selects dissolved oxygen (DO), and $\omega_i=k_La_i(a_i)(S_O^*-c_{i,S_O})$ describes oxygen transfer. The term $\xi_i$ represents an explicitly modeled stage addition with negligible carrier flow. Every term has units of component concentration per day. Retaining $\xi_i$ ensures that an optimized carbon or chemical dose enters the material balance. At a zero component concentration, the combined reaction and source terms are required to be non-negative. For a locally Lipschitz dynamic balance with non-negative initial conditions and inflows, this boundary condition preserves non-negative concentrations \citep{Haddad2010}. This property of the continuous model does not guarantee non-negative numerical integration steps.
 
 The surrogate should preserve conserved inventories without solving every reaction-rate equation during prediction. Some linear combinations of components are changed neither by the reaction network nor by oxygen transfer. Let $A\in\R^{K\times F}$ contain independent, physically identified inventory rows satisfying
 \begin{equation}
@@ -318,7 +320,7 @@ The logarithm assigns the same discrepancy to a twofold error at low or high con
 
 \subsection{Joint projection of the plant response}
 
-The two regressions supply a raw plant response and a positive overflow-TSS estimate, but neither enforces the network balances. A joint projection reconciles these predictions with the physical relations derived above. Correcting the complete response together preserves the connections between units and recycle streams. The physical balances remain distinct from the empirical overflow closure. Define $\delta_i(\vartheta)=d_i^{-1}A\xi_i(\vartheta)$ and let $\mathcal H(\vartheta)\chi=\mathfrak b(\vartheta,x)$ represent
+The two regressions supply a raw plant response and a positive overflow-TSS estimate, but neither enforces the network balances. A joint projection adjusts these predictions to satisfy the physical relations derived above. Correcting the complete response together preserves the connections between units and recycle streams. The physical balances remain distinct from the empirical overflow closure. Define $\delta_i(\vartheta)=d_i^{-1}A\xi_i(\vartheta)$ and let $\mathcal H(\vartheta)\chi=\mathfrak b(\vartheta,x)$ represent
 \begin{equation}
 \col\!\left(
 \begin{array}{c}
@@ -339,7 +341,7 @@ At fixed $(\vartheta,x)$, the right-hand side is a known positive scalar, so Equ
 n_h=2F+NK+F_S+1
 \label{eq:eqcount}
 \end{equation}
-rows covering the mixer balance, $N$ invariant transitions, the full clarifier balance, soluble pass-through, and the scalar overflow-TSS closure. The closure fixes only total overflow TSS. It does not prescribe the particulate composition of $g_E$. That allocation is reconciled jointly with the raw component predictions and the remaining constraints.
+rows covering the mixer balance, $N$ invariant transitions, the full clarifier balance, soluble pass-through, and the scalar overflow-TSS closure. The closure fixes only total overflow TSS. It does not prescribe the particulate composition of $g_E$. That allocation is determined by joint projection of the raw component predictions subject to the remaining constraints.
 
 Particulate densification and inventory bounds restrict responses that could satisfy the equalities but still contradict the adopted settling envelope. These inequalities are written as
 \begin{equation}
@@ -369,11 +371,11 @@ The correction is measured after scaling each response by $D_\chi^{-1}$, so that
 \end{align}
 $D_b$ and $D_g$ rescale the constraint rows without changing the feasible set. This scaling improves numerical conditioning \citep[Section~11.8.2]{Boyd2004}. The overflow-closure row and the other equality rows receive positive scales computed from the model-development set. At fixed inputs, the linear constraints define a closed convex set. If this set is nonempty, the strictly convex, coercive objective has a unique minimizer \citep{Boyd2004}. Because Equation~\eqref{eq:overflowclosure} is fitted rather than a physical identity, feasibility is not guaranteed throughout the operating box. It is checked for every grouped out-of-fold model-development row, optimization evaluation, and reported holdout or selected-decision evaluation. An infeasible closure is recorded as a failed projection and is not clipped or relaxed.
 
-Enforcing constraints does not by itself establish greater prediction accuracy. Euclidean projection onto a nonempty closed convex set cannot increase the distance to a reference in that set \citep{Boyd2004}. Here, the distance is measured in the standardized response coordinates used in Equation~\eqref{eq:projection}. However, the mechanistic overflow TSS generally differs from the fitted value in Equation~\eqref{eq:overflowclosure}, so that guarantee is not presumed here. The error audit therefore accounts for the reference's distance to the set, as detailed in the Supplementary Material, Section~S4.2. The projection does not reconstruct a clarifier profile or enforce all kinetic and nonlinear settling equations. Those equations are checked separately by full mechanistic replay.
+Enforcing constraints does not by itself establish greater prediction accuracy. Euclidean projection onto a nonempty closed convex set cannot increase the distance to a reference in that set \citep{Boyd2004}. Here, the distance is measured in the standardized response coordinates used in Equation~\eqref{eq:projection}. However, the mechanistic overflow TSS generally differs from the fitted value in Equation~\eqref{eq:overflowclosure}, so that guarantee is not presumed here. The error audit therefore accounts for the reference's distance to the set, as detailed in the Supplementary Material, Section~S4.2. The projection does not reconstruct a clarifier profile or enforce all kinetic and nonlinear settling equations. Those equations are checked separately by evaluation with the complete mechanistic model.
 
 \subsection{Engineering objective and operating constraints}
 
-The reconciled response provides the concentrations, outlet flows, and stored solids needed to evaluate operating decisions. Effluent-quality targets influence reactor sizing, oxygen supply, recycle, and solids management \citep{Henze2008}. The objective combines treatment and resource measures to represent these competing requirements. Their relative priorities are case-study choices rather than universal constants. Let $z_E=I_{\rm comp}c_E\in\R_+^4$ contain effluent chemical oxygen demand (COD), total nitrogen (TN), total phosphorus (TP), and TSS. With positive normalization $D_T$ and quality priorities $\varpi_Q\ge0$, $\mathbf1^\top\varpi_Q=1$, define
+The projected response provides the concentrations, outlet flows, and stored solids needed to evaluate operating decisions. Effluent-quality targets influence reactor sizing, oxygen supply, recycle, and solids management \citep{Henze2008}. The objective combines treatment and resource measures to represent these competing requirements. Their relative priorities are case-study choices rather than universal constants. Let $z_E=I_{\rm comp}c_E\in\R_+^4$ contain effluent chemical oxygen demand (COD), total nitrogen (TN), total phosphorus (TP), and TSS. With positive normalization $D_T$ and quality priorities $\varpi_Q\ge0$, $\mathbf1^\top\varpi_Q=1$, define
 \begin{equation}
 j_Q=\varpi_Q^\top D_T^{-1}z_E.
 \label{eq:qualitycomponent}
@@ -394,7 +396,7 @@ J(\vartheta,\chi;\varpi)=\varpi^\top j(\vartheta,\chi),
 \qquad \varpi\ge0,\quad \mathbf1^\top\varpi=1.
 \label{eq:objective}
 \end{equation}
-The vectors $\varpi$ and $\varpi_Q$ distinguish overall operating priorities from priorities among effluent-quality measures. Their values are stated and justified in the case study. During optimization, $D_T$ denotes the fixed normalization of the selected route. Both exact-reference objectives instead use the direct-route normalization. The case-study definition states the implemented scales explicitly.
+The vectors $\varpi$ and $\varpi_Q$ distinguish overall operating priorities from priorities among effluent-quality measures. Their values are stated and justified in the case study. During optimization, $D_T$ denotes the fixed normalization of the selected route. Both reference-model objectives instead use the direct-route normalization. The case-study definition states the implemented scales explicitly.
 
 An objective alone could favor settings that exceed the plant's operating limits. Engineering constraints therefore restrict solids storage, clarifier loading, and outlet conditions using the same response as the objective. Define $X_i=t_X^\top c_i$ and use $X_E$ and $X_U$ from Equation~\eqref{eq:layerendpoints}. The external solids loss rate is
 \begin{equation}
@@ -410,7 +412,7 @@ The whole-plant SRT, surface overflow rate (SOR), and clarifier solids loading r
 \end{align}
 The factor $10^{-3}$ converts grams to kilograms in SLR. Including $M_{\rm cl}$ in Equation~\eqref{eq:srt} accounts for solids stored outside the biological reactors. Omitting this inventory would underestimate whole-plant SRT for the same solids loss rate. The case-specific engineering constraints form $g_{\rm eng}(\vartheta,\chi)\le0$. They restrict underflow TSS, prevent a nearly solids-free clarifier feed, and require positive external solids loss. Their definitions and values are provided in the Supplementary Material, Section~S5. Whole-plant SRT, SOR, and SLR remain descriptive operating measures.
 
-Network feasibility does not prevent an optimizer from selecting a response that needs an unusually large correction or is inconsistent with reaction kinetics. The additional constraints $g_{{\rm trust},S}$ restrict such behavior using four diagnostics calibrated on the model-development set. The standardized correction $\kappa_{{\rm corr},S}=\|\widehat u_S\|_2/\sqrt{n_\chi}$ measures how far projection moves the raw response. Feature leverage is commonly used to determine whether a prediction lies within the fitted input domain \citep{Sahigara2012}. The regularized form used here measures support from the fitted input features. Deviation from a common particulate recovery tests consistency with the mechanistic outlet-composition assumption. The scaled smooth reactor-balance residual measures disagreement with reactor kinetics. These diagnostics provide screening rather than a guarantee of mechanistic accuracy. Their formulas and calibration rules are given in the Supplementary Material, Section~S4.3. Correction, recovery, and reactor limits use out-of-fold 95th percentiles. The leverage limit uses the maximum value among model-development rows in the final fit. Neither calculation uses holdout or optimization responses. Nonlinear clarifier behavior is checked only through exact $L$-layer replay because the aggregate response cannot supply layer-flux residuals.
+Network feasibility does not prevent an optimizer from selecting a response that needs an unusually large correction or is inconsistent with reaction kinetics. The additional constraints $g_{{\rm trust},S}$ restrict such behavior using four diagnostics calibrated on the model-development set. The standardized correction $\kappa_{{\rm corr},S}=\|\widehat u_S\|_2/\sqrt{n_\chi}$ measures how far projection moves the raw response. Feature leverage is commonly used to determine whether a prediction lies within the fitted input domain \citep{Sahigara2012}. The regularized form used here measures support from the fitted input features. Deviation from a common particulate recovery tests consistency with the mechanistic outlet-composition assumption. The scaled smooth reactor-balance residual measures disagreement with reactor kinetics. These diagnostics provide screening rather than a guarantee of mechanistic accuracy. Their formulas and calibration rules are given in the Supplementary Material, Section~S4.3. Correction, recovery, and reactor limits use out-of-fold 95th percentiles. The leverage limit uses the maximum value among model-development rows in the final fit. Neither calculation uses holdout or optimization responses. Nonlinear clarifier behavior is checked only through evaluation with the original $L$-layer model because the aggregate response cannot supply layer-flux residuals.
 
 The extended-ICSOR operational problem combines these requirements as
 \begin{equation}
@@ -449,13 +451,13 @@ Outlet reconstruction divides by the clarifier-feed TSS, which could otherwise r
 \end{equation}
 Its selected feasible incumbent, when one exists, is denoted $(\vartheta_M,y_M,\widetilde X_{F,M})$. The auxiliary does not change a feasible solution but keeps reconstruction defined during the search.
 
-Derivative-based NLP methods use derivatives of the objective and constraint functions \citep{BuzziFerraris2013}. Here, smooth approximations make the kinetic and settling equations differentiable for optimization. They are used only for minimum, maximum, positive-part, zero-denominator, and receiver-switch operations. A nonzero smoothing width changes the equations near a switch. The smooth endpoint must therefore be checked on the original nonsmooth model before its performance is compared with the surrogate-selected decision. Both routes use that same reference model for replay.
+Derivative-based NLP methods use derivatives of the objective and constraint functions \citep{BuzziFerraris2013}. Here, smooth approximations make the kinetic and settling equations differentiable for optimization. They are used only for minimum, maximum, positive-part, zero-denominator, and receiver-switch operations. A nonzero smoothing width changes the equations near a switch. The smooth endpoint must therefore be checked on the original nonsmooth model before its performance is compared with the surrogate-selected decision. Both routes use that same reference model for evaluation.
 
-The reference model also has a defined physical scope. Its scalar-layer clarifier tracks aggregate solids, and particulate outlet components are reconstructed with the steady feed composition. Time integration uses a backward differentiation formula (BDF) for stiff equations \citep{CurtissHirschfelder1952}. In this study, integration provides a numerical route to the nonsmooth steady equations. The model does not track the transient inventory of every particulate species in every layer. A reference replay is an independently converged solution of those nonsmoothed equations. Stability refers only to this reduced numerical state model. The methodology below specifies how data from this model are used to fit the surrogate and how both routes are evaluated on the common reference.
+The reference model evaluates a selected decision by holding its controls and influent fixed and solving the original reactor and clarifier equations to steady state. This calculation checks the resulting treatment performance independently of the surrogate prediction or the smoothed optimization equations. The reference model also has a defined physical scope. Its scalar-layer clarifier tracks aggregate solids, and particulate outlet components are reconstructed with the steady feed composition. Time integration uses a backward differentiation formula (BDF) for stiff equations \citep{CurtissHirschfelder1952}. In this study, integration provides a numerical route to the nonsmooth steady equations. The model does not track the transient inventory of every particulate species in every layer. The reference response is an independently converged solution of those nonsmoothed equations. Stability refers only to this reduced numerical state model. The methodology below specifies how data from this model are used to fit the surrogate and how both routes are evaluated on the common reference.
 
 \section{Methodology}
 
-The evaluation follows seven ordered steps. First, the mechanistic model generates accepted plant states over the operating and influent domains. Second, independent streams provide model-development and post-selection holdout sets. Third, grouped cross-validation selects the raw-response and overflow-solids regressions. Fourth, out-of-fold predictions are projected and used to set trust limits. Fifth, the surrogate and direct mechanistic routes select operating decisions. Sixth, both decisions are replayed on the same nonsmooth mechanistic model. Seventh, eligible pairs are compared by exact-reference objective, controls, and Time. Prediction assessment, decision replay, and paired comparison therefore remain separate.
+The evaluation follows seven ordered steps. First, the mechanistic model generates accepted plant states over the operating and influent domains. Second, independent streams provide model-development and post-selection holdout sets. Third, grouped cross-validation selects the raw-response and overflow-solids regressions. Fourth, out-of-fold predictions are projected and used to set trust limits. Fifth, the surrogate and direct mechanistic routes select operating decisions. Sixth, both decisions are evaluated on the same nonsmooth mechanistic model. Seventh, eligible pairs are compared by reference-model objective, controls, and optimization time. Prediction assessment, decision evaluation, and paired comparison therefore remain separate.
 
 \subsection{Case-study system and operating domain}
 
@@ -466,7 +468,7 @@ The case study uses Activated Sludge Model No. 2d with two-step nitrification (A
 \end{equation}
 where $h_i=H/5$, $a_1=a_2=0$, $k_La_i=47a_i$ d$^{-1}$ for $i=3,4,5$, and $\xi_i=0$ for every stage.
 
-\begin{table}[htbp]
+\begin{table}[pos=htbp]
 \centering
 \caption{Case-study topology, geometry, and free-coordinate bounds.}
 \label{tab:domain}
@@ -498,7 +500,7 @@ The objective gives the largest individual weight to effluent quality while reta
 \qquad \varpi_Q=\tfrac14\mathbf1_4.
 \label{eq:caseweights}
 \end{equation}
-Aeration receives the largest resource coefficient because oxygen transfer is an important energy demand in the treatment train \citep{Leu2012}. HRT represents installed biological volume. The remaining resource coefficients apply to MLR, RAS, and wasted-solids production. The coefficients are trade-off parameters rather than percentages of the attained objective. The direct route uses $D_{T,M}=\operatorname{diag}(\sigma_j)$ for positive effluent standard deviations computed from the model-development set. The surrogate route uses $D_{T,S}=\operatorname{diag}[\max(1,\sigma_j)]$. Both exact-reference objectives use $D_{T,M}$. The fixed aeration normalization is $E_A^{\rm ref}=\sum_{i=3}^{5}V_i(H^U)(47\,\mathrm{d}^{-1})=423{,}000$ m$^3$ d$^{-1}$.
+Aeration receives the largest resource coefficient because oxygen transfer is an important energy demand in the treatment train \citep{Leu2012}. HRT represents installed biological volume. The remaining resource coefficients apply to MLR, RAS, and wasted-solids production. The coefficients are trade-off parameters rather than percentages of the attained objective. The direct route uses $D_{T,M}=\operatorname{diag}(\sigma_j)$ for positive effluent standard deviations computed from the model-development set. The surrogate route uses $D_{T,S}=\operatorname{diag}[\max(1,\sigma_j)]$. Both reference-model objectives use $D_{T,M}$. The fixed aeration normalization is $E_A^{\rm ref}=\sum_{i=3}^{5}V_i(H^U)(47\,\mathrm{d}^{-1})=423{,}000$ m$^3$ d$^{-1}$.
 
 Both optimization routes use the same case-specific engineering constraints. These constraints restrict underflow TSS, prevent a nearly solids-free clarifier feed, and require positive external solids loss. Their complete definitions and values are provided in the Supplementary Material, Section~S5. The wasted-solids objective uses $X_U^{\rm ref}=15{,}000$ g TSS m$^{-3}$. The complete influent domain, reporting map, model constants, initial states, and numerical generation settings are provided in the Supplementary Material, Sections~S1 and S2.
 
@@ -512,51 +514,269 @@ The retained sets are conditioned on numerical solvability and may underrepresen
 
 \subsection{Model fitting, projection assessment, and trust calibration}
 
-All responses from one simulated plant remain in the same fold. The accepted model-development states are divided reproducibly into five folds whose sizes differ by at most one. Centers and scales are recomputed within each fitting fold. The raw multiresponse regression uses ridge regularization with an unpenalized intercept. Its score is the standardized root mean squared error (RMSE) over the complete raw response. The one-standard-error rule selects the largest penalty whose mean score is within one standard error of the minimum \citep{Hastie2009}. Projection metrics do not influence this selection.
+All responses from one simulated plant remain in the same fold. The accepted model-development states are divided reproducibly into five folds whose sizes differ by at most one. Centers and scales are recomputed within each fitting fold. The raw multiresponse regression uses ridge regularization with an unpenalized intercept. Its score is the standardized root mean square error (RMSE) over the complete raw response. The one-standard-error rule selects the largest penalty whose mean score is within one standard error of the minimum \citep{Hastie2009}. Projection metrics do not influence this selection.
 
 The scalar logarithmic overflow-solids model uses the same folds, preprocessing, penalty grid, and selection rule. Its score is calculated on the logarithmic target. After selection, both models are refitted on all accepted model-development states. Out-of-fold predictions are used for projection assessment and trust calibration so that these calculations do not reuse fitted values from the same rows \citep{Hastie2009}. Final fits are used only for the holdout, optimization, and selected-decision evaluations.
 
 Every projected response is checked independently for equality feasibility, inequality feasibility, non-negativity, dual feasibility, stationarity, and complementarity. Scientific admission requires finite and audited out-of-fold projections for all model-development states. It also requires raw normalized RMSE below one for the complete response and the clarifier-inventory coordinate. Because each error is divided by its model-development response scale, this cutoff requires aggregate error below one response-scale unit. It is a study-specific admission rule rather than a universal accuracy threshold. A failed gate does not trigger refitting.
 
-The trust region uses four diagnostics. They measure standardized projection correction, regularized feature leverage, particulate-recovery deviation, and smooth reactor-balance residual. Correction, recovery, and reactor limits are the out-of-fold 95th percentiles from the model-development set. These quantiles retain the range observed for most development rows while screening the upper tail. The leverage limit is the maximum model-development leverage under the final feature map, so it covers the observed development range. These limits are empirical guardrails rather than probabilistic confidence bounds. All four limits are fixed before optimization. The post-selection holdout reports raw and projected RMSE, mean absolute error (MAE), bias, normalized RMSE (nRMSE), and coefficient of determination ($R^2$) for each process block and the complete response. Overflow TSS is also assessed on logarithmic and concentration scales. The detailed fitting equations, sampling seeds, projection certificates, error bounds, scales, and tolerances are provided in the Supplementary Material, Sections~S3 and S4.
+The trust region uses four diagnostics. They measure standardized projection correction, regularized feature leverage, particulate-recovery deviation, and smooth reactor-balance residual. Correction, recovery, and reactor limits are the out-of-fold 95th percentiles from the model-development set. These quantiles retain the range observed for most development rows while screening the upper tail. The leverage limit is the maximum model-development leverage under the final feature map, so it covers the observed development range. These limits are empirical guardrails rather than probabilistic confidence bounds. All four limits are fixed before optimization. The post-selection holdout reports raw and projected RMSE, mean absolute error (MAE), bias, normalized RMSE (nRMSE), normalized MAE (nMAE), and coefficient of determination ($R^2$) for each process block and the complete response. Overflow TSS is also assessed on logarithmic and concentration scales. The holdout figures calculate nRMSE and nMAE for COD, TN, TP, and TSS after dividing each prediction error by the mechanistic holdout range of the same composite at the same location. Aggregate metrics pool these normalized errors. The reported $R^2$ is the arithmetic mean of the location--composite coefficients of determination. These reporting scales differ from the development scales used in fitting and admission checks. The detailed fitting equations, sampling seeds, projection certificates, error bounds, scales, and tolerances are provided in the Supplementary Material, Sections~S3 and S4.
 
 \subsection{Operating searches and convergence assessment}
 
-The nominal influent is the midpoint of each declared influent interval. Both routes use the seven controls in Equation~\eqref{eq:casecontrols}, the bounds in Table~\ref{tab:domain}, the objective priorities in Equation~\eqref{eq:caseweights}, and the same engineering constraints. Each primary search starts at the center of the normalized operating box and explores one local basin.
+The nominal influent is the midpoint of each declared influent interval. Both routes use the seven controls in Equation~\eqref{eq:casecontrols}, the bounds in Table~\ref{tab:domain}, the objective priorities in Equation~\eqref{eq:caseweights}, and the same engineering constraints. Each optimization search starts at the center of the normalized operating box and explores one local basin.
 
-The surrogate search evaluates only the seven controls. Each distinct trial receives a cold solution of the projection QP and a complete independent audit \citep{Stellato2020,Boyd2004}. Response derivatives are obtained from the active-set Karush--Kuhn--Tucker (KKT) system when rank, conditioning, complementarity, and derivative checks pass \citep{Tondel2003}. Sequential least-squares programming (SLSQP) then performs the outer search \citep{Kraft1988}. If the derivative chain cannot be validated, Constrained Optimization BY Quadratic Approximations (COBYQA) continues with function values from the same audited projection \citep{Ragonneau2022}.
+The surrogate search evaluates only the seven controls. At each distinct trial, the projection QP is solved without reusing an earlier trial's solution and receives a complete independent audit \citep{Stellato2020,Boyd2004}. Response derivatives are obtained from the active-set Karush--Kuhn--Tucker (KKT) system when rank, conditioning, complementarity, and derivative checks pass \citep{Tondel2003}. Sequential least squares programming (SLSQP) then performs the outer search \citep{Kraft1988}. If the derivative chain cannot be validated, Constrained Optimization BY Quadratic Approximations (COBYQA) continues with function values from the same audited projection \citep{Ragonneau2022}.
 
 A surrogate candidate receives first-order stationarity evidence only when the derivative, projection, and upper-level KKT audits pass. Otherwise, complete feasible-direction polls at two declared resolutions test for sufficient decrease. These finite polls provide evidence only for the tested directions and resolutions. They do not establish stationarity or local optimality because direct-search stationarity results require limiting behavior and suitable refining directions \citep{AudetDennis2006}. Neither convergence tier establishes global optimality.
 
-The direct route uses the Interior Point OPTimizer (IPOPT) \citep{WachterBiegler2006}. The study applies three smoothing stages and a full-state endpoint audit. If the primary direct solve fails, one recovery may start from the same case's certified surrogate control and repeat the unchanged continuation sequence. This recovery is conditional on route $S$ and is not an independent search. A validated feasible candidate remains reportable when a search budget is exhausted or stationarity is unresolved. A case without a validated candidate remains a failure. The full solver settings, poll construction, smoothing definitions, and recovery rules are provided in the Supplementary Material, Section~S5.
+The direct route uses the Interior Point OPTimizer (IPOPT) \citep{WachterBiegler2006}. The study applies three smoothing stages and a full-state endpoint audit. If the initial direct solve fails, one additional solve may start from the same scenario's certified surrogate controls and repeat the same smoothing sequence. This recovery depends on route $S$ and is not an independent search. A validated feasible candidate remains reportable when a search budget is exhausted or stationarity is unresolved. A scenario without a validated candidate remains a failure. The full solver settings, poll construction, smoothing definitions, and recovery rules are provided in the Supplementary Material, Section~S5.
 
-\subsection{Exact replay and paired decision comparison}
+\subsection{Mechanistic evaluation and paired decision comparison}
 
-Native objective values mix decision quality with response error and route-specific normalization, as shown by Equation~\eqref{eq:comparisons}. Each available selected candidate $k\in\{S,M\}$ is therefore replayed from two initial states on the nonsmooth ten-layer mechanistic model. This higher-fidelity check follows the validation role used in surrogate-based optimization \citep{Bhosekar2018}. The replay must pass state agreement, mass conservation, non-negativity, layer residual, domain, reduced-stability, and branch checks. Boundary-ambiguous branch disagreement may be qualified only when state agreement and all physical checks pass. The full replay state is mapped to $\chi_{{\rm ref},k}$ using Equations~\eqref{eq:state} and \eqref{eq:inventory}.
+Native objective values mix decision quality with response error and route-specific normalization, as shown by Equation~\eqref{eq:comparisons}. Each available selected candidate $k\in\{S,M\}$ is therefore evaluated from two initial states on the nonsmooth ten-layer mechanistic model. This higher-fidelity check follows the validation role used in surrogate-based optimization \citep{Bhosekar2018}. The evaluation must pass state agreement, mass conservation, non-negativity, layer residual, domain, reduced-stability, and branch checks. Boundary-ambiguous branch disagreement may be qualified only when state agreement and all physical checks pass. The full evaluation state is mapped to $\chi_{{\rm ref},k}$ using Equations~\eqref{eq:state} and \eqref{eq:inventory}.
 
-Native responses are $\chi_{{\rm nat},S}=\widehat\chi_S$ and $\chi_{{\rm nat},M}=\chi_{{\rm sm},M}$. Extended ICSOR is also evaluated, wherever defined, at both selected controls. Let $J_{{\rm nat},k}$ use the native normalization of route $k$ and let $J_{\rm ref}$ use $D_{T,M}$. The objective comparisons are
+Native responses are $\chi_{{\rm nat},S}=\widehat\chi_S$ and $\chi_{{\rm nat},M}=\chi_{{\rm sm},M}$. Extended ICSOR is also evaluated, wherever defined, at both selected sets of controls. Let $J_{{\rm nat},k}$ use the native normalization of route $k$ and let $J_{\rm ref}$ use $D_{T,M}$. The objective comparisons are
 \begin{align}
 \Delta J_{{\rm nat-ref},k}&=J_{{\rm nat},k}(\vartheta_k,\chi_{{\rm nat},k})-J_{\rm ref}(\vartheta_k,\chi_{{\rm ref},k}),\notag\\
 \Delta J_{S-M}&=J_{\rm ref}(\vartheta_S,\chi_{{\rm ref},S})-J_{\rm ref}(\vartheta_M,\chi_{{\rm ref},M}).
 \label{eq:comparisons}
 \end{align}
-Each valid, physically audited replay retains its objective and components. The exact-reference objectives are compared on a common basis when both routes provide feasible candidates and valid physical replays. Detailed reporting and comparison rules are provided in the Supplementary Material, Section~S6. The objective difference is not termed regret because neither route has a global optimality certificate. Symmetric relative objective difference and normalized control root mean square (RMS) and maximum differences accompany each comparison. These casewise checks do not establish smooth and nonsmooth model equivalence over the full operating domain.
+Each valid, physically audited evaluation retains its objective and components. The reference-model objectives are compared on a common basis when both routes provide feasible candidates and valid mechanistic evaluations. Detailed reporting and comparison rules are provided in the Supplementary Material, Section~S6. The objective difference is not termed regret because neither route has a global optimality certificate. Symmetric relative objective difference and normalized control root mean square (RMS) and maximum differences accompany each comparison. These casewise checks do not establish smooth and nonsmooth model equivalence over the full operating domain.
 
-\subsection{Influent scenarios, Time, and failure accounting}
+\subsection{Influent scenarios, optimization time, and failure accounting}
 
-Ten influent vectors from a separate 20-dimensional Latin hypercube provide post-selection stress cases. They do not enter fitting, calibration, or tuning. Both routes are attempted for the nominal influent and for every stress case. Reference replay is performed whenever a selected decision is available. The recorded outputs include route status, controls, treatment responses, clarifier inventory and layer profiles, engineering measures, objective components, projection correction, and Time. These cases show sensitivity within the evaluated set and do not establish population-level reliability.
+Ten influent vectors from a separate 20-dimensional Latin hypercube define the post-selection influent scenarios. They do not enter fitting, calibration, or tuning. Both routes are attempted for the nominal influent and for every influent scenario. Reference evaluation is performed whenever a selected decision is available. The recorded outputs include route status, controls, treatment responses, clarifier inventory and layer profiles, engineering measures, objective components, projection correction, and optimization time. These cases show sensitivity within the evaluated set and do not establish population-level reliability.
 
-Time measures only the primary search interval for each route. Aggregate comparisons use the ten influent cases and exclude the nominal case. Both routes use the same processor allocation and thread count. Data generation, model fitting, certification, recovery, and exact replay are excluded. Workload and failure records accompany the Time summaries. This study does not accept a candidate from the solver success flag alone. The candidate must also pass the applicable numerical, physical, stability, and branch checks. Detailed metric definitions, replay tolerances, workload fields, and failure rules are provided in the Supplementary Material, Sections~S5--S7.
+Optimization time measures the duration of each route's optimization search. It includes projection evaluations and any derivative-free fallback for Extended ICSOR, and the smoothing sequence for Smooth NLP. Data generation, fitting, convergence certification, additional recovery calculations, and evaluation with the original mechanistic model are excluded. Aggregate time comparisons use the ten influent scenarios and exclude the nominal scenario. Both routes use the same processor allocation and thread count. Workload and failure records accompany the optimization time summaries. This study does not accept a candidate from the solver success flag alone. The candidate must also pass the applicable numerical, physical, stability, and branch checks. Detailed metric definitions, evaluation tolerances, workload fields, and failure rules are provided in the Supplementary Material, Sections~S5--S7.
 
 \section{Results and discussion}
+\label{sec:results}
 
-\input{results_discussion}
+The results address the three research questions in sequence. The holdout assessment first examines how projection affects prediction accuracy across the connected plant. Selected operating decisions are then evaluated with the original nonsmooth mechanistic model to check their treatment performance. Finally, both routes are compared using the same reference model, objective priorities, and operating bounds. Optimization time is assessed separately. N denotes the nominal influent, and S1--S10 denote the ten influent scenarios. Numerical values in this section are calculated from the figure data and rounded only for presentation.
+
+\subsection{Holdout accuracy and projection}
+\label{sec:results-holdout}
+
+\subsubsection{Aggregate prediction accuracy}
+\label{sec:results-holdout-overview}
+
+The holdout assessment uses 1,845 accepted mechanistic states. Projection improves the aggregate metrics in Figure~\ref{fig:q01-holdout-overview}. nRMSE decreases from 0.04690 to 0.04306, and nMAE decreases from 0.03044 to 0.02568. The relative reductions calculated before rounding are 8.19\% and 15.65\%, respectively. Mean location-level $R^2$ increases from 0.925 to 0.938. Improvement occurs across all eight location summaries and all four composite summaries, although its magnitude varies.
+
+Projection also enforces the stated physical relations. Each feasible, audited projected response satisfies the mixer balance, stagewise invariant relations, clarifier outlet balances, soluble pass-through, particulate densification, inventory bounds, and non-negativity requirements to the specified numerical tolerances. These constraints connect the predictions used to calculate treatment performance and resource measures.
+
+The projection imposes only the stated relations. Biological kinetics and nonlinear settling equations remain outside its constraint set. The fitted overflow-TSS value can also differ from the mechanistic value. Lower prediction error at every coordinate is therefore not guaranteed. Figure~\ref{fig:q01-holdout-overview} reports the observed accuracy of the regression, overflow model, and projection used together.
+
+\begin{figure}[pos=htbp]
+    \centering
+    \includegraphics[width=\linewidth]{q01_holdout_accuracy_overview.png}
+    \caption{Raw and projected holdout accuracy. The top row presents aggregate
+    coordinate-normalized RMSE, coordinate-normalized MAE, and mean location-level
+    $R^2$. The middle and bottom rows resolve these metrics by treatment location
+    and water-quality composite, respectively.}
+    \label{fig:q01-holdout-overview}
+\end{figure}
+
+\subsubsection{Location-specific effects of projection}
+\label{sec:results-holdout-location}
+
+The clarifier underflow has the largest reduction in location-level nRMSE, from 0.05814 to 0.04736. Across the mixer and reactors, nRMSE ranges from 0.04431 to 0.04466 before projection and from 0.04187 to 0.04245 after projection. The underflow supplies both returned biomass and wasted solids, so an error in this stream can affect recycle mixing and the solids-related objective terms.
+
+Figure~\ref{fig:q02-holdout-location} resolves these changes into 32 location--composite combinations. Projection lowers nRMSE in 30 of them. Overflow TP nRMSE decreases from 0.02948 to 0.01795, a reduction of 39.10\%. Underflow nRMSE decreases for all four composites. The two increases occur in COD at R5 and the overflow, by 0.47\% and 2.36\%, respectively. These results describe the combined model and do not isolate the effect of individual projection constraints.
+
+Overflow TSS has the highest projected nRMSE among the location--composite combinations, at 0.07392. Favorable average accuracy across the plant therefore does not establish equally strong prediction at the discharge point. This location requires direct assessment because its concentrations enter the water-quality objective.
+
+\begin{figure}[pos=htbp]
+    \centering
+    \includegraphics[width=\linewidth]{q02_holdout_accuracy_by_location.png}
+    \caption{Holdout nRMSE by treatment location and reporting composite for raw
+    predictions (left), projected predictions (middle), and their percentage
+    change (right). Negative percentage changes indicate lower error after
+    projection.}
+    \label{fig:q02-holdout-location}
+\end{figure}
+
+\subsubsection{All-location parity and residual structure}
+\label{sec:results-holdout-parity}
+
+Figure~\ref{fig:q03-holdout-parity} shows the distribution of predictions around the line of equal predicted and mechanistic concentrations. Projected nRMSE is 0.04586 for COD, 0.03454 for TN, 0.03349 for TP, and 0.05476 for TSS. The corresponding mean location-level $R^2$ values are 0.944, 0.963, 0.945, and 0.899. TSS has the largest normalized error and lowest mean $R^2$ of the four composites.
+
+The hexagons summarize the density of all observations, while the labelled markers show the median at each location. Agreement near the central part of a concentration range can coexist with errors at its ends. At the overflow, projected TSS is below the mechanistic value in 1,008 of the 1,845 holdout states. A positive overflow-TSS prediction therefore does not ensure a conservative estimate of the residual concentration.
+
+Each holdout state contributes observations at eight connected locations. The hexagon counts consequently describe the distribution of location observations rather than independent plant replications. The logarithmic axes display a broad concentration range, while the coordinate normalization allows errors at different locations to contribute on comparable scales.
+
+The holdout results show improved aggregate prediction accuracy after projection, with the largest location-level improvement at the underflow. Errors at the effluent remain relevant to operating decisions. Satisfaction of the imposed physical relations and accuracy against the mechanistic model must therefore be assessed separately.
+
+\begin{figure}[pos=htbp]
+    \centering
+    \includegraphics[width=\linewidth]{q03_holdout_parity_all_locations.png}
+    \caption{Projected Extended ICSOR parity for COD, TN, TP, and TSS across
+    holdout rows and eight treatment locations. Both concentration axes are
+    logarithmic. Hexagon colors indicate location-observation counts on a
+    logarithmic scale. Markers identify location medians. Dashed lines denote
+    perfect agreement.}
+    \label{fig:q03-holdout-parity}
+\end{figure}
+
+\FloatBarrier
+
+\subsection{Selected-decision fidelity and treatment behavior}
+\label{sec:results-decisions}
+
+\subsubsection{Prediction fidelity at selected operating controls}
+\label{sec:results-evaluation}
+
+Figure~\ref{fig:q04-evaluation-parity} evaluates prediction accuracy at the operating controls selected by Extended ICSOR. For each nominal or scenario decision, the controls and influent are held fixed while the original nonsmooth reactor and clarifier equations are solved to steady state from two initial states. This mechanistic evaluation provides the comparison concentrations and removals. It is distinct from solving the surrogate optimization problem. The plotted removal for composite $j$ is $100(1-z_{E,j}/z_{{\rm in},j})$, where $z_{{\rm in},j}$ is the fresh-influent concentration for that scenario.
+
+Selected-decision COD errors vary across scenarios. In S6, Extended ICSOR predicts 151.10~mg~L$^{-1}$, whereas the mechanistic evaluation gives 99.21~mg~L$^{-1}$. In S10, the corresponding concentrations are 232.23 and 167.78~mg~L$^{-1}$. These overpredictions of concentration underpredict removal by 8.51 and 10.44 percentage points, respectively. The errors are therefore not uniformly optimistic about treatment performance.
+
+S4 illustrates the opposite direction of error for nutrients. Predicted TN is 2.67~mg~L$^{-1}$ and the mechanistic value is 7.47~mg~L$^{-1}$. Predicted TP is 2.08~mg~L$^{-1}$ and the mechanistic value is 4.68~mg~L$^{-1}$. The predictions overstate TN removal by 16.97 percentage points and TP removal by 27.33 percentage points. Such errors would affect assessment against a nutrient limit near these concentrations.
+
+Across the nominal and ten influent scenarios, predicted TSS ranges from 5.53 to 8.05~mg~L$^{-1}$ and mechanistic TSS ranges from 5.28 to 6.41~mg~L$^{-1}$. TSS is overpredicted in ten of the eleven decisions. In S1, for example, the predicted and mechanistic concentrations are 7.78 and 5.77~mg~L$^{-1}$. Their removal percentages differ by only 0.61 percentage points because both represent high removal relative to the influent. Reporting concentration and removal together exposes this difference in scale.
+
+Projection maintains the enforced physical relations but does not eliminate prediction errors at selected decisions. The mechanistic evaluation is needed to establish the treatment performance used in the route comparison. This is particularly relevant when the predicted effluent approaches a prescribed treatment limit.
+
+\begin{figure}[pos=htbp]
+    \centering
+    \includegraphics[width=\linewidth]{q04_effluent_and_removal_parity.png}
+    \caption{Extended ICSOR predictions compared with treatment outcomes calculated
+    by the original nonsmooth mechanistic model at its selected controls. The upper row presents effluent concentration parity
+    for COD, TN, TP, and TSS. The lower row presents parity of the reported removals.
+    Teal points denote concentrations, orange points denote removals, and dashed
+    lines denote perfect agreement. N identifies the nominal case and S1--S10
+    identify the influent scenarios.}
+    \label{fig:q04-evaluation-parity}
+\end{figure}
+
+\subsubsection{Effluent outcomes and operating choices}
+\label{sec:results-effluent-controls}
+
+Figure~\ref{fig:q05-effluent-controls} compares mechanistic treatment outcomes and selected controls for both routes. Smooth NLP gives lower COD, TN, and TP in the nominal scenario and nine of the ten influent scenarios. In the nominal scenario, COD is 151.26~mg~L$^{-1}$ at the Extended ICSOR decision and 57.60~mg~L$^{-1}$ at the Smooth NLP decision. In S9, the corresponding values are 203.24 and 19.08~mg~L$^{-1}$. COD outcomes are closer in S1, S2, S5, and S8.
+
+Mechanistic TSS across both routes ranges from 5.28 to 6.95~mg~L$^{-1}$. Smooth NLP has lower TSS in six of the eleven comparisons. In S8, it has slightly higher concentrations of all four composites. The TN values are 27.41~mg~L$^{-1}$ for Extended ICSOR and 28.52~mg~L$^{-1}$ for Smooth NLP, and TP is 25.53 and 25.59~mg~L$^{-1}$, respectively. A lower total objective therefore does not require every effluent concentration to decrease.
+
+Extended ICSOR selects the 6-h HRT lower bound in the nominal scenario and S6, S7, S9, and S10. Smooth NLP selects the 36-h upper bound in S5 and S10, within the numerical tolerance. Under fixed fresh flow and equal reactor-volume fractions, increasing $H$ increases biological reactor volume. These comparisons therefore include capacity as well as operating choices. An assessment of an existing plant would need to fix its installed volumes.
+
+The normalized aeration setting in R3 is at its upper bound for both routes in every plotted scenario, within the numerical tolerance. R4 and R5 also reach the upper bound in many decisions. Identical aeration settings can still give different oxygen-transfer capacity because reactor volume depends on $H$. The resource comparison must account for both volume and aeration.
+
+Both routes select the lower RAS bound, $r_R=0.25$, within the numerical tolerance. Smooth NLP selects internal recycle ratios of 4.00 in S2 and S10 and 3.44 in S9. Its other displayed internal recycle ratios are below $1.3\times10^{-9}$ and are zero at the reported precision. Extended ICSOR selects ratios from 0 to 0.804. The tested influents therefore do not yield a single internal recycle setting.
+
+The actual train residence time per pass is $H/q_P$, where $q_P=1+r_I+r_R$. In S2, the Smooth NLP decision has $H=31.40$~h, $r_I=4.00$, and $r_R=0.25$. These values give $q_P=5.25$ and a residence time per pass of 5.98~h. Nominal HRT and recycle flow must therefore be interpreted together.
+
+Wasting often reaches its upper bound, but its objective contribution depends on $wX_U$. The waste ratio alone does not determine wasted-solids production. Whole-plant SRT additionally depends on reactor and clarifier inventories.
+
+\begin{figure}[pos=htbp]
+    \centering
+    \includegraphics[width=\linewidth]{q05_effluent_and_operating_values.png}
+    \caption{Evaluated effluent COD, TN, TP, and TSS and selected operating controls
+    for Extended ICSOR and Smooth NLP. Controls comprise nominal HRT, aeration
+    settings in R3--R5, internal recycle, return sludge, and wasting. N denotes
+    the nominal case. S1--S10 denote the influent scenarios.}
+    \label{fig:q05-effluent-controls}
+\end{figure}
+
+\subsubsection{Treatment-train profiles}
+\label{sec:results-train-profiles}
+
+Figure~\ref{fig:q06-train-profiles} follows the mechanistic concentrations through the treatment train at each route's selected controls. Both columns use the original reference model, so differences arise from the selected controls and resulting states. Each composite uses the same logarithmic concentration limits in the two route panels.
+
+All four composites increase from fresh influent to the mixer in the nominal scenario and all ten influent scenarios for both routes. Returned sludge and mixed liquor reintroduce material circulating within the plant. Equation~\eqref{eq:mixer} accounts for this increase. Internal recycle streams cancel from the external plant balance, so a higher mixer concentration does not indicate creation of an external pollutant load.
+
+The composite profiles combine soluble and particulate contributions. Their changes across R1--R5 cannot by themselves identify nitrification, denitrification, or phosphorus uptake. A nearly constant total can conceal redistribution among component forms. Higher mixed-liquor TP also need not imply higher effluent TP when phosphorus leaves the clarifier with retained solids.
+
+The concentration decrease between R5 and clarifier effluent occurs through particulate separation because the clarifier is nonreactive in this model. The biological stages determine the soluble and particulate composition entering it. The TSS decrease shows the role of separation in the final effluent response.
+
+The connected profiles show how recycle mixing, biological conversion, and solids separation determine the final discharge. A process diagnosis would additionally require soluble nutrient species, DO, outlet solids flows, and whole-plant SRT. Solving the complete layer model supplies the nonlinear clarifier checks that the aggregate surrogate inventory cannot provide.
+
+\begin{figure}[pos=htbp]
+    \centering
+    \includegraphics[width=\linewidth,height=0.78\textheight,keepaspectratio]
+    {q06_treatment_train_profiles.png}
+    \caption{Concentration profiles calculated with the original mechanistic model
+    at controls selected by Extended ICSOR (left) and Smooth NLP (right). Rows present COD, TN, TP,
+    and TSS from fresh influent through the mixer and reactors R1--R5 to clarifier
+    effluent. Concentration axes are logarithmic and share the same limits for
+    both routes within each composite. Colors identify the nominal and influent scenarios.}
+    \label{fig:q06-train-profiles}
+\end{figure}
+
+\FloatBarrier
+
+\subsection{Objective trade-offs and computational performance}
+\label{sec:results-tradeoffs-time}
+
+\subsubsection{Objective evaluated with the original mechanistic model}
+\label{sec:results-objective}
+
+Smooth NLP has the lower reference-model total objective in the nominal scenario and all ten influent scenarios in Figure~\ref{fig:q07-objective}. The nominal objective is 0.8647 for Extended ICSOR and 0.7862 for Smooth NLP. The largest difference occurs in S5, with values of 1.0101 and 0.7022, respectively. In S6 and S8, the corresponding differences are 0.0117 and 0.0045. These comparisons describe the retained decisions under the stated priorities.
+
+Smooth NLP has a lower normalized quality component in the nominal scenario and nine influent scenarios. Its weighted resource contribution is higher in every scenario except S8. In S8, the quality component increases from 1.5856 to 1.6110, while the resource contribution decreases from 0.1351 to 0.1179. The total objective consequently decreases from 0.9279 to 0.9234.
+
+In S10, the normalized quality component is 1.4748 for Extended ICSOR and 0.3699 for Smooth NLP. Multiplication by the quality weight of 0.50 gives a reduction of 0.5525 in the weighted quality contribution. The weighted resource contribution increases from 0.0557 to 0.4191. The resulting total objective decreases from 0.7931 to 0.6040. This decision improves the weighted treatment outcome while accepting a larger capacity and resource penalty.
+
+The aeration contribution requires particular care. For the equal-volume case study, its definition reduces to
+\begin{equation}
+j_A=
+\frac{H}{36\,\mathrm{h}}\,
+\frac{a_3+a_4+a_5}{3}.
+\label{eq:results-aeration-scaling}
+\end{equation}
+At $H=6$~h and $a_3=a_4=a_5=1$, the aeration proxy is only one-sixth of its maximum-volume reference value. The frequent low-HRT Extended ICSOR decisions therefore receive small volume and aeration penalties even when their normalized aeration settings are maximal. This explains why control settings alone give an incomplete account of the resource comparison. The proxy measures oxygen-transfer capacity. Actual oxygen transfer also depends on the DO deficit.
+
+The native quality scales coincide in this dataset. The development standard deviations are 106.61, 13.07, 7.11, and 17.38~mg~L$^{-1}$ for COD, TN, TP, and TSS, respectively. All exceed the unit floor in $D_{T,S}$, so $D_{T,S}=D_{T,M}$. The route differences therefore cannot be attributed to that floor here. Response approximation, surrogate trust restrictions, and local search behavior can still affect the selected controls, and the comparison does not isolate their individual effects.
+
+The objective combines engineering proxies under the priorities in Equation~\eqref{eq:caseweights}. Its reduction does not directly quantify monetary savings or measured energy consumption. Individual effluent concentrations still require assessment when prescribed treatment targets govern operation.
+
+\begin{figure}[pos=htbp]
+    \centering
+    \includegraphics[width=\linewidth]{q07_objective_quality_economic.png}
+    \caption{Reference-model total objective (left), normalized quality component
+    $j_Q$ (middle), and weighted resource contributions (right). Both routes use
+    $D_{T,M}$ for reference evaluation. Resource stacks represent HRT, aeration,
+    internal recycle, return sludge, and wasting. Extended ICSOR bars are solid
+    and Smooth NLP bars are hatched. The quality panel displays $j_Q$, whose
+    contribution to the total objective is $0.50j_Q$.}
+    \label{fig:q07-objective}
+\end{figure}
+
+\subsubsection{Optimization time}
+\label{sec:results-time}
+
+Extended ICSOR has the shorter optimization time in the nominal scenario and every influent scenario in Figure~\ref{fig:q08-time}. Across S1--S10, its recorded times range from 0.758 to 2.702~s, compared with 3.932 to 8.253~s for Smooth NLP. The means are 1.726 and 5.236~s, respectively. Nominal times are 0.985 and 5.062~s. The scenario ratios of Smooth NLP time to Extended ICSOR time range from 1.90 to 7.99, with the largest ratio in S10.
+
+The surrogate search varies seven controls and obtains the response through regression and projection. Smooth NLP optimizes the controls together with mechanistic states through the smoothing sequence. These differences are consistent with the observed times, but the timing comparison alone does not identify which calculation dominates either search.
+
+Both routes complete the measured optimization within seconds. Extended ICSOR uses less optimization time, whereas the retained Smooth NLP decisions have lower reference-model objectives. This result separates computational efficiency from the quality of the selected decisions.
+
+Optimization time excludes data generation, fitting, convergence certification, additional recovery calculations, and evaluation with the original mechanistic model. A failed initial direct attempt remains in the time record even when a later calculation supplies a retained decision. The plotted time therefore measures the specified optimization interval and does not include every calculation needed to obtain and verify the decision.
+
+The time and objective panels report different aspects of performance. Together they show faster surrogate optimization and lower reference-model objectives for the retained Smooth NLP decisions. They do not establish equal decision quality or a reduction in the time of the complete calculation.
+
+\begin{figure}[pos=htbp]
+    \centering
+    \includegraphics[width=\linewidth]{q08_optimization_time.png}
+    \caption{Optimization time for Extended ICSOR and Smooth NLP for the
+    nominal influent and ten influent scenarios. The seconds axis is logarithmic.
+    Optimization time excludes data generation, fitting, certification, conditional recovery, and
+    evaluation with the original mechanistic model.}
+    \label{fig:q08-time}
+\end{figure}
+
+\FloatBarrier
 
 \section{Conclusions}
 
-This study evaluates plant-wide physical reconciliation for statistical surrogate optimization of an activated sludge process. The method combines a quadratic response model, a positive logarithmic overflow-solids model, and a system-wide projection. The projection enforces the declared linear physical relations but does not replace kinetic and nonlinear settling equations.
+This study developed a plant-wide extension of ICSOR for operational optimization of activated sludge systems. The formulation represents the mixer, five-reactor train, clarifier, and recycle streams as one connected response. A joint projection was used to enforce the stated mixer and clarifier balances, stagewise invariant relations, particulate densification, clarifier inventory bounds, and non-negativity. The resulting surrogate was evaluated using separate model-development and holdout designs. Operating decisions were then selected for the nominal influent and ten additional influent scenarios. Each selected decision was independently evaluated with the original mechanistic model, and its performance was compared with the decision obtained through Smooth NLP.
 
-Every available selected decision requires replay on the same nonsmooth mechanistic model before route comparison. The holdout and influent cases provide descriptive post-selection evidence within the accepted simulation region. They do not establish external validity or global optimality. Broader reliability claims require independent influent conditions and additional process configurations.
+The results show that plant-wide physical projection can improve the statistical representation of the connected treatment system while enforcing the imposed physical relations. Among the 1,845 accepted holdout states, projection reduced aggregate nRMSE by 8.19\% and nMAE by 15.65\%. It also improved 30 of the 32 location--composite nRMSE values. The improvement was not limited to one treatment location or one water-quality measure. These results show that enforcing connected plant-wide relations can improve aggregate prediction accuracy rather than serving only as a feasibility correction.
+
+The optimization results also show that physical consistency of surrogate predictions and quality of the resulting operating decisions are separate requirements. Mechanistic evaluation identified errors in selected nutrient and solids predictions that can affect the assessment of treatment performance. Smooth NLP produced a lower reference-model objective for the nominal influent and all ten influent scenarios. Extended ICSOR required less optimization time in every case. Across the ten influent scenarios, the mean optimization times were 1.726~s for Extended ICSOR and 5.236~s for Smooth NLP. The results therefore identify a clear trade-off in the tested cases. The surrogate route reduced the time spent in the optimization search, whereas the direct mechanistic route selected decisions with better reference-model objective values. Faster surrogate optimization should consequently not be interpreted as evidence of equal decision quality.
+
+The main contribution of this work is the extension of physically constrained statistical surrogate modeling from an individual reactor to a connected activated sludge plant used for operational optimization. The study shows that physical consistency can be imposed jointly across interacting treatment units without requiring the surrogate to reproduce every mechanistic state. It also demonstrates why physical feasibility, prediction accuracy, decision quality, and computational cost should be evaluated separately. A surrogate prediction can satisfy the imposed plant-wide relations and have favorable aggregate prediction errors while still producing an operating decision that is inferior when both decisions are evaluated with the same mechanistic reference. This distinction provides a practical basis for assessing physically constrained surrogates intended for process optimization.
+
+The findings also have practical implications for how the formulation is applied. HRT controls reactor volume in the present optimization problem. For an existing treatment plant, installed reactor volumes should instead be fixed and applicable effluent limits should be imposed explicitly. Mechanistic evaluation should also remain part of the decision process when surrogate prediction errors could affect compliance or operating choices. In this role, the plant-wide surrogate can reduce the computational work required to explore operating alternatives while the mechanistic model provides the final assessment of selected decisions.
+
+Future work should evaluate the method across broader plant configurations, influent conditions, operating priorities, and treatment constraints. Additional starting points can be examined to determine the sensitivity of the selected controls to local search behavior. Future studies can also investigate alternative surrogate formulations and physical constraints that better represent nutrient and solids responses while retaining the computational advantages of surrogate evaluation. Prospective evaluation on independently specified cases would provide stronger evidence of performance beyond the conditions examined here. Another direction is to use the projected surrogate to generate initial operating controls for subsequent mechanistic optimization. This hybrid approach is outside the scope of the present study. Its evaluation would require comparison of both the resulting decision quality and the time required for the complete calculation, including the surrogate and mechanistic optimization stages.
 
 \section*{CRediT authorship contribution statement}
 
@@ -568,7 +788,7 @@ This work is funded by the Department of Science and Technology of the Philippin
 
 \section*{Data availability}
 
-The required study record includes the 10,000 candidate inputs, acceptance outcomes, retained analysis subsets, the mapping from layer states to the reduced response and $M_{\rm cl}$, and fold membership. Reproduction also requires the fitted models, preprocessing scales, ridge selection, log-closure coefficients, out-of-fold predictions, projection audits, optimization records, exact reference states, and Time records.
+The results of this study can be reproduced using the data and code files contained in the public repository: https://github.com/egbertoselerio1997/surrogate-optimization
 
 \begin{thebibliography}{00}
 \bibitem[Aboagye et~al.(2021)Aboagye, Burnham, Dailey, Zia, Tran, Desai, and Yenkie]{Aboagye2021}
