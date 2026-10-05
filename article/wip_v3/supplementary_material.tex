@@ -54,7 +54,7 @@
 
 The main article describes the study sequence, data allocation, optimization routes, and comparison rules. This supplementary material provides coordinate definitions, fixed parameters, sampling seeds, formulations, tolerances, solver settings, and metric definitions. Notation and acronyms follow the main article. A mechanistic evaluation means holding a selected set of operating controls and its influent fixed, then independently solving the original nonsmooth reactor and clarifier equations to steady state. The resulting state provides the reference treatment response.
 
-The plant contains $N$ completely mixed biological reactors and an $L$-layer mechanistic clarifier. There are $F=F_S+F_X$ components and $K$ independent stoichiometric invariants. Extended ICSOR uses the reduced response
+The plant contains $N$ completely mixed biological reactors and an $L$-layer mechanistic clarifier. There are $F=F_S+F_X$ components and $K$ independent stoichiometric invariants. The plant-wide surrogate combines second-order ridge regression with joint quadratic projection and is designated Extended ICSOR in the main article. It uses the reduced response
 \begin{equation}
 \chi=\col(m,c_1,\ldots,c_N,g_E,g_U,M_{\rm cl})\in\R^{n_\chi},\qquad n_\chi=(N+3)F+1,
 \label{eq:Sresponse}
@@ -592,7 +592,7 @@ Optimization failure, projection infeasibility, convergence qualification, refer
 
 The analysis uses separate fixed model-development and holdout Latin hypercubes. Each analysis set contains only candidates that pass the mechanistic checks. Rejected candidates are not replaced. Regions with frequent mechanistic failure may be underrepresented. Conclusions apply to the accepted region rather than the complete operating box.
 
-The holdout candidates use a separate seeded simulation stream. Separating model development from prediction assessment reduces leakage of information into reported predictive performance \citep{Kaufman2012}. The final response definition, logarithmic overflow closure, numerical procedures, and engineering eligibility rules were not specified independently of all inspected data. The accepted holdout subset and ten influent scenarios therefore provide descriptive post-selection evidence. They do not provide independent external confirmation or population-level reliability estimates.
+The holdout candidates use a separate seeded simulation stream. Separating model development from prediction assessment reduces leakage of information into reported predictive performance \citep{Kaufman2012}. The response definition, logarithmic overflow closure, numerical procedures, and engineering eligibility rules were informed by inspection of the simulation data. The accepted holdout subset and ten influent scenarios therefore provide descriptive post-selection evidence. They do not provide independent external confirmation or population-level reliability estimates.
 
 The surrogate predicts aggregate clarifier inventory rather than internal layer concentrations. Evaluation with the original mechanistic model is therefore required to assess layer profiles, nonlinear settling behavior, stability, and engineering feasibility at selected controls. The projection constraints establish only the physical relations imposed in Equation~\eqref{eq:SQP}. They do not establish agreement with all mechanistic equations.
 
