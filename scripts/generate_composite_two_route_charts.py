@@ -97,131 +97,90 @@ def save(fig: plt.Figure, output: Path, stem: str) -> None:
     plt.close(fig)
 
 
-def write_legacy_readme(output: Path) -> None:
-    """Document the chart package in place of embedded figure titles."""
-
-    output.joinpath("README.md").write_text(
-        """# Article-v3 figure package
-
-These untitled figures are generated only from the parent result run. Each
-figure is retained as a PNG. `chart_index.csv` maps the question identifiers to
-file names; `chart_summary.csv` contains the principal numerical comparisons.
-
-## Common conventions
-
-- **Extended ICSOR** is the `surrogate` route; **Smooth NLP** is the `direct`
-  route. `N` denotes the nominal scenario and `S1`-`S10` denote influent
-  scenarios 1-10.
-- Water-quality quantities are COD, TN, TP, and TSS concentrations in mg/L.
-  "Exact mechanistic replay" means the mechanistic model evaluated at the
-  selected route decision.
-- Holdout errors are coordinate-normalized: each location/composite error is
-  divided by that location/composite's mechanistic holdout range. nRMSE and
-  nMAE are lower-is-better; mean location R^2 is higher-is-better.
-- The nominal scenario and all influent scenarios are plotted and included in paired
-  comparisons.
-- All figure titles are deliberately omitted. Panel legends, axis labels, and
-  this README provide the interpretation.
-
-## Figures and target-run sources
-
-- **Q1/Q2/Q3** `q01_q02_q03_holdout_accuracy`: combined holdout accuracy:
-  aggregate nRMSE, nMAE, and mean location R^2; location-level nRMSE, nMAE,
-  and mean location R^2; and nRMSE, nMAE, and mean location R^2 for COD, TN,
-  TP, and TSS.
-  Sources: `predictions/post_selection_holdout.npz` and
-  `datasets/effective_design.npz`.
-- **Q4** `q04_holdout_component_accuracy_by_stage`: location-by-composite raw
-  nRMSE, projected nRMSE, and percent nRMSE change (negative is improvement).
-  Same holdout sources as Q1.
-- **Q5/Q5R** `q05_effluent_and_removal_parity`: combined Extended-ICSOR
-  effluent-concentration and removal parity against exact replay. Teal dots are
-  concentration parity; orange dots are removal parity. Source: `report/tables/selected_quality.csv`
-  (or the casewise-reference files when that table is unavailable).
-- **Q6/Q6R** Smooth-NLP selected-scenario concentration and removal parity;
-  differences are percentage points. Sources: selected-quality data plus
-  `datasets/effective_design.npz` and the nominal influent contract.
-- **Q7/Q8/Q10** `q07_q08_q10_objective_quality_economic`: one horizontal
-  figure of exact total objective, its normalized water-quality component, and
-  weighted HRT, aeration, recycle, return-sludge, and wasting contributions for
-  the nominal and every influent scenario. Source:
-  `optimization/<case>/*_casewise_reference.npz` and development targets.
-- **Q9/Q11** `q09_q11_effluent_and_operating_values`: exact-replay effluent
-  COD, TN, TP, and TSS alongside selected HRT, aeration, recycle, return-sludge,
-  and wasting controls for the nominal and every influent scenario. Source:
-  `report/tables/scenario_controls.csv` (or casewise-reference `theta`).
-- **Q12** `q12_primary_optimization_time`: optimization time only for the nominal
-  and every influent scenario, shown on a logarithmic seconds axis. Sources:
-  `metrics/robustness_case_timing.csv` and the nominal candidate evaluation.
-- **Q13** `q13_exact_objective_value_comparison`: exact total objective for the
-  nominal scenario and all influent scenarios. Source: casewise-reference files.
-- **Q14** `q14_cod_tn_tp_tss_main_treatment_train_profiles`: combined COD,
-  TN, TP, and TSS treatment-train profiles. Each follows influent → mixer →
-  reactor R1–R5 → clarifier effluent; y-axes are logarithmic. Source:
-  `exact_reference_full`, `theta`, and influents in casewise-reference files
-  and `datasets/effective_design.npz`.
-- **Q18** `q18_holdout_effluent_composite_parity`: projected Extended ICSOR
-  parity for all holdout rows and all eight locations. Hexagon color is the
-  number of location-observations; location medians are marked. Sources are the
-  post-selection holdout predictions and test decisions.
-
-Composite calculations use the repository's authoritative `COMPOSITE_MATRIX`;
-overflow and underflow component flows are converted to concentrations before
-composites are calculated. No source data from another run are used.
-""",
-        encoding="utf-8",
-    )
-
-
 def write_readme(output: Path) -> None:
-    """Write the README for the retained, sequential article figure package."""
+    """Document the eight-figure package and its presentation order."""
 
     output.joinpath("README.md").write_text(
         """# Article-v3 figure package
 
-These untitled PNG figures are generated only from the parent result run.
-`chart_index.csv` maps the Results sequence number, historical source
-questions, and presentation role to each file. `chart_summary.csv` contains
-the principal numerical comparisons.
-
-## Common conventions
-
-- **Extended ICSOR** is the `surrogate` route; **Smooth NLP** is the `direct`
-  route. `N` is the nominal scenario; `S1`--`S10` are influent scenarios.
-- Water-quality quantities are COD, TN, TP, and TSS concentrations in mg/L.
-  Exact mechanistic replay evaluates the mechanistic model at a selected
-  route decision. nRMSE and nMAE are lower-is-better; mean location R^2 is
-  higher-is-better.
-- The nominal and all influent scenarios appear in paired comparisons. Figure
-  titles are deliberately omitted; axes, legends, and this README interpret
-  the charts.
+This package contains eight untitled PNGs in Results presentation order.
+`chart_index.csv` records the sequence, historical source questions, and panel
+roles. `chart_summary.csv` and `holdout_composite_metrics.csv` contain
+calculated numerical comparisons. All numerical data come from the parent run.
 
 ## Results and discussion presentation plan
 
-The sequence moves from evidence to interpretation: (1) holdout validation,
-(2) exact selected-decision replay, (3) operating and treatment-train behavior,
-and (4) objective trade-offs and primary search time. Complementary views of
-the same question are adjacent.
+1. Items 1–3 establish holdout accuracy through aggregate metrics, location
+   heatmaps, and all-location parity.
+2. Items 4–6 assess selected decisions through mechanistic concentration and
+   removal parity, effluent and operating controls, and treatment-train profiles.
+3. Items 7–8 compare objective trade-offs and optimization time.
+
+The q01–q08 sequence is separate from manuscript figure numbering. If the
+plant flowsheet precedes these figures, their manuscript numbers are 2–9.
+
+## Common conventions
+
+- Extended ICSOR is the `surrogate` route and Smooth NLP is the `direct` route.
+  N is nominal; S1–S10 are influent scenarios 1–10. R1–R5 are biological
+  reactors. Every scenario comparison includes nominal.
+- COD, TN, TP, and TSS concentrations are in mg/L. Mechanistic evaluation means
+  solving the original nonsmooth equations at fixed selected controls and
+  influent. Projection denotes the constraint-based adjustment of predictions.
+- Holdout errors are divided by the mechanistic holdout range at the same
+  location/composite. nRMSE and nMAE pool these normalized errors; mean location
+  R² averages coordinate coefficients. Lower nRMSE/nMAE and higher R² are better.
+- Removal is `100*(influent-effluent)/influent`. Removal differences use
+  percentage points, whereas concentration percentage errors divide by the
+  mechanistic concentration.
+- Figure and panel titles are omitted. Axes, legends, this README, and the
+  manuscript captions explain the panels.
 
 ## Figures and target-run sources
 
-- **Results sequence 1** `q01_holdout_accuracy_overview.png` (Q1/Q2/Q3):
-  aggregate, location, and composite holdout accuracy. Sources:
-  `predictions/post_selection_holdout.npz`, `datasets/effective_design.npz`.
-- **Results sequence 2** `q02_holdout_accuracy_by_location.png` (Q4): raw and
-  projected nRMSE by location and composite, plus percentage change.
-- **Results sequence 3** `q03_holdout_parity_all_locations.png` (Q18):
-  all-location projected-holdout parity and named location medians.
-- **Results sequence 4** `q04_effluent_and_removal_parity.png` (Q5/Q5R):
-  selected Extended-ICSOR concentration and removal parity against replay.
-- **Results sequence 5** `q05_effluent_and_operating_values.png` (Q9/Q11):
-  exact effluent outcomes and operating controls for both routes.
-- **Results sequence 6** `q06_treatment_train_profiles.png` (Q14): COD, TN,
-  TP, and TSS treatment-train profiles for both routes.
-- **Results sequence 7** `q07_objective_quality_economic.png` (Q7/Q8/Q10):
-  exact total objective, quality contribution, and resource contributions.
-- **Results sequence 8** `q08_optimization_time.png` (Q12): primary search
-  time for nominal and all influent scenarios.
+1. **`q01_holdout_accuracy_overview.png`** (Q1/Q2/Q3) shows raw and projected
+   aggregate, location-level, and composite-level accuracy in a 3-by-3 grid.
+   Columns are nRMSE, nMAE, and mean location R². Sources are
+   `predictions/post_selection_holdout.npz` and `datasets/effective_design.npz`.
+2. **`q02_holdout_accuracy_by_location.png`** (Q4) shows raw nRMSE, projected
+   nRMSE, and percentage change in one horizontal row. Negative change means
+   improvement. It uses the same holdout sources and common raw/projected
+   color limits.
+3. **`q03_holdout_parity_all_locations.png`** (Q18) shows all holdout rows at
+   eight locations in four composite panels. Logarithmic density hexagons count
+   location-observations; explicitly named markers show each location's median.
+   Metrics retain coordinate-specific normalization. Sources are the same
+   holdout predictions and test decisions used for item 1.
+4. **`q04_effluent_and_removal_parity.png`** (Q5/Q5R) combines Extended-ICSOR
+   concentration parity with teal dots above removal parity with orange dots.
+   Axes use `Mechanistic (mg/L)` and `Mechanistic removal (%)`. Sources are
+   `report/tables/selected_quality.csv` or the casewise `projected` and
+   `exact_reference` arrays, plus nominal/scenario influents.
+5. **`q05_effluent_and_operating_values.png`** (Q9/Q11) combines mechanistic
+   effluent COD/TN/TP/TSS and seven selected controls for both routes. Sources
+   are `optimization/<case>/*_casewise_reference.npz` for `exact_reference`
+   and `theta`, with `report/tables/scenario_controls.csv` when available.
+6. **`q06_treatment_train_profiles.png`** (Q14/Q15/Q16/Q17) follows influent,
+   mixer, R1–R5, and clarifier effluent. Each composite has identical logarithmic
+   y limits across routes. Sources are casewise `exact_reference_full`, `theta`,
+   nominal influent, and `datasets/effective_design.npz` scenario influents.
+7. **`q07_objective_quality_economic.png`** (Q7/Q8/Q10) presents total
+   mechanistic objective, unweighted normalized quality, and weighted resource
+   contributions in one row. The quality contribution to the total is 0.50
+   times the middle-panel value. Sources are casewise `exact_reference` and
+   `theta`, plus development targets and decisions for quality scales.
+8. **`q08_optimization_time.png`** (Q12) shows recorded optimization time on
+   logarithmic seconds axes. Sources are `metrics/robustness_case_timing.csv`
+   for S1–S10 and `report/tables/selected_candidate_reference_evaluation.csv`
+   for nominal. The recorded interval includes surrogate projection/fallback
+   and direct smoothing. Generation, fitting, convergence certification,
+   additional recovery, and independent mechanistic evaluation are excluded.
+   Aggregate time metrics in `chart_summary.csv` cover S1–S10 only.
+
+The authoritative `COMPOSITE_MATRIX` defines the reporting composites. Outlet
+component flows are converted to concentrations before applying that map.
+Available archived reporting overrides are used when the scientific casewise
+record is absent; the supplied S1 Smooth NLP result is included normally.
 """,
         encoding="utf-8",
     )
@@ -1124,7 +1083,7 @@ def main() -> None:
         (3, "Q18", "Holdout parity across locations", "q03_holdout_parity_all_locations"),
         (4, "Q5/Q5R", "Selected-decision effluent and removal parity", "q04_effluent_and_removal_parity"),
         (5, "Q9/Q11", "Exact effluent and operating values", "q05_effluent_and_operating_values"),
-        (6, "Q14", "Treatment-train profiles", "q06_treatment_train_profiles"),
+        (6, "Q14/Q15/Q16/Q17", "Treatment-train profiles", "q06_treatment_train_profiles"),
         (7, "Q7/Q8/Q10", "Objective, quality, and economic trade-offs", "q07_objective_quality_economic"),
         (8, "Q12", "Optimization time", "q08_optimization_time"),
     )
