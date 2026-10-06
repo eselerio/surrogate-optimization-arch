@@ -1,0 +1,18 @@
+Revise the RRL so that:
+- we retain it to be narrative without presentation of equations or mathematical symbols
+- refrain from using the information presentation style {statement}:{enumerated ideas}. Refrain from doing this throughout the article
+- Refrain from using "wastewater-treatment", "activated-sludge", and "machine-learning". Instead, use "wastewater treatment", "activated sludge", and "machine learning" throughout the manuscript.
+- Remove any statement in the RRL that is not appropriate. Assume that it is being read by a reader who does not know how the article is written or who is the writer. It must be written like a dissertation. It must remove self-referencing or stating how the RRL must be writted or statement like that. It should focus on the discussion at hand.
+---------------------------------
+
+I am using the template (`template`) for `article\manuscript.tex`.
+
+I ought to craft a full dissertation manuscript that will contain the results of the following journal articles in `references`
+
+The dissertation manuscript, therefore, must be a complete exposition and integration of these journal articles. I ought to begin with the Review of Related Literature. Please craft a comprehensive RRL `article\manuscript.tex`, but, first plan out the contents first. It must be effectively encapsulating the literatures in the two reference articles. It must present them intently. You are at liberty to add new references/citations if needed to enhance the review. Certainly, if you think that foundational works need to be cited in the discussion, they must be included. Just make sure to ascertain the existence of these work using crossref skill. 
+
+Plan out the Review of Related Literature content and the flow of the discussion.
+
+Note: When presenting the cited references, they must be presented intently. Minimize the haphazard or sweeping in-body citation. There must be discussion and intent in presentation of ideas contained in the referenced papers cited in the discussion.
+
+---------------------------------

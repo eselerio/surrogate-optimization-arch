@@ -1,0 +1,49 @@
+Front Matter
+    Cover Page                          [sections/cover.tex]
+    Front Page (Title Page)             [sections/front.tex]
+    Thesis Assignment (SK + EN)         [assignments/*.pdf]
+    Declaration                         [sections/declaration.tex]
+    Acknowledgments                     [sections/acks.tex]
+    Abstract + Keywords                 [sections/abstracts.tex]
+    Table of Contents                   [\tableofcontents]
+    List of Figures                     [\listoffigures]
+    List of Tables                      [\listoftables]
+    List of Algorithms                  [\listofalgorithms]
+    List of Abbreviations               [lists/acronyms.tex]
+    List of Symbols                     [lists/symbols.tex]
+
+Introduction (unnumbered)               [sections/intro.tex]
+    Review of Related Literature
+    Statement of the Problem
+    Significance of the Study
+    Research Framework
+    Scope and Limitations
+
+Chapter 1. Machine Learning Surrogates of the Activated Sludge Process
+    1.1. Rationale
+    1.2. Method
+    1.3. Results
+    1.4. Synthesis
+
+Chapter 2. Mass Conservation and Nonnegativity Enforcement on Machine Learning Surrogates of the Activated Sludge Process
+    2.1. Rationale
+    2.2. Method
+    2.3. Results
+    2.4. Synthesis
+
+Chapter 3. A Physically Admissible and Interpretable Machine Learning Surrogate of the Activated Sludge Process
+    3.1. Rationale
+    3.2. Method
+    3.3. Results
+    3.4. Synthesis
+
+Conclusion                              [sections/conclusion.tex]
+    Summary of Contributions
+    Outlook
+
+References (consolidated bibliography)  [references.bib, apacite]
+
+Appendices
+    Appendix A                          [sections/appendixA.tex]
+    Appendix B                          [sections/appendixB.tex]
+    Appendix C                          [sections/appendixC.tex]
